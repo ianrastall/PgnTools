@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "PgnTools (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "PgnTools (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.PgnInfoPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="PGN Info" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Analyze a PGN file to see summary statistics including game count, Elo ranges, ECO distribution, and more."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- File Selection -->
+        <Grid Grid.Row="1" Margin="0,0,0,24">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBox Grid.Column="0"
+                     PlaceholderText="No file selected..."
+                     Text="{x:Bind ViewModel.SelectedFilePath, Mode=OneWay}"
+                     IsReadOnly="True"
+                     Margin="0,0,12,0"/>
+            
+            <Button Grid.Column="1"
+                    Content="Browse..."
+                    Command="{x:Bind ViewModel.SelectFileCommand}"
+                    Style="{StaticResource Action}"
+                    Margin="0,0,12,0"/>
+            
+            <Button Grid.Column="2"
+                    Content="Analyze"
+                    Command="{x:Bind ViewModel.AnalyzeCommand}"
+                    Style="{StaticResource PrimaryAction}"/>
+        </Grid>
+
+        <!-- Results Section -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- Status/Progress -->
+                <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                        StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
+                                        IsIndeterminate="True"/>
+
+                <!-- Statistics Display -->
+                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay}"
+                            Margin="0,24,0,0"
+                            Spacing="24">
+                    
+                    <!-- Overview Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Overview" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Games:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.Games), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Players:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.PlayerCount), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Tournaments:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatTournamentStats(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Countries:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.CountryCount), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Incomplete:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.IncompleteGames), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="Date Range:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="{x:Bind FormatDateRange(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Elo Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Elo Statistics" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Average:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatElo(ViewModel.Statistics.AverageElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Highest:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatEloInt(ViewModel.Statistics.HighestElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Lowest:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatEloInt(ViewModel.Statistics.LowestElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Games with Elo:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatEloGames(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Results Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Results" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind FormatResults(ViewModel.Statistics), Mode=OneWay}" FontFamily="Consolas"/>
+                    </StackPanel>
+
+                    <!-- ECO Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="ECO Distribution" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind FormatEcoSpread(ViewModel.Statistics), Mode=OneWay}" FontFamily="Consolas"/>
+                        <ItemsRepeater ItemsSource="{x:Bind GetTopEco(ViewModel.Statistics), Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <StackLayout Spacing="4"/>
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontFamily="Consolas"/>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+
+                    <!-- Move Statistics -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Move Statistics" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Average Plies:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatPlies(ViewModel.Statistics.AveragePlies), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Min/Max Plies:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatPlyRange(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="With Moves:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.GamesWithMoves), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Without Moves:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.GamesWithoutMoves), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+

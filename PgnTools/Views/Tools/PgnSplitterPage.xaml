@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.PgnSplitterPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="PGN Splitter" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Split a PGN into chunks or by header tags like Event, Site, ECO, and Date."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output Folder"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output folder..."
+                         Text="{x:Bind ViewModel.OutputFolderPath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFolderCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Split Strategy"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <RadioButtons SelectedIndex="{x:Bind ViewModel.SelectedStrategyIndex, Mode=TwoWay}">
+                <x:String>Games per file (chunk size)</x:String>
+                <x:String>Event</x:String>
+                <x:String>Site</x:String>
+                <x:String>ECO</x:String>
+                <x:String>Date</x:String>
+            </RadioButtons>
+
+            <StackPanel Orientation="Horizontal"
+                        Spacing="12"
+                        Visibility="{x:Bind ViewModel.IsChunkStrategy, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="Chunk Size" VerticalAlignment="Center"/>
+                <NumberBox Width="160"
+                           Minimum="1"
+                           SmallChange="1"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.ChunkSize, Mode=TwoWay}"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal"
+                        Spacing="12"
+                        Visibility="{x:Bind ViewModel.IsDateStrategy, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="Date Precision" VerticalAlignment="Center"/>
+                <ComboBox Width="200"
+                          SelectedIndex="{x:Bind ViewModel.SelectedDatePrecisionIndex, Mode=TwoWay}">
+                    <x:String>Century</x:String>
+                    <x:String>Decade</x:String>
+                    <x:String>Year</x:String>
+                    <x:String>Month</x:String>
+                    <x:String>Day</x:String>
+                </ComboBox>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="True"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
