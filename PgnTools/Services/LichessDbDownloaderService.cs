@@ -111,7 +111,7 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
                     await writer.WriteLineAsync().ConfigureAwait(false);
                 }
 
-                await _pgnWriter.WriteGameAsync(writer, game, CancellationToken.None).ConfigureAwait(false);
+                await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
                 firstGame = false;
                 gamesKept++;
             }

@@ -187,17 +187,29 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
     private static List<string> ExtractLinks(string html)
     {
         var matches = LinkRegex().Matches(html);
-        var links = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var links = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (Match match in matches)
         {
-            if (match.Success && !string.IsNullOrWhiteSpace(match.Groups["url"].Value))
+            if (!match.Success)
             {
-                links.Add(match.Groups["url"].Value);
+                continue;
+            }
+
+            var url = match.Groups["url"].Value;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            if (seen.Add(url))
+            {
+                links.Add(url);
             }
         }
         // Return as-is (site order), usually chronological
-        return links.ToList();
+        return links;
     }
 
     [GeneratedRegex("href\\s*=\\s*[\"'](?<url>[^\"'#]+?\\.(?:zip|pgn))[\"']", RegexOptions.IgnoreCase | RegexOptions.Compiled)]

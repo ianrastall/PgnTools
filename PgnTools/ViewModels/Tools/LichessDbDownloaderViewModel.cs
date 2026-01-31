@@ -69,11 +69,11 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         _settings = settings;
         Title = "Lichess DB Filter";
         StatusSeverity = InfoBarSeverity.Informational;
-        LoadArchiveList();
         LoadState();
+        _ = LoadArchiveListAsync();
     }
 
-    private void LoadArchiveList()
+    private async Task LoadArchiveListAsync()
     {
         try
         {
@@ -96,19 +96,24 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
                 return;
             }
 
-            var lines = File.ReadAllLines(listPath);
+            var lines = await File.ReadAllLinesAsync(listPath);
             var urls = lines
                 .Select(line => line.Trim())
                 .Where(line => line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             AvailableArchives = urls;
-            SelectedArchive = urls.FirstOrDefault();
 
             if (urls.Count == 0)
             {
                 StatusMessage = "Archive list is empty.";
                 StatusSeverity = InfoBarSeverity.Warning;
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(SelectedArchive) || !urls.Contains(SelectedArchive))
+            {
+                SelectedArchive = urls.FirstOrDefault();
             }
         }
         catch (Exception ex)
@@ -313,7 +318,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
 
         var selected = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive);
-        if (!string.IsNullOrWhiteSpace(selected) && AvailableArchives.Contains(selected))
+        if (!string.IsNullOrWhiteSpace(selected))
         {
             SelectedArchive = selected;
         }

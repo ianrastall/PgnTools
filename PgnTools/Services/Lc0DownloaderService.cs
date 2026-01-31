@@ -215,7 +215,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 maxPages,
                 percent));
 
-            var pageMatches = await FetchMatchesPageAsync(page, ct);
+            var pageMatches = await FetchMatchesPageAsync(page, progress, ct);
 
             if (pageMatches.Count == 0)
             {
@@ -277,7 +277,10 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         return filtered;
     }
 
-    private async Task<List<Lc0MatchEntry>> FetchMatchesPageAsync(int page, CancellationToken ct)
+    private async Task<List<Lc0MatchEntry>> FetchMatchesPageAsync(
+        int page,
+        IProgress<Lc0DownloadProgress> progress,
+        CancellationToken ct)
     {
         var uri = new Uri($"{MatchesBaseUri}?page={page}&show_all=1");
         try
@@ -285,8 +288,11 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             var html = await HttpClient.GetStringAsync(uri, ct);
             return ParseMatchList(html);
         }
-        catch
+        catch (Exception ex)
         {
+            progress.Report(new Lc0DownloadProgress(
+                Lc0DownloadPhase.Scraping,
+                $"Failed to fetch page {page}: {ex.Message}"));
             return [];
         }
     }

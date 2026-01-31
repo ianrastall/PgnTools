@@ -1,3 +1,4 @@
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Data;
 
 namespace PgnTools.Converters;
@@ -13,7 +14,7 @@ public class InverseBooleanConverter : IValueConverter
         {
             return !boolValue;
         }
-        return false;
+        return DependencyProperty.UnsetValue;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
@@ -22,7 +23,7 @@ public class InverseBooleanConverter : IValueConverter
         {
             return !boolValue;
         }
-        return false;
+        return DependencyProperty.UnsetValue;
     }
 }
 
@@ -37,7 +38,7 @@ public class BoolToVisibilityConverter : IValueConverter
         {
             return boolValue ? Visibility.Visible : Visibility.Collapsed;
         }
-        return Visibility.Collapsed;
+        return DependencyProperty.UnsetValue;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
@@ -46,7 +47,7 @@ public class BoolToVisibilityConverter : IValueConverter
         {
             return visibility == Visibility.Visible;
         }
-        return false;
+        return DependencyProperty.UnsetValue;
     }
 }
 
@@ -57,12 +58,17 @@ public class StringToVisibilityConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language)
     {
+        if (value is null)
+        {
+            return Visibility.Collapsed;
+        }
+
         if (value is string text)
         {
             return string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
         }
 
-        return Visibility.Collapsed;
+        return DependencyProperty.UnsetValue;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
