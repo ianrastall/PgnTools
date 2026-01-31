@@ -1,0 +1,46 @@
+name: Build PgnTools
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build:
+    name: Build Single File Exe
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore PgnTools/PgnTools.csproj
+
+    - name: Publish Single File
+      # This command publishes a single .exe (Self-Contained).
+      # -p:PublishSingleFile=true: Bundles the app.
+      # -p:EnableCompressionInSingleFile=true: Reduces file size.
+      # -p:IncludeNativeLibrariesForSelfExtract=true: Helps bundle some native dependencies.
+      run: >
+        dotnet publish PgnTools/PgnTools.csproj
+        -c Release
+        -r win-x64
+        --self-contained true
+        -p:PublishSingleFile=true
+        -p:EnableCompressionInSingleFile=true
+        -p:IncludeNativeLibrariesForSelfExtract=true
+        -o ./publish_output
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: PgnTools-Build
+        path: ./publish_output
+        if-no-files-found: error

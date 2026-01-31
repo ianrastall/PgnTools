@@ -18,6 +18,9 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         new(@"^lichess-\d+-(\d{4}-\d{2}|0000-00)\.pgn$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase |
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex ArchiveMonthRegex =
+        new(@"\d{4}-\d{2}",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     private const string SettingsPrefix = nameof(LichessDbDownloaderViewModel);
 
     [ObservableProperty]
@@ -393,8 +396,8 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             return string.Empty;
         }
 
-        var match = System.Text.RegularExpressions.Regex.Match(url, @"\b(\d{4}-\d{2})\b");
-        return match.Success ? match.Groups[1].Value : string.Empty;
+        var match = ArchiveMonthRegex.Match(url);
+        return match.Success ? match.Value : string.Empty;
     }
 
     private bool IsSuggestedFileName(string? fileName)
