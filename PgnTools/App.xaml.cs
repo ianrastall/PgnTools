@@ -78,6 +78,7 @@ public partial class App : Application
         
         // ViewModels
         services.AddTransient<MainViewModel>();
+        services.AddTransient<WelcomeViewModel>();
         services.AddTransient<ShellViewModel>();
         services.AddTransient<PgnInfoViewModel>();
         services.AddTransient<PgnSplitterViewModel>();

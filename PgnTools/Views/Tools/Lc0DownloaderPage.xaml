@@ -17,8 +17,8 @@
 
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
-            <TextBlock Text="Lc0 Downloader" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Download match PGNs from storage.lczero.org, tag them, and collate into YYYY/MM monthly files."
+            <TextBlock Text="Lc0" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Download match PGNs from storage.lczero.org, tag them, and collate into monthly files."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -46,24 +46,33 @@
                         Style="{StaticResource Action}"/>
             </Grid>
 
-            <TextBlock Text="Date Range (optional)"
+            <TextBlock Text="Month Range (optional)"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
-                <CalendarDatePicker Header="Start"
+                <CalendarDatePicker Header="Start Month"
                                     Date="{x:Bind ViewModel.StartDate, Mode=TwoWay}"/>
-                <CalendarDatePicker Header="End"
+                <CalendarDatePicker Header="End Month"
                                     Date="{x:Bind ViewModel.EndDate, Mode=TwoWay}"/>
             </StackPanel>
 
-            <TextBlock Text="Max Pages (optional)"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            <TextBox PlaceholderText="Leave blank to scan until empty"
-                     Text="{x:Bind ViewModel.MaxPages, Mode=TwoWay}"/>
+            <CheckBox Content="Snap to full months (1st to last day)"
+                      IsChecked="{x:Bind ViewModel.SnapToFullMonths, Mode=TwoWay}"/>
 
-            <TextBlock Text="Max Matches (optional)"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            <TextBox PlaceholderText="Leave blank for all matches"
-                     Text="{x:Bind ViewModel.MaxMatches, Mode=TwoWay}"/>
+            <CheckBox Content="Show advanced options"
+                      IsChecked="{x:Bind ViewModel.ShowAdvancedOptions, Mode=TwoWay}"/>
+
+            <StackPanel Spacing="12"
+                        Visibility="{x:Bind ViewModel.ShowAdvancedOptions, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="Max Pages (optional)"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBox PlaceholderText="Leave blank to scan until empty"
+                         Text="{x:Bind ViewModel.MaxPages, Mode=TwoWay}"/>
+
+                <TextBlock Text="Max Matches (optional)"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBox PlaceholderText="Leave blank for all matches"
+                         Text="{x:Bind ViewModel.MaxMatches, Mode=TwoWay}"/>
+            </StackPanel>
 
             <StackPanel Orientation="Horizontal" Spacing="12">
                 <Button Content="Run"

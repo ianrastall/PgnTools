@@ -164,10 +164,9 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     cancellationToken.ThrowIfCancellationRequested();
                     processedGames++;
 
-                    await engine.NewGameAsync(cancellationToken);
-
                     try
                     {
+                        await engine.NewGameAsync(cancellationToken);
                         game.MoveText = await AnalyzeGameAsync(game, engine, depth, cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
                         game.Headers["Annotator"] = "PgnTools";

@@ -93,13 +93,13 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
 
-                <NavigationViewItem Tag="LichessDownloader" Content="Lichess">
+                <NavigationViewItem Tag="Lc0Downloader" Content="Lc0">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="{StaticResource IconDownload}"/>
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
 
-                <NavigationViewItem Tag="Lc0Downloader" Content="Lc0 Downloader">
+                <NavigationViewItem Tag="LichessDownloader" Content="Lichess">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="{StaticResource IconDownload}"/>
                     </NavigationViewItem.Icon>

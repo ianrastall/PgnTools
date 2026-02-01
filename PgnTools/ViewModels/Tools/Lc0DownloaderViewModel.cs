@@ -13,6 +13,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _adjustingDates;
     private const string SettingsPrefix = nameof(Lc0DownloaderViewModel);
 
     [ObservableProperty]
@@ -26,6 +27,12 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private DateTimeOffset? _endDate;
+
+    [ObservableProperty]
+    private bool _snapToFullMonths = true;
+
+    [ObservableProperty]
+    private bool _showAdvancedOptions;
 
     [ObservableProperty]
     private string _maxPages = string.Empty;
@@ -53,7 +60,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _service = service;
         _windowService = windowService;
         _settings = settings;
-        Title = "Lc0 Downloader";
+        Title = "Lc0";
         StatusSeverity = InfoBarSeverity.Informational;
         IsIndeterminate = true;
         LoadState();
@@ -249,6 +256,30 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         RunCommand.NotifyCanExecuteChanged();
     }
 
+    partial void OnStartDateChanged(DateTimeOffset? value)
+    {
+        if (SnapToFullMonths)
+        {
+            NormalizeMonthRange();
+        }
+    }
+
+    partial void OnEndDateChanged(DateTimeOffset? value)
+    {
+        if (SnapToFullMonths)
+        {
+            NormalizeMonthRange();
+        }
+    }
+
+    partial void OnSnapToFullMonthsChanged(bool value)
+    {
+        if (value)
+        {
+            NormalizeMonthRange();
+        }
+    }
+
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
@@ -279,8 +310,14 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
         StartDate = _settings.GetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
         EndDate = _settings.GetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
+        SnapToFullMonths = _settings.GetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
         MaxPages = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
         MaxMatches = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
+
+        if (SnapToFullMonths)
+        {
+            NormalizeMonthRange();
+        }
     }
 
     private void SaveState()
@@ -288,7 +325,46 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
         _settings.SetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
         _settings.SetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
         _settings.SetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
+    }
+
+    private void NormalizeMonthRange()
+    {
+        if (_adjustingDates)
+        {
+            return;
+        }
+
+        try
+        {
+            _adjustingDates = true;
+
+            if (StartDate.HasValue)
+            {
+                var start = StartDate.Value;
+                var normalized = new DateTimeOffset(start.Year, start.Month, 1, 0, 0, 0, start.Offset);
+                if (normalized != StartDate.Value)
+                {
+                    StartDate = normalized;
+                }
+            }
+
+            if (EndDate.HasValue)
+            {
+                var end = EndDate.Value;
+                var lastDay = DateTime.DaysInMonth(end.Year, end.Month);
+                var normalized = new DateTimeOffset(end.Year, end.Month, lastDay, 0, 0, 0, end.Offset);
+                if (normalized != EndDate.Value)
+                {
+                    EndDate = normalized;
+                }
+            }
+        }
+        finally
+        {
+            _adjustingDates = false;
+        }
     }
 }
