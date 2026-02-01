@@ -105,6 +105,11 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         var downloadUrl = asset.Value.url;
 
         var installDirectory = GetInstallDirectory(tag, variant);
+        if (Directory.Exists(installDirectory))
+        {
+            Directory.Delete(installDirectory, recursive: true);
+        }
+
         Directory.CreateDirectory(installDirectory);
 
         var tempZipPath = Path.Combine(Path.GetTempPath(), $"stockfish_{tag}_{Guid.NewGuid():N}.zip");
@@ -332,4 +337,3 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 #endif
     }
 }
-

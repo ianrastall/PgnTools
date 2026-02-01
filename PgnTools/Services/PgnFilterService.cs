@@ -261,30 +261,33 @@ public sealed class PgnFilterService : IPgnFilterService
             return false;
         }
 
-        var sum = 0;
-        var count = 0;
+        var maxAvailable = int.MinValue;
         if (white.HasValue)
         {
-            sum += white.Value;
-            count++;
+            maxAvailable = Math.Max(maxAvailable, white.Value);
         }
 
         if (black.HasValue)
         {
-            sum += black.Value;
-            count++;
+            maxAvailable = Math.Max(maxAvailable, black.Value);
         }
 
-        var average = sum / Math.Max(1, count);
-
-        if (minElo.HasValue && average < minElo.Value)
+        if (minElo.HasValue && maxAvailable < minElo.Value)
         {
             return false;
         }
 
-        if (maxElo.HasValue && average > maxElo.Value)
+        if (maxElo.HasValue)
         {
-            return false;
+            if (white.HasValue && white.Value > maxElo.Value)
+            {
+                return false;
+            }
+
+            if (black.HasValue && black.Value > maxElo.Value)
+            {
+                return false;
+            }
         }
 
         return true;

@@ -158,8 +158,13 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                 {
                     throw;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (engine.HasExited)
+                    {
+                        throw new InvalidOperationException("UCI engine exited during analysis; aborting batch.", ex);
+                    }
+
                     // If analysis fails for a given game, preserve the original movetext
                     // and continue processing the rest of the file.
                 }
@@ -690,9 +695,28 @@ internal sealed class UciEngine : IDisposable
                 UseShellExecute = false,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 CreateNoWindow = true
             }
         };
+
+        // Drain stderr to avoid blocking if the engine writes warnings or errors.
+        _process.ErrorDataReceived += (_, _) => { };
+    }
+
+    public bool HasExited
+    {
+        get
+        {
+            try
+            {
+                return _process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -701,6 +725,8 @@ internal sealed class UciEngine : IDisposable
         {
             throw new InvalidOperationException("Failed to start UCI engine process.");
         }
+
+        _process.BeginErrorReadLine();
 
         await SendAsync("uci", cancellationToken);
         await WaitForTokenAsync("uciok", DefaultTimeout, cancellationToken);

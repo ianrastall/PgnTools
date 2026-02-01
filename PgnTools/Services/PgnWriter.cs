@@ -87,36 +87,78 @@ public class PgnWriter
 
     private static IEnumerable<string> WordWrap(string text, int maxLineLength)
     {
-        using var reader = new StringReader(text);
-        string? line;
-
-        while ((line = reader.ReadLine()) != null)
+        if (string.IsNullOrEmpty(text))
         {
-            var remaining = line.TrimEnd();
-            if (remaining.Length == 0)
+            return Array.Empty<string>();
+        }
+
+        var results = new List<string>();
+        var span = text.AsSpan();
+        var lineStart = 0;
+
+        for (var i = 0; i <= span.Length; i++)
+        {
+            if (i < span.Length && span[i] != '\n')
             {
-                yield return string.Empty;
                 continue;
             }
 
-            while (remaining.Length > maxLineLength)
+            var line = span.Slice(lineStart, i - lineStart);
+            line = TrimEndSpan(line);
+
+            if (line.Length == 0)
             {
-                var breakIndex = remaining.LastIndexOf(' ', maxLineLength);
-                if (breakIndex <= 0)
+                results.Add(string.Empty);
+            }
+            else
+            {
+                var remaining = line;
+                while (remaining.Length > maxLineLength)
                 {
-                    yield return remaining[..maxLineLength];
-                    remaining = remaining[maxLineLength..].TrimStart();
-                    continue;
+                    var window = remaining[..maxLineLength];
+                    var breakIndex = window.LastIndexOf(' ');
+                    if (breakIndex <= 0)
+                    {
+                        results.Add(window.ToString());
+                        remaining = TrimStartSpan(remaining[maxLineLength..]);
+                        continue;
+                    }
+
+                    results.Add(remaining[..breakIndex].ToString());
+                    remaining = TrimStartSpan(remaining[(breakIndex + 1)..]);
                 }
 
-                yield return remaining[..breakIndex];
-                remaining = remaining[(breakIndex + 1)..].TrimStart();
+                if (remaining.Length > 0)
+                {
+                    results.Add(remaining.ToString());
+                }
             }
 
-            if (remaining.Length > 0)
-            {
-                yield return remaining;
-            }
+            lineStart = i + 1;
         }
+
+        return results;
+    }
+
+    private static ReadOnlySpan<char> TrimStartSpan(ReadOnlySpan<char> span)
+    {
+        var start = 0;
+        while (start < span.Length && char.IsWhiteSpace(span[start]))
+        {
+            start++;
+        }
+
+        return start == 0 ? span : span[start..];
+    }
+
+    private static ReadOnlySpan<char> TrimEndSpan(ReadOnlySpan<char> span)
+    {
+        var end = span.Length - 1;
+        while (end >= 0 && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 }

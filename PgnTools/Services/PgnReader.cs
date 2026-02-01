@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,6 +11,8 @@ namespace PgnTools.Services;
 public partial class PgnReader
 {
     private const int BufferSize = 262144;
+    private const int MaxLineLength = 8192;
+    private const int MaxHeaderRegexLength = 2048;
 
     // GeneratedRegex already provides compile-time optimization; RegexOptions.Compiled is redundant.
     [GeneratedRegex(@"^\s*\[\s*(?<tag>[^\s\]]+)\s+(?<value>""(?:\\.|[^""])*""|'(?:\\.|[^'])*'|[^\]]*)\s*\]\s*$")]
@@ -125,6 +128,11 @@ public partial class PgnReader
 
                     lineBuffer.Clear();
                     continue;
+                }
+
+                if (lineBuffer.Length >= MaxLineLength)
+                {
+                    throw new InvalidDataException($"PGN line exceeds {MaxLineLength} characters.");
                 }
 
                 lineBuffer.Append(c);
@@ -392,12 +400,15 @@ public partial class PgnReader
         key = string.Empty;
         rawValue = string.Empty;
 
-        var match = HeaderRegex().Match(line);
-        if (match.Success)
+        if (line.Length <= MaxHeaderRegexLength)
         {
-            key = match.Groups["tag"].Value;
-            rawValue = TrimHeaderValue(match.Groups["value"].Value);
-            return true;
+            var match = HeaderRegex().Match(line);
+            if (match.Success)
+            {
+                key = match.Groups["tag"].Value;
+                rawValue = TrimHeaderValue(match.Groups["value"].Value);
+                return true;
+            }
         }
 
         return TryParseHeaderFallback(line, out key, out rawValue);
