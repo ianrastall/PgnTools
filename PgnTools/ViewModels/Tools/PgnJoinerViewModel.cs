@@ -224,7 +224,15 @@ public partial class PgnJoinerViewModel : BaseViewModel, IDisposable
     [RelayCommand]
     private void Cancel()
     {
-        _cancellationTokenSource?.Cancel();
+        var cts = _cancellationTokenSource;
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);

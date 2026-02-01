@@ -85,7 +85,7 @@ public partial class PgnReader
                 if (c == '\r')
                 {
                     if (TryReadLine(
-                        lineBuffer.ToString(),
+                        lineBuffer,
                         ref currentGame,
                         moveText,
                         ref inMoveSection,
@@ -108,7 +108,7 @@ public partial class PgnReader
                 if (c == '\n')
                 {
                     if (TryReadLine(
-                        lineBuffer.ToString(),
+                        lineBuffer,
                         ref currentGame,
                         moveText,
                         ref inMoveSection,
@@ -134,7 +134,7 @@ public partial class PgnReader
         if (lineBuffer.Length > 0)
         {
             if (TryReadLine(
-                lineBuffer.ToString(),
+                lineBuffer,
                 ref currentGame,
                 moveText,
                 ref inMoveSection,
@@ -158,7 +158,7 @@ public partial class PgnReader
     }
 
     private static bool TryReadLine(
-        string line,
+        StringBuilder lineBuffer,
         ref PgnGame? currentGame,
         StringBuilder moveText,
         ref bool inMoveSection,
@@ -168,10 +168,31 @@ public partial class PgnReader
         out PgnGame? completedGame)
     {
         completedGame = null;
+        if (lineBuffer.Length == 0)
+        {
+            if (inMoveSection)
+            {
+                if (inBraceComment || variationDepth > 0)
+                {
+                    moveText.AppendLine();
+                }
+                else if (currentGame != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                    completedGame = currentGame;
+                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
+                    return true;
+                }
+            }
 
-        var trimmed = line.Trim();
+            return false;
+        }
 
-        if (string.IsNullOrWhiteSpace(trimmed))
+        var line = lineBuffer.ToString();
+        var lineSpan = line.AsSpan();
+        var trimmedSpan = TrimSpan(lineSpan);
+
+        if (trimmedSpan.Length == 0)
         {
             if (inMoveSection)
             {
@@ -192,9 +213,10 @@ public partial class PgnReader
         }
 
         // Only treat as tag line when we're not deep in comments/variations.
-        var isTagLine = trimmed.StartsWith('[') && (!inMoveSection || (!inBraceComment && variationDepth == 0));
+        var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
         {
+            var trimmed = trimmedSpan.ToString();
             if (TryParseHeaderLine(trimmed, out var tagKey, out var rawValue))
             {
                 if (inMoveSection && currentGame != null)
@@ -226,8 +248,8 @@ public partial class PgnReader
             moveText.AppendLine();
         }
 
-        moveText.Append(line.TrimEnd());
-        UpdateMoveState(line.AsSpan(), ref inBraceComment, ref inLineComment, ref variationDepth);
+        moveText.Append(TrimEndSpan(lineSpan));
+        UpdateMoveState(lineSpan, ref inBraceComment, ref inLineComment, ref variationDepth);
         UpdateMoveState(LineBreak, ref inBraceComment, ref inLineComment, ref variationDepth);
         return false;
     }
@@ -335,6 +357,34 @@ public partial class PgnReader
         inBraceComment = false;
         inLineComment = false;
         variationDepth = 0;
+    }
+
+    private static ReadOnlySpan<char> TrimSpan(ReadOnlySpan<char> span)
+    {
+        var start = 0;
+        while (start < span.Length && char.IsWhiteSpace(span[start]))
+        {
+            start++;
+        }
+
+        var end = span.Length - 1;
+        while (end >= start && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return start > end ? ReadOnlySpan<char>.Empty : span.Slice(start, end - start + 1);
+    }
+
+    private static ReadOnlySpan<char> TrimEndSpan(ReadOnlySpan<char> span)
+    {
+        var end = span.Length - 1;
+        while (end >= 0 && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 
     private static bool TryParseHeaderLine(string line, out string key, out string rawValue)

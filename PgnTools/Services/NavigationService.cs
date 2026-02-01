@@ -70,8 +70,13 @@ public class NavigationService : INavigationService
         }
 
         var vmBeforeNavigation = Frame.GetPageViewModel();
+        var navigated = Frame.Navigate(pageType, parameter);
+        if (navigated && vmBeforeNavigation is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
 
-        return Frame.Navigate(pageType, parameter);
+        return navigated;
     }
 
     public bool GoBack()
@@ -81,7 +86,12 @@ public class NavigationService : INavigationService
             return false;
         }
 
+        var vmBeforeNavigation = Frame.GetPageViewModel();
         Frame.GoBack();
+        if (vmBeforeNavigation is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
         return true;
     }
 
