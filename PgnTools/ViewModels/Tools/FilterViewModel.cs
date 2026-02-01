@@ -31,7 +31,7 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
     private int _minElo;
 
     [ObservableProperty]
-    private int _maxElo;
+    private int _maxElo = 5000;
 
     [ObservableProperty]
     private bool _requireBothElos;

@@ -126,70 +126,96 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
 
-            using var engine = new UciEngine(engineFullPath);
-            await engine.StartAsync(cancellationToken);
+            UciEngine? engine = null;
+            var cancellationRegistration = default(CancellationTokenRegistration);
 
-            if (!string.IsNullOrWhiteSpace(tablebasePath))
+            async Task<UciEngine> StartEngineAsync()
             {
-                await engine.SetOptionAsync("SyzygyPath", tablebasePath, cancellationToken);
-            }
-
-            using var cancellationRegistration = cancellationToken.Register(engine.RequestAbort);
-
-            var processedGames = 0L;
-            var firstOutput = true;
-            progress?.Report(new AnalyzerProgress(0, totalGames, 0));
-
-            await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                processedGames++;
-
-                await engine.NewGameAsync(cancellationToken);
-
+                var newEngine = new UciEngine(engineFullPath);
                 try
                 {
-                    game.MoveText = await AnalyzeGameAsync(game, engine, depth, cancellationToken);
-                    cancellationToken.ThrowIfCancellationRequested();
-                    game.Headers["Annotator"] = "PgnTools";
-                    game.Headers["AnalysisDepth"] = depth.ToString();
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    if (engine.HasExited)
+                    await newEngine.StartAsync(cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(tablebasePath))
                     {
-                        throw new InvalidOperationException("UCI engine exited during analysis; aborting batch.", ex);
+                        await newEngine.SetOptionAsync("SyzygyPath", tablebasePath, cancellationToken);
                     }
 
-                    // If analysis fails for a given game, preserve the original movetext
-                    // and continue processing the rest of the file.
+                    cancellationRegistration.Dispose();
+                    cancellationRegistration = cancellationToken.Register(newEngine.RequestAbort);
+                    return newEngine;
                 }
-
-                if (!firstOutput)
+                catch
                 {
-                    await writer.WriteLineAsync();
+                    newEngine.Dispose();
+                    throw;
+                }
+            }
+
+            try
+            {
+                engine = await StartEngineAsync();
+
+                var processedGames = 0L;
+                var firstOutput = true;
+                progress?.Report(new AnalyzerProgress(0, totalGames, 0));
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    processedGames++;
+
+                    await engine.NewGameAsync(cancellationToken);
+
+                    try
+                    {
+                        game.MoveText = await AnalyzeGameAsync(game, engine, depth, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        game.Headers["Annotator"] = "PgnTools";
+                        game.Headers["AnalysisDepth"] = depth.ToString();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        if (engine.HasExited)
+                        {
+                            engine.Dispose();
+                            engine = await StartEngineAsync();
+                        }
+
+                        // If analysis fails for a given game, preserve the original movetext
+                        // and continue processing the rest of the file.
+                    }
+
+                    if (!firstOutput)
+                    {
+                        await writer.WriteLineAsync();
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                    firstOutput = false;
+
+                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                    progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
                 }
 
-                await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
-                firstOutput = false;
+                await writer.FlushAsync();
 
-                var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
-                progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
+                if (File.Exists(outputFullPath))
+                {
+                    File.Delete(outputFullPath);
+                }
+
+                File.Move(tempOutputPath, outputFullPath);
+                progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
             }
-
-            await writer.FlushAsync();
-
-            if (File.Exists(outputFullPath))
+            finally
             {
-                File.Delete(outputFullPath);
+                cancellationRegistration.Dispose();
+                engine?.Dispose();
             }
-
-            File.Move(tempOutputPath, outputFullPath);
-            progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
         }
         catch
         {
