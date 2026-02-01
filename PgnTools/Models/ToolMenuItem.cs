@@ -8,7 +8,17 @@ public record ToolMenuItem(
     string Name,
     string Description,
     string IconGlyph,
-    Type PageType);
+    Type PageType)
+{
+    public string? IconAssetRelativePath =>
+        ToolIconResolver.ResolveIconRelativePath(Key, Name);
+
+    public Uri? IconAssetUri =>
+        ToolIconResolver.ResolveIconUri(Key, Name);
+
+    public bool HasIconAsset =>
+        ToolIconResolver.ResolveIconRelativePath(Key, Name) is not null;
+}
 
 /// <summary>
 /// Tool registry containing all available tools.

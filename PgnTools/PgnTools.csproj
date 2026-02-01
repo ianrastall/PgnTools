@@ -51,9 +51,6 @@
         <Content Include="Assets\eco.pgn">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
-        <Content Include="Assets\list.txt">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </Content>
     </ItemGroup>
 
     <ItemGroup>
@@ -82,6 +79,22 @@
         <None Remove="Views\Tools\LichessToolsPage.xaml" />
         <None Remove="Views\Tools\Lc0DownloaderPage.xaml" />
         <None Remove="Views\Controls\ToolStatusBar.xaml" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Keep custom tool icon images in Assets available at runtime. -->
+        <None Update="Assets\**\*.png">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.ico">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.jpg">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.jpeg">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
     <ItemGroup>

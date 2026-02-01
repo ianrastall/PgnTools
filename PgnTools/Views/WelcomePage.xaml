@@ -89,9 +89,17 @@
                                 CommandParameter="{Binding}">
                             <StackPanel Spacing="10">
                                 <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <FontIcon Glyph="{Binding IconGlyph}"
-                                              Foreground="{StaticResource PrimaryBrush}"
-                                              FontSize="28"/>
+                                    <Grid Width="28" Height="28">
+                                        <Image Source="{Binding IconAssetUri}"
+                                               Width="28"
+                                               Height="28"
+                                               Stretch="Uniform"
+                                               Visibility="{Binding HasIconAsset, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                        <FontIcon Glyph="{Binding IconGlyph}"
+                                                  Foreground="{StaticResource PrimaryBrush}"
+                                                  FontSize="28"
+                                                  Visibility="{Binding HasIconAsset, Converter={StaticResource InverseBoolToVisibilityConverter}}"/>
+                                    </Grid>
                                     <TextBlock Text="{Binding Name}"
                                                FontSize="18"
                                                Style="{StaticResource BodyStrongTextBlockStyle}"/>

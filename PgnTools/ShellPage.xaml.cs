@@ -24,6 +24,7 @@ public sealed partial class ShellPage : Page
         ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
         _navigationService = navigationService ?? throw new System.ArgumentNullException(nameof(navigationService));
         this.InitializeComponent();
+        ApplyToolIconsFromAssets();
         
         // Set up navigation service with the content frame
         _navigationService.Frame = ContentFrame;
@@ -56,6 +57,29 @@ public sealed partial class ShellPage : Page
             {
                 ContentFrame.Navigate(tool.PageType);
             }
+        }
+    }
+
+    private void ApplyToolIconsFromAssets()
+    {
+        foreach (var item in NavView.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (item.Tag is not string tag)
+            {
+                continue;
+            }
+
+            var tool = ToolRegistry.GetTool(tag);
+            if (tool?.IconAssetUri == null)
+            {
+                continue;
+            }
+
+            item.Icon = new BitmapIcon
+            {
+                UriSource = tool.IconAssetUri,
+                ShowAsMonochrome = false
+            };
         }
     }
 }

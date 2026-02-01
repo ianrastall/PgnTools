@@ -52,6 +52,30 @@ public class BoolToVisibilityConverter : IValueConverter
 }
 
 /// <summary>
+/// Converts a boolean value to inverse Visibility.
+/// </summary>
+public class InverseBoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is bool boolValue)
+        {
+            return boolValue ? Visibility.Collapsed : Visibility.Visible;
+        }
+        return DependencyProperty.UnsetValue;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+    {
+        if (value is Visibility visibility)
+        {
+            return visibility != Visibility.Visible;
+        }
+        return DependencyProperty.UnsetValue;
+    }
+}
+
+/// <summary>
 /// Converts a string to Visibility (Visible when not null/whitespace).
 /// </summary>
 public class StringToVisibilityConverter : IValueConverter

@@ -18,7 +18,7 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
             <TextBlock Text="Lc0" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Download match PGNs from storage.lczero.org, tag them, and collate into monthly files."
+            <TextBlock Text="Build a single monthly Lc0 archive from training.lczero.org and save it as one PGN file."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -26,7 +26,20 @@
 
         <!-- Inputs -->
         <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
-            <TextBlock Text="Output Folder"
+            <TextBlock Text="Monthly Archive"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableArchives}"
+                      SelectedItem="{x:Bind ViewModel.SelectedArchive, Mode=TwoWay}"
+                      HorizontalAlignment="Stretch"/>
+
+            <TextBlock Text="Filters"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Exclude non-standard variants"
+                      IsChecked="{x:Bind ViewModel.ExcludeNonStandard, Mode=TwoWay}"/>
+            <CheckBox Content="Only checkmates"
+                      IsChecked="{x:Bind ViewModel.OnlyCheckmates, Mode=TwoWay}"/>
+
+            <TextBlock Text="Output File"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -35,48 +48,20 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBox Grid.Column="0"
-                         PlaceholderText="Select output folder..."
-                         Text="{x:Bind ViewModel.OutputFolderPath, Mode=OneWay}"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
                          IsReadOnly="True"
                          Margin="0,0,12,0"/>
 
                 <Button Grid.Column="1"
                         Content="Browse..."
-                        Command="{x:Bind ViewModel.SelectOutputFolderCommand}"
+                        Command="{x:Bind ViewModel.BrowseOutputCommand}"
                         Style="{StaticResource Action}"/>
             </Grid>
 
-            <TextBlock Text="Month Range (optional)"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
-                <CalendarDatePicker Header="Start Month"
-                                    Date="{x:Bind ViewModel.StartDate, Mode=TwoWay}"/>
-                <CalendarDatePicker Header="End Month"
-                                    Date="{x:Bind ViewModel.EndDate, Mode=TwoWay}"/>
-            </StackPanel>
-
-            <CheckBox Content="Snap to full months (1st to last day)"
-                      IsChecked="{x:Bind ViewModel.SnapToFullMonths, Mode=TwoWay}"/>
-
-            <CheckBox Content="Show advanced options"
-                      IsChecked="{x:Bind ViewModel.ShowAdvancedOptions, Mode=TwoWay}"/>
-
-            <StackPanel Spacing="12"
-                        Visibility="{x:Bind ViewModel.ShowAdvancedOptions, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
-                <TextBlock Text="Max Pages (optional)"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                <TextBox PlaceholderText="Leave blank to scan until empty"
-                         Text="{x:Bind ViewModel.MaxPages, Mode=TwoWay}"/>
-
-                <TextBlock Text="Max Matches (optional)"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                <TextBox PlaceholderText="Leave blank for all matches"
-                         Text="{x:Bind ViewModel.MaxMatches, Mode=TwoWay}"/>
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" Spacing="12">
-                <Button Content="Run"
-                        Command="{x:Bind ViewModel.RunCommand}"
+                <Button Content="Start Extraction"
+                        Command="{x:Bind ViewModel.StartCommand}"
                         Style="{StaticResource PrimaryAction}"/>
 
                 <Button Content="Cancel"

@@ -13,44 +13,47 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
-    private bool _adjustingDates;
+    private bool _outputPathSuggested;
+    private string _lastOutputFolder = string.Empty;
+    private static readonly DateOnly EarliestArchiveMonth = new(2018, 1, 1);
+    private static readonly System.Text.RegularExpressions.Regex ArchiveTokenRegex =
+        new(@"^\d{4}-\d{2}$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex SuggestedNameRegex =
+        new(@"^lc0-(\d{4}-\d{2}|0000-00)\.pgn$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     private const string SettingsPrefix = nameof(Lc0DownloaderViewModel);
 
     [ObservableProperty]
-    private string _outputFolderPath = string.Empty;
+    private List<string> _availableArchives = new();
 
     [ObservableProperty]
-    private string _outputFolderName = string.Empty;
+    private string? _selectedArchive;
 
     [ObservableProperty]
-    private DateTimeOffset? _startDate;
+    private bool _excludeNonStandard;
 
     [ObservableProperty]
-    private DateTimeOffset? _endDate;
+    private bool _onlyCheckmates;
 
     [ObservableProperty]
-    private bool _snapToFullMonths = true;
+    private string _outputFilePath = string.Empty;
 
     [ObservableProperty]
-    private bool _showAdvancedOptions;
-
-    [ObservableProperty]
-    private string _maxPages = string.Empty;
-
-    [ObservableProperty]
-    private string _maxMatches = string.Empty;
+    private string _outputFileName = string.Empty;
 
     [ObservableProperty]
     private bool _isRunning;
 
     [ObservableProperty]
-    private bool _isIndeterminate;
+    private bool _isIndeterminate = true;
 
     [ObservableProperty]
     private double _progressValue;
 
     [ObservableProperty]
-    private string _statusMessage = "Select output folder and download options";
+    private string _statusMessage = "Select archive and output file";
 
     public Lc0DownloaderViewModel(
         ILc0DownloaderService service,
@@ -62,71 +65,73 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _settings = settings;
         Title = "Lc0";
         StatusSeverity = InfoBarSeverity.Informational;
-        IsIndeterminate = true;
         LoadState();
+        LoadArchiveList();
     }
 
     [RelayCommand]
-    private async Task SelectOutputFolderAsync()
+    private async Task BrowseOutputAsync()
     {
         try
         {
-            var folder = await FilePickerHelper.PickFolderAsync(
+            var file = await FilePickerHelper.PickSaveFileAsync(
                 _windowService.WindowHandle,
-                $"{SettingsPrefix}.Picker.OutputFolder");
-            if (folder == null)
+                GetSuggestedFileName(),
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                _outputPathSuggested = false;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task StartAsync()
+    {
+        if (!TryParseArchiveMonth(SelectedArchive, out var archiveMonth))
+        {
+            StatusMessage = "Select a valid monthly archive.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            ApplySuggestedOutputPath();
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                await BrowseOutputAsync();
+            }
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
             }
+        }
 
-            var validation = await FileValidationHelper.ValidateWritableFolderAsync(folder.Path);
+        var outputDirectory = Path.GetDirectoryName(OutputFilePath) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            var validation = await FileValidationHelper.ValidateWritableFolderAsync(outputDirectory);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
             }
-
-            OutputFolderPath = folder.Path;
-            OutputFolderName = folder.Name;
-            StatusMessage = $"Selected output folder: {folder.Name}";
-            StatusSeverity = InfoBarSeverity.Informational;
         }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error selecting output folder: {ex.Message}";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
-    }
-
-    [RelayCommand(CanExecute = nameof(CanRun))]
-    private async Task RunAsync()
-    {
-        if (string.IsNullOrWhiteSpace(OutputFolderPath))
-        {
-            return;
-        }
-
-        var validation = await FileValidationHelper.ValidateWritableFolderAsync(OutputFolderPath);
-        if (!validation.Success)
-        {
-            StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
-            StatusSeverity = InfoBarSeverity.Error;
-            return;
-        }
-
-        var startDate = StartDate?.Date;
-        var endDate = EndDate?.Date;
-
-        if (startDate.HasValue && endDate.HasValue && startDate.Value > endDate.Value)
-        {
-            StatusMessage = "Start date must be before end date.";
-            StatusSeverity = InfoBarSeverity.Error;
-            return;
-        }
-
-        var maxPages = ParsePositiveInt(MaxPages);
-        var maxMatches = ParsePositiveInt(MaxMatches);
 
         if (!await _executionLock.WaitAsync(0))
         {
@@ -138,7 +143,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             IsRunning = true;
             IsIndeterminate = true;
             ProgressValue = 0;
-            StatusMessage = "Preparing Lc0 download...";
+            StatusMessage = $"Preparing Lc0 archive {archiveMonth:yyyy-MM}...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
@@ -165,11 +170,10 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
             var result = await _service.DownloadAndProcessAsync(
                 new Lc0DownloadOptions(
-                    OutputFolderPath,
-                    startDate,
-                    endDate,
-                    maxPages,
-                    maxMatches),
+                    OutputFilePath,
+                    archiveMonth,
+                    ExcludeNonStandard,
+                    OnlyCheckmates),
                 progress,
                 _cancellationTokenSource.Token);
 
@@ -178,27 +182,25 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
             if (result.TotalMatches == 0)
             {
-                StatusMessage = "No matches found for the selected range.";
+                StatusMessage = $"No matches found for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
             }
             else if (result.FailedMatches > 0)
             {
-                StatusMessage = $"Completed with errors. {result.ProcessedMatches:N0} processed, {result.FailedMatches:N0} failed.";
-                if (result.SkippedMatches > 0)
-                {
-                    StatusMessage += $" {result.SkippedMatches:N0} already processed.";
-                }
-
+                StatusMessage =
+                    $"Completed with errors. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0}/{result.TotalMatches:N0} matches; {result.FailedMatches:N0} failed.";
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else if (result.GamesKept == 0)
+            {
+                StatusMessage =
+                    $"No games matched the selected filters for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
             }
             else
             {
-                StatusMessage = $"Completed. {result.ProcessedMatches:N0} matches processed.";
-                if (result.SkippedMatches > 0)
-                {
-                    StatusMessage += $" {result.SkippedMatches:N0} already processed.";
-                }
-
+                StatusMessage =
+                    $"Completed. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0} matches.";
                 StatusSeverity = InfoBarSeverity.Success;
             }
 
@@ -226,21 +228,9 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         }
     }
 
-    private static int? ParsePositiveInt(string raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value > 0
-            ? value
-            : null;
-    }
-
     private bool CanRun() =>
         !IsRunning &&
-        !string.IsNullOrWhiteSpace(OutputFolderPath);
+        !string.IsNullOrWhiteSpace(SelectedArchive);
 
     [RelayCommand]
     private void Cancel()
@@ -251,38 +241,30 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
 
-    partial void OnOutputFolderPathChanged(string value)
+    partial void OnSelectedArchiveChanged(string? value)
     {
-        RunCommand.NotifyCanExecuteChanged();
-    }
-
-    partial void OnStartDateChanged(DateTimeOffset? value)
-    {
-        if (SnapToFullMonths)
+        if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
         {
-            NormalizeMonthRange();
+            ApplySuggestedOutputPath();
         }
+
+        StartCommand.NotifyCanExecuteChanged();
     }
 
-    partial void OnEndDateChanged(DateTimeOffset? value)
+    partial void OnOutputFilePathChanged(string value)
     {
-        if (SnapToFullMonths)
-        {
-            NormalizeMonthRange();
-        }
-    }
+        OutputFileName = string.IsNullOrWhiteSpace(value) ? string.Empty : Path.GetFileName(value);
 
-    partial void OnSnapToFullMonthsChanged(bool value)
-    {
-        if (value)
+        var directory = Path.GetDirectoryName(value);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            NormalizeMonthRange();
+            _lastOutputFolder = directory;
         }
     }
 
     partial void OnIsRunningChanged(bool value)
     {
-        RunCommand.NotifyCanExecuteChanged();
+        StartCommand.NotifyCanExecuteChanged();
     }
 
     public void Dispose()
@@ -302,67 +284,137 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
     private void LoadState()
     {
-        OutputFolderPath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
-        OutputFolderName = string.IsNullOrWhiteSpace(OutputFolderPath) ? string.Empty : Path.GetFileName(OutputFolderPath.TrimEnd(Path.DirectorySeparatorChar));
+        ExcludeNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        OnlyCheckmates = _settings.GetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _lastOutputFolder = _settings.GetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
 
-        StartDate = _settings.GetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
-        EndDate = _settings.GetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
-        SnapToFullMonths = _settings.GetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
-        MaxPages = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
-        MaxMatches = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
-
-        if (SnapToFullMonths)
+        var selected = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive);
+        if (!string.IsNullOrWhiteSpace(selected))
         {
-            NormalizeMonthRange();
+            SelectedArchive = selected;
+        }
+
+        _outputPathSuggested = string.IsNullOrWhiteSpace(OutputFilePath) || IsSuggestedFileName(OutputFileName);
+        if (_outputPathSuggested && !string.IsNullOrWhiteSpace(SelectedArchive))
+        {
+            ApplySuggestedOutputPath();
         }
     }
 
     private void SaveState()
     {
-        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
 
-    private void NormalizeMonthRange()
+    private void LoadArchiveList()
     {
-        if (_adjustingDates)
+        var utcNow = DateTime.UtcNow;
+        var latestArchiveMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
+        if (latestArchiveMonth < EarliestArchiveMonth)
+        {
+            AvailableArchives = new List<string>();
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        var archives = BuildAvailableArchives(latestArchiveMonth, EarliestArchiveMonth);
+        AvailableArchives = archives;
+
+        if (archives.Count == 0)
+        {
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedArchive) ||
+            !archives.Any(archive => string.Equals(archive, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedArchive = archives[0];
+        }
+    }
+
+    private static List<string> BuildAvailableArchives(DateOnly newestMonth, DateOnly oldestMonth)
+    {
+        var archives = new List<string>();
+        for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
+        {
+            archives.Add($"{month:yyyy-MM}");
+        }
+
+        return archives;
+    }
+
+    private void ApplySuggestedOutputPath()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedArchive))
         {
             return;
         }
 
-        try
+        var suggestedName = GetSuggestedFileName();
+        if (string.IsNullOrWhiteSpace(suggestedName))
         {
-            _adjustingDates = true;
-
-            if (StartDate.HasValue)
-            {
-                var start = StartDate.Value;
-                var normalized = new DateTimeOffset(start.Year, start.Month, 1, 0, 0, 0, start.Offset);
-                if (normalized != StartDate.Value)
-                {
-                    StartDate = normalized;
-                }
-            }
-
-            if (EndDate.HasValue)
-            {
-                var end = EndDate.Value;
-                var lastDay = DateTime.DaysInMonth(end.Year, end.Month);
-                var normalized = new DateTimeOffset(end.Year, end.Month, lastDay, 0, 0, 0, end.Offset);
-                if (normalized != EndDate.Value)
-                {
-                    EndDate = normalized;
-                }
-            }
+            return;
         }
-        finally
+
+        var directory = GetPreferredOutputFolder();
+        OutputFilePath = Path.Combine(directory, suggestedName);
+        _outputPathSuggested = true;
+    }
+
+    private string GetPreferredOutputFolder()
+    {
+        var directory = Path.GetDirectoryName(OutputFilePath);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            _adjustingDates = false;
+            return directory;
         }
+
+        if (!string.IsNullOrWhiteSpace(_lastOutputFolder))
+        {
+            return _lastOutputFolder;
+        }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    }
+
+    private string GetSuggestedFileName()
+    {
+        var monthToken = string.IsNullOrWhiteSpace(SelectedArchive) ? "0000-00" : SelectedArchive;
+        return $"lc0-{monthToken}.pgn";
+    }
+
+    private static bool TryParseArchiveMonth(string? archiveToken, out DateOnly month)
+    {
+        month = default;
+
+        if (string.IsNullOrWhiteSpace(archiveToken) || !ArchiveTokenRegex.IsMatch(archiveToken))
+        {
+            return false;
+        }
+
+        return DateOnly.TryParseExact(
+            archiveToken,
+            "yyyy-MM",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out month);
+    }
+
+    private static bool IsSuggestedFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        return SuggestedNameRegex.IsMatch(fileName);
     }
 }
-

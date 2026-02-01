@@ -70,7 +70,8 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
         new("Stockfish 16", new DateOnly(2023, 6, 30), new DateOnly(2024, 2, 23)),
         new("Stockfish 16.1", new DateOnly(2024, 2, 24), new DateOnly(2024, 9, 5)),
         new("Stockfish 17", new DateOnly(2024, 9, 6), new DateOnly(2025, 3, 29)),
-        new("Stockfish 17.1", new DateOnly(2025, 3, 30), new DateOnly(9999, 12, 31)),
+        new("Stockfish 17.1", new DateOnly(2025, 3, 30), new DateOnly(2026, 1, 30)),
+        new("Stockfish 18", new DateOnly(2026, 1, 31), new DateOnly(9999, 12, 31)),
     ];
 
     private readonly PgnReader _pgnReader;

@@ -14,6 +14,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
     private bool _outputPathSuggested;
     private LichessDbProgress? _lastProgress;
     private string _lastOutputFolder = string.Empty;
+    private static readonly DateOnly EarliestArchiveMonth = new(2013, 1, 1);
     private static readonly System.Text.RegularExpressions.Regex SuggestedNameRegex =
         new(@"^lichess-\d+-(\d{4}-\d{2}|0000-00)\.pgn$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase |
@@ -73,57 +74,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         Title = "Lichess DB Filter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
-        _ = LoadArchiveListAsync();
-    }
-
-    private async Task LoadArchiveListAsync()
-    {
-        try
-        {
-            var baseDir = AppContext.BaseDirectory;
-            var listPath = Path.Combine(baseDir, "Assets", "list.txt");
-            if (!File.Exists(listPath))
-            {
-                var fallback = Path.Combine("Assets", "list.txt");
-                if (File.Exists(fallback))
-                {
-                    listPath = fallback;
-                }
-            }
-
-            if (!File.Exists(listPath))
-            {
-                AvailableArchives = new List<string>();
-                StatusMessage = "Archive list not found (Assets/list.txt).";
-                StatusSeverity = InfoBarSeverity.Warning;
-                return;
-            }
-
-            var lines = await File.ReadAllLinesAsync(listPath);
-            var urls = lines
-                .Select(line => line.Trim())
-                .Where(line => line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            AvailableArchives = urls;
-
-            if (urls.Count == 0)
-            {
-                StatusMessage = "Archive list is empty.";
-                StatusSeverity = InfoBarSeverity.Warning;
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(SelectedArchive) || !urls.Contains(SelectedArchive))
-            {
-                SelectedArchive = urls.FirstOrDefault();
-            }
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error loading archive list: {ex.Message}";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
+        LoadArchiveList();
     }
 
     [RelayCommand]
@@ -341,6 +292,55 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
 
+    private void LoadArchiveList()
+    {
+        var latestArchiveMonth = GetLatestArchiveMonth();
+        if (latestArchiveMonth < EarliestArchiveMonth)
+        {
+            AvailableArchives = new List<string>();
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        var urls = BuildArchiveUrls(latestArchiveMonth, EarliestArchiveMonth);
+        AvailableArchives = urls;
+
+        if (urls.Count == 0)
+        {
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedArchive) ||
+            !urls.Any(url => string.Equals(url, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedArchive = urls[0];
+        }
+    }
+
+    private static DateOnly GetLatestArchiveMonth()
+    {
+        var utcNow = DateTime.UtcNow;
+        var firstOfCurrentMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
+        return firstOfCurrentMonth.AddMonths(-1);
+    }
+
+    private static List<string> BuildArchiveUrls(DateOnly newestMonth, DateOnly oldestMonth)
+    {
+        var urls = new List<string>();
+        for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
+        {
+            urls.Add(BuildArchiveUrl(month));
+        }
+
+        return urls;
+    }
+
+    private static string BuildArchiveUrl(DateOnly month) =>
+        $"https://database.lichess.org/standard/lichess_db_standard_rated_{month:yyyy-MM}.pgn.zst";
+
     private void ApplySuggestedOutputPath()
     {
         if (string.IsNullOrWhiteSpace(SelectedArchive))
@@ -479,4 +479,3 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         return $"{value:0.##} {units[unitIndex]}";
     }
 }
-
