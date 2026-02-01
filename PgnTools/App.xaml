@@ -43,7 +43,7 @@
 
             <Style x:Key="MyLabel" TargetType="TextBlock">
                 <Setter Property="Foreground"
-                        Value="{StaticResource AccentDarkBrush}" />
+                        Value="{ThemeResource TextFillColorPrimaryBrush}" />
             </Style>
 
             <Style x:Key="Action" TargetType="Button">

@@ -183,10 +183,7 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
-        if (_executionLock.CurrentCount > 0)
-        {
-            _executionLock.Dispose();
-        }
+        _executionLock.Dispose();
     }
 
     private void LoadState()
@@ -204,3 +201,4 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
     }
 }
+
