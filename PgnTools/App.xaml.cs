@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using PgnTools.Models;
+using PgnTools.ViewModels;
 
 namespace PgnTools;
 
@@ -54,52 +55,11 @@ public partial class App : Application
         services.AddSingleton<PgnWriter>();
         
         // Tool Services
-        services.AddTransient<IPgnInfoService, PgnInfoService>();
-        services.AddTransient<IPgnSplitterService, PgnSplitterService>();
-        services.AddTransient<IRemoveDoublesService, RemoveDoublesService>();
-        services.AddTransient<IPgnFilterService, PgnFilterService>();
-        services.AddTransient<IStockfishNormalizerService, StockfishNormalizerService>();
-        services.AddTransient<IPlycountAdderService, PlycountAdderService>();
-        services.AddTransient<ICategoryTaggerService, CategoryTaggerService>();
-        services.AddTransient<IEcoTaggerService, EcoTaggerService>();
-        services.AddTransient<ITourBreakerService, TourBreakerService>();
-        services.AddTransient<IChessAnalyzerService, ChessAnalyzerService>();
         services.AddSingleton<IStockfishDownloaderService, StockfishDownloaderService>();
-        services.AddTransient<ITwicDownloaderService, TwicDownloaderService>();
-        services.AddTransient<IPgnMentorDownloaderService, PgnMentorDownloaderService>();
-        services.AddTransient<IPgnJoinerService, PgnJoinerService>();
-        services.AddTransient<IPgnSorterService, PgnSorterService>();
-        services.AddTransient<IEloAdderService, EloAdderService>();
         services.AddSingleton<IRatingDatabase, EmbeddedRatingsDatabase>();
-        services.AddTransient<IChesscomDownloaderService, ChesscomDownloaderService>();
-        services.AddTransient<ILichessDownloaderService, LichessDownloaderService>();
-        services.AddTransient<ILichessDbDownloaderService, LichessDbDownloaderService>();
-        services.AddTransient<ILc0DownloaderService, Lc0DownloaderService>();
-        
-        // ViewModels
-        services.AddTransient<MainViewModel>();
-        services.AddTransient<WelcomeViewModel>();
-        services.AddTransient<ShellViewModel>();
-        services.AddTransient<PgnInfoViewModel>();
-        services.AddTransient<PgnSplitterViewModel>();
-        services.AddTransient<RemoveDoublesViewModel>();
-        services.AddTransient<FilterViewModel>();
-        services.AddTransient<StockfishNormalizerViewModel>();
-        services.AddTransient<PlycountAdderViewModel>();
-        services.AddTransient<CategoryTaggerViewModel>();
-        services.AddTransient<EcoTaggerViewModel>();
-        services.AddTransient<TourBreakerViewModel>();
-        services.AddTransient<ChessAnalyzerViewModel>();
-        services.AddTransient<TwicDownloaderViewModel>();
-        services.AddTransient<PgnMentorDownloaderViewModel>();
-        services.AddTransient<PgnJoinerViewModel>();
-        services.AddTransient<PgnSorterViewModel>();
-        services.AddTransient<EloAdderViewModel>();
-        services.AddTransient<ChesscomDownloaderViewModel>();
-        services.AddTransient<LichessDownloaderViewModel>();
-        services.AddTransient<LichessDbDownloaderViewModel>();
-        services.AddTransient<LichessToolsViewModel>();
-        services.AddTransient<Lc0DownloaderViewModel>();
+
+        RegisterToolServices(services);
+        RegisterViewModels(services);
 
         return services.BuildServiceProvider();
     }
@@ -147,5 +107,45 @@ public partial class App : Application
         }
 
         return app.Services.GetRequiredService<T>();
+    }
+
+    private static void RegisterToolServices(IServiceCollection services)
+    {
+        var assembly = typeof(App).Assembly;
+        var serviceTypes = assembly.GetTypes()
+            .Where(type => type.IsClass &&
+                           !type.IsAbstract &&
+                           type.Namespace == "PgnTools.Services" &&
+                           type.Name.EndsWith("Service", StringComparison.Ordinal));
+
+        foreach (var implementation in serviceTypes)
+        {
+            var interfaceType = implementation.GetInterface($"I{implementation.Name}");
+            if (interfaceType == null)
+            {
+                continue;
+            }
+
+            if (services.Any(descriptor => descriptor.ServiceType == interfaceType))
+            {
+                continue;
+            }
+
+            services.AddTransient(interfaceType, implementation);
+        }
+    }
+
+    private static void RegisterViewModels(IServiceCollection services)
+    {
+        var assembly = typeof(App).Assembly;
+        var viewModelTypes = assembly.GetTypes()
+            .Where(type => type.IsClass &&
+                           !type.IsAbstract &&
+                           type.IsSubclassOf(typeof(BaseViewModel)));
+
+        foreach (var viewModel in viewModelTypes)
+        {
+            services.AddTransient(viewModel);
+        }
     }
 }

@@ -26,33 +26,31 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="{TemplateBinding CornerRadius}">
-                            <Grid>
-                                <VisualStateManager.VisualStateGroups>
-                                    <VisualStateGroup x:Name="CommonStates">
-                                        <VisualState x:Name="Normal"/>
-                                        <VisualState x:Name="PointerOver">
-                                            <VisualState.Setters>
-                                                <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentBrush}"/>
-                                                <Setter Target="CardBorder.Background" Value="{StaticResource AccentLightBrushLow}"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                        <VisualState x:Name="Pressed">
-                                            <VisualState.Setters>
-                                                <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentDarkBrush}"/>
-                                                <Setter Target="CardBorder.Background" Value="{StaticResource AccentLightBrushLow}"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                        <VisualState x:Name="Disabled">
-                                            <VisualState.Setters>
-                                                <Setter Target="CardBorder.Opacity" Value="0.6"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                    </VisualStateGroup>
-                                </VisualStateManager.VisualStateGroups>
-                                <ContentPresenter Padding="{TemplateBinding Padding}"
-                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                            </Grid>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                            <Setter Target="CardBorder.Background" Value="{StaticResource AccentLightBrushLow}"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentDarkBrush}"/>
+                                            <Setter Target="CardBorder.Background" Value="{StaticResource AccentLightBrushLow}"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="CardBorder.Opacity" Value="0.6"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                            <ContentPresenter Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -71,40 +69,42 @@
                    Style="{StaticResource TitleTextBlockStyle}"
                    Margin="0,0,0,16"/>
 
-        <controls:GridView Grid.Row="1"
-                           ItemsSource="{Binding Tools}"
-                           SelectionMode="None"
-                           IsItemClickEnabled="False"
-                           ScrollViewer.VerticalScrollBarVisibility="Auto"
-                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <controls:GridView.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <controls:ItemsWrapGrid ItemWidth="260"
-                                            ItemHeight="140"
-                                            MaximumRowsOrColumns="0"
-                                            Orientation="Horizontal"/>
-                </ItemsPanelTemplate>
-            </controls:GridView.ItemsPanel>
-            <controls:GridView.ItemTemplate>
-                <DataTemplate>
-                    <Button Style="{StaticResource ToolCardButtonStyle}"
-                            Command="{Binding DataContext.OpenToolCommand, ElementName=Root}"
-                            CommandParameter="{Binding}">
-                        <StackPanel Spacing="8">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <FontIcon Glyph="{Binding IconGlyph}"
-                                          Foreground="{StaticResource PrimaryBrush}"
-                                          FontSize="20"/>
-                                <TextBlock Text="{Binding Name}"
-                                           Style="{StaticResource BodyStrongTextBlockStyle}"/>
+        <ScrollViewer Grid.Row="1"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto">
+            <controls:ItemsRepeater ItemsSource="{Binding Tools}">
+                <controls:ItemsRepeater.Layout>
+                    <controls:UniformGridLayout MinItemWidth="260"
+                                                MinItemHeight="160"
+                                                MinRowSpacing="16"
+                                                MinColumnSpacing="16"
+                                                ItemsJustification="SpaceEvenly"/>
+                </controls:ItemsRepeater.Layout>
+                <controls:ItemsRepeater.ItemTemplate>
+                    <DataTemplate>
+                        <Button Style="{StaticResource ToolCardButtonStyle}"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"
+                                Command="{Binding DataContext.OpenToolCommand, ElementName=Root}"
+                                CommandParameter="{Binding}">
+                            <StackPanel Spacing="10">
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                    <FontIcon Glyph="{Binding IconGlyph}"
+                                              Foreground="{StaticResource PrimaryBrush}"
+                                              FontSize="28"/>
+                                    <TextBlock Text="{Binding Name}"
+                                               FontSize="18"
+                                               Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding Description}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           FontSize="15"/>
                             </StackPanel>
-                            <TextBlock Text="{Binding Description}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </Button>
-                </DataTemplate>
-            </controls:GridView.ItemTemplate>
-        </controls:GridView>
+                        </Button>
+                    </DataTemplate>
+                </controls:ItemsRepeater.ItemTemplate>
+            </controls:ItemsRepeater>
+        </ScrollViewer>
     </Grid>
 </Page>

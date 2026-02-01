@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Net;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -99,8 +100,7 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
                 }
             }
 
-            if (File.Exists(outputFullPath)) File.Delete(outputFullPath);
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             status.Report("Download complete.");
         }
         finally

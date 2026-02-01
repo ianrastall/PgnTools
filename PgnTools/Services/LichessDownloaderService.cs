@@ -1,3 +1,5 @@
+using PgnTools.Helpers;
+
 namespace PgnTools.Services;
 
 public interface ILichessDownloaderService
@@ -75,12 +77,7 @@ public class LichessDownloaderService : ILichessDownloaderService
             throw;
         }
 
-        if (File.Exists(outputFullPath))
-        {
-            File.Delete(outputFullPath);
-        }
-
-        File.Move(tempOutputPath, outputFullPath);
+        FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
     }
 
     private static HttpClient CreateClient()

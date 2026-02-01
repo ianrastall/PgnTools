@@ -1,4 +1,5 @@
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -107,12 +108,7 @@ public class ChessUnannotatorService : IChessUnannotatorService
                 return;
             }
 
-            if (File.Exists(outputFullPath))
-            {
-                File.Delete(outputFullPath);
-            }
-
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report((games, $"Saved {games:N0} games."));
         }
         catch

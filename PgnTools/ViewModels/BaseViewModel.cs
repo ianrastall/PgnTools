@@ -1,86 +1,85 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 
-namespace PgnTools.ViewModels
+namespace PgnTools.ViewModels;
+
+public partial class BaseViewModel() : ObservableObject
 {
-    public partial class BaseViewModel() : ObservableObject
+    private Stopwatch? _statusStopwatch;
+
+    [ObservableProperty]
+    private string _title = string.Empty;
+
+    [ObservableProperty]
+    private InfoBarSeverity _statusSeverity = InfoBarSeverity.Informational;
+
+    [ObservableProperty]
+    private string _statusDetail = string.Empty;
+
+    protected void StartProgressTimer()
     {
-        private Stopwatch? _statusStopwatch;
+        _statusStopwatch = Stopwatch.StartNew();
+    }
 
-        [ObservableProperty]
-        private string _title = string.Empty;
+    protected void StopProgressTimer()
+    {
+        _statusStopwatch?.Stop();
+        _statusStopwatch = null;
+    }
 
-        [ObservableProperty]
-        private InfoBarSeverity _statusSeverity = InfoBarSeverity.Informational;
+    protected string BuildProgressDetail(
+        double? percent = null,
+        long? current = null,
+        long? total = null,
+        string unit = "items")
+    {
+        var parts = new List<string>();
 
-        [ObservableProperty]
-        private string _statusDetail = string.Empty;
-
-        protected void StartProgressTimer()
+        if (percent.HasValue)
         {
-            _statusStopwatch = Stopwatch.StartNew();
+            parts.Add($"{percent:0}%");
         }
 
-        protected void StopProgressTimer()
+        if (current.HasValue && total.HasValue && total.Value > 0)
         {
-            _statusStopwatch?.Stop();
-            _statusStopwatch = null;
+            parts.Add($"{current:N0}/{total:N0} {unit}");
+        }
+        else if (current.HasValue)
+        {
+            parts.Add($"{current:N0} {unit}");
         }
 
-        protected string BuildProgressDetail(
-            double? percent = null,
-            long? current = null,
-            long? total = null,
-            string unit = "items")
+        if (_statusStopwatch != null)
         {
-            var parts = new List<string>();
+            parts.Add($"Elapsed {_statusStopwatch.Elapsed:hh\\:mm\\:ss}");
 
-            if (percent.HasValue)
+            var elapsed = _statusStopwatch.Elapsed;
+            if (elapsed.TotalSeconds >= 1)
             {
-                parts.Add($"{percent:0}%");
-            }
-
-            if (current.HasValue && total.HasValue && total.Value > 0)
-            {
-                parts.Add($"{current:N0}/{total:N0} {unit}");
-            }
-            else if (current.HasValue)
-            {
-                parts.Add($"{current:N0} {unit}");
-            }
-
-            if (_statusStopwatch != null)
-            {
-                parts.Add($"Elapsed {_statusStopwatch.Elapsed:hh\\:mm\\:ss}");
-
-                var elapsed = _statusStopwatch.Elapsed;
-                if (elapsed.TotalSeconds >= 1)
+                if (current.HasValue)
                 {
-                    if (current.HasValue)
+                    var rate = current.Value / elapsed.TotalSeconds;
+                    if (rate > 0)
                     {
-                        var rate = current.Value / elapsed.TotalSeconds;
-                        if (rate > 0)
-                        {
-                            parts.Add($"{rate:0.0} {unit}/s");
+                        parts.Add($"{rate:0.0} {unit}/s");
 
-                            if (total.HasValue && total.Value > current.Value)
-                            {
-                                var remainingItems = total.Value - current.Value;
-                                var remainingSeconds = remainingItems / rate;
-                                parts.Add($"ETA {TimeSpan.FromSeconds(remainingSeconds):hh\\:mm\\:ss}");
-                            }
+                        if (total.HasValue && total.Value > current.Value)
+                        {
+                            var remainingItems = total.Value - current.Value;
+                            var remainingSeconds = remainingItems / rate;
+                            parts.Add($"ETA {TimeSpan.FromSeconds(remainingSeconds):hh\\:mm\\:ss}");
                         }
                     }
-                    else if (percent.HasValue && percent.Value is > 0 and < 100)
-                    {
-                        var totalSeconds = elapsed.TotalSeconds * 100 / percent.Value;
-                        var remainingSeconds = Math.Max(0, totalSeconds - elapsed.TotalSeconds);
-                        parts.Add($"ETA {TimeSpan.FromSeconds(remainingSeconds):hh\\:mm\\:ss}");
-                    }
+                }
+                else if (percent.HasValue && percent.Value is > 0 and < 100)
+                {
+                    var totalSeconds = elapsed.TotalSeconds * 100 / percent.Value;
+                    var remainingSeconds = Math.Max(0, totalSeconds - elapsed.TotalSeconds);
+                    parts.Add($"ETA {TimeSpan.FromSeconds(remainingSeconds):hh\\:mm\\:ss}");
                 }
             }
-
-            return string.Join(" • ", parts);
         }
+
+        return string.Join(" • ", parts);
     }
 }

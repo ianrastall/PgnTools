@@ -11,7 +11,7 @@ namespace PgnTools.Services;
 public partial class PgnReader
 {
     private const int BufferSize = 262144;
-    private const int MaxLineLength = 8192;
+    private const int MaxLineLength = 262144;
     private const int MaxHeaderRegexLength = 2048;
 
     // GeneratedRegex already provides compile-time optimization; RegexOptions.Compiled is redundant.

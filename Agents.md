@@ -1,9 +1,3 @@
-### Instructions
-
-Place the following content into a file named `Agents.md` in the root directory of your repository (`ianrastall/pgntools/PgnTools-.../`).
-
----
-
 # PgnTools AI Context & Development Guidelines
 
 ## 1. Role & Objective

@@ -1,4 +1,5 @@
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -121,12 +122,7 @@ public class CheckmateFilterService : ICheckmateFilterService
                 return new CheckmateFilterResult(0, 0);
             }
 
-            if (File.Exists(outputFullPath))
-            {
-                File.Delete(outputFullPath);
-            }
-
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
 
             return new CheckmateFilterResult(processed, kept);

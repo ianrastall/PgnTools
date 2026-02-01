@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Chess;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -202,12 +203,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
                 await writer.FlushAsync();
 
-                if (File.Exists(outputFullPath))
-                {
-                    File.Delete(outputFullPath);
-                }
-
-                File.Move(tempOutputPath, outputFullPath);
+                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                 progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
             }
             finally

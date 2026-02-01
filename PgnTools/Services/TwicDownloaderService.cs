@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net;
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -105,8 +106,7 @@ public class TwicDownloaderService : ITwicDownloaderService
                 return;
             }
 
-            if (File.Exists(outputFullPath)) File.Delete(outputFullPath);
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             status.Report($"Done. {issuesWritten:N0} issues saved to {Path.GetFileName(outputFullPath)}");
         }
         catch (OperationCanceledException)

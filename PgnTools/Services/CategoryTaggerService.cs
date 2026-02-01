@@ -1,4 +1,5 @@
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -139,12 +140,7 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
             await writer.FlushAsync();
 
-            if (File.Exists(outputFullPath))
-            {
-                File.Delete(outputFullPath);
-            }
-
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
         }
         catch

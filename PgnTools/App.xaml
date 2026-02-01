@@ -26,8 +26,6 @@
             <SolidColorBrush x:Key="AccentLightBrushLow" Color="{ThemeResource SystemAccentColorLight2}" Opacity="0.12" />
 
             <SolidColorBrush x:Key="PrimaryBrush" Color="{ThemeResource SystemAccentColor}" />
-            <SolidColorBrush x:Key="WhiteBrush" Color="White" />
-            <SolidColorBrush x:Key="BlackBrush" Color="Black" />
 
             <!-- Icons -->
             <x:String x:Key="IconApp">&#xE7C1;</x:String>
@@ -43,8 +41,6 @@
             <x:String x:Key="IconNormalize">&#xE8AC;</x:String>
             <x:String x:Key="IconTour">&#xE7EE;</x:String>
 
-            <x:Double x:Key="AppFontSize">14</x:Double>
-
             <Style x:Key="MyLabel" TargetType="TextBlock">
                 <Setter Property="Foreground"
                         Value="{StaticResource AccentDarkBrush}" />
@@ -52,7 +48,7 @@
 
             <Style x:Key="Action" TargetType="Button">
                 <Setter Property="FontSize"
-                        Value="{StaticResource AppFontSize}" />
+                        Value="{ThemeResource ControlContentThemeFontSize}" />
                 <Setter Property="Padding"
                         Value="14,10" />
             </Style>
@@ -69,7 +65,7 @@
                 <Setter Property="CornerRadius"
                         Value="8" />
                 <Setter Property="Foreground"
-                        Value="{StaticResource WhiteBrush}" />
+                        Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
             </Style>
         </ResourceDictionary>
     </Application.Resources>

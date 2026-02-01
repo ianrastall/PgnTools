@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -139,12 +140,7 @@ public class EloAdderService : IEloAdderService
                 return;
             }
 
-            if (File.Exists(outputFullPath))
-            {
-                File.Delete(outputFullPath);
-            }
-
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
         }
         catch

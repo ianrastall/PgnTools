@@ -1,4 +1,5 @@
 using System.IO;
+using PgnTools.Helpers;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -14,6 +15,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
     private const string SettingsPrefix = nameof(ChesscomDownloaderViewModel);
+    private const int BufferSize = 65536;
 
     [ObservableProperty]
     private string _username = string.Empty;
@@ -141,9 +143,9 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                     FileMode.Create,
                     FileAccess.Write,
                     FileShare.None,
-                    65536,
+                    BufferSize,
                     FileOptions.SequentialScan | FileOptions.Asynchronous))
-                using (var writer = new StreamWriter(outputStream, new System.Text.UTF8Encoding(false), 65536, leaveOpen: true))
+                using (var writer = new StreamWriter(outputStream, new System.Text.UTF8Encoding(false), BufferSize, leaveOpen: true))
                 {
                     for (var i = 0; i < archives.Count; i++)
                     {
@@ -186,12 +188,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                     await writer.FlushAsync();
                 }
 
-                if (File.Exists(outputFullPath))
-                {
-                    File.Delete(outputFullPath);
-                }
-
-                File.Move(tempOutputPath, outputFullPath);
+                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                 completedWrite = true;
             }
             finally

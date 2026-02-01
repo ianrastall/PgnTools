@@ -1,4 +1,5 @@
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -142,12 +143,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
                 await writer.FlushAsync().ConfigureAwait(false);
             }
 
-            if (File.Exists(outputFullPath))
-            {
-                File.Delete(outputFullPath);
-            }
-
-            File.Move(tempOutputPath, outputFullPath);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
         }
         catch
