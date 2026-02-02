@@ -210,8 +210,8 @@ public partial class PgnSorterViewModel(
         finally
         {
             IsRunning = false;
-            _cancellationTokenSource?.Dispose();
-            _cancellationTokenSource = null;
+            var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+            cts?.Dispose();
             _executionLock.Release();
             StopProgressTimer();
     }
@@ -257,10 +257,22 @@ public partial class PgnSorterViewModel(
     [RelayCommand]
     private void Cancel()
     {
-        _cancellationTokenSource?.Cancel();
-        StatusMessage = "Cancelling...";
-        StatusSeverity = InfoBarSeverity.Warning;
-        StatusDetail = BuildProgressDetail(ProgressValue);
+        var cts = _cancellationTokenSource;
+        if (cts == null || cts.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+            StatusMessage = "Cancelling...";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
     partial void OnInputFilePathChanged(string value)
     {
@@ -294,9 +306,12 @@ public partial class PgnSorterViewModel(
     }
         _disposed = true;
         SaveState();
-        _cancellationTokenSource?.Cancel();
-        _cancellationTokenSource?.Dispose();
-        _cancellationTokenSource = null;
+        var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+        if (cts != null)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
         _executionLock.Dispose();
     }
     private void LoadState()

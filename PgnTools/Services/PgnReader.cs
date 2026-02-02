@@ -2,7 +2,6 @@ using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace PgnTools.Services;
 
@@ -13,11 +12,6 @@ public partial class PgnReader
 {
     private const int BufferSize = 262144;
     private const int MaxLineLength = 262144;
-    private const int MaxHeaderRegexLength = 2048;
-
-    // GeneratedRegex already provides compile-time optimization; RegexOptions.Compiled is redundant.
-    [GeneratedRegex(@"^\s*\[\s*(?<tag>[^\s\]]+)\s+(?<value>""(?:\\.|[^""])*""|'(?:\\.|[^'])*'|[^\]]*)\s*\]\s*$")]
-    private static partial Regex HeaderRegex();
 
     public PgnReader()
     {
@@ -284,33 +278,59 @@ public partial class PgnReader
             return string.Empty;
         }
 
-        var builder = new StringBuilder(value.Length);
+        if (value.IndexOf('\\') < 0)
+        {
+            return value;
+        }
+
+        var length = 0;
         var escaping = false;
 
         foreach (var c in value)
         {
-            if (escaping)
-            {
-                builder.Append(c);
-                escaping = false;
-                continue;
-            }
-
-            if (c == '\\')
+            if (!escaping && c == '\\')
             {
                 escaping = true;
                 continue;
             }
 
-            builder.Append(c);
+            length++;
+            escaping = false;
         }
 
         if (escaping)
         {
-            builder.Append('\\');
+            length++;
         }
 
-        return builder.ToString();
+        return string.Create(length, value, (span, state) =>
+        {
+            var idx = 0;
+            var isEscaping = false;
+
+            foreach (var c in state)
+            {
+                if (isEscaping)
+                {
+                    span[idx++] = c;
+                    isEscaping = false;
+                    continue;
+                }
+
+                if (c == '\\')
+                {
+                    isEscaping = true;
+                    continue;
+                }
+
+                span[idx++] = c;
+            }
+
+            if (isEscaping && idx < span.Length)
+            {
+                span[idx] = '\\';
+            }
+        });
     }
 
     private static void UpdateMoveState(
@@ -412,37 +432,7 @@ public partial class PgnReader
 
     private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
     {
-        key = string.Empty;
-        rawValue = string.Empty;
-
-        if (line.Length <= MaxHeaderRegexLength)
-        {
-            var match = HeaderRegex().Match(line.ToString());
-            if (match.Success)
-            {
-                key = match.Groups["tag"].Value;
-                rawValue = TrimHeaderValue(match.Groups["value"].Value);
-                return true;
-            }
-        }
-
         return TryParseHeaderFallback(line, out key, out rawValue);
-    }
-
-    private static string TrimHeaderValue(string rawValue)
-    {
-        var trimmed = rawValue.Trim();
-        if (trimmed.Length >= 2)
-        {
-            var first = trimmed[0];
-            var last = trimmed[^1];
-            if ((first == '"' && last == '"') || (first == '\'' && last == '\''))
-            {
-                trimmed = trimmed[1..^1];
-            }
-        }
-
-        return trimmed;
     }
 
     private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
@@ -473,10 +463,11 @@ public partial class PgnReader
             return false;
         }
 
-        key = span[..nameLength].ToString();
+        var nameSpan = span[..nameLength];
         span = span[nameLength..].TrimStart();
         if (span.Length == 0)
         {
+            key = nameSpan.ToString();
             rawValue = string.Empty;
             return true;
         }
@@ -507,6 +498,7 @@ public partial class PgnReader
 
                 if (c == quote)
                 {
+                    key = nameSpan.ToString();
                     rawValue = builder.ToString();
                     return true;
                 }
@@ -514,6 +506,7 @@ public partial class PgnReader
                 builder.Append(c);
             }
 
+            key = nameSpan.ToString();
             rawValue = builder.ToString();
             return true;
         }
@@ -524,6 +517,7 @@ public partial class PgnReader
             closingIndex = span.Length;
         }
 
+        key = nameSpan.ToString();
         rawValue = span[..closingIndex].ToString().TrimEnd();
         return true;
     }

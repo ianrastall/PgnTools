@@ -146,7 +146,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                     cancellationToken.ThrowIfCancellationRequested();
                     processed++;
 
-                    var headers = new List<KeyValuePair<string, string>>(game.Headers.Count);
+                    var headers = new Dictionary<string, string>(game.Headers.Count, StringComparer.OrdinalIgnoreCase);
 
                     foreach (var header in game.Headers)
                     {
@@ -159,11 +159,11 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                                 tagsUpdated++;
                             }
 
-                            headers.Add(new KeyValuePair<string, string>(header.Key, normalized));
+                            headers[header.Key] = normalized;
                         }
                         else
                         {
-                            headers.Add(header);
+                            headers[header.Key] = header.Value;
                         }
                     }
 

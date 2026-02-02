@@ -24,10 +24,8 @@
         <Platforms>x64</Platforms>
         <PlatformTarget>x64</PlatformTarget>
         <ApplicationManifest>app.manifest</ApplicationManifest>
-        <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x64</RuntimeIdentifiers>
-        <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x64</RuntimeIdentifiers>
-        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x64</RuntimeIdentifier>
-        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x64</RuntimeIdentifier>
+        <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
         
         <!-- Allow unsafe code for WinRT interop -->
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
