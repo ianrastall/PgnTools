@@ -51,6 +51,12 @@
         <Content Include="Assets\eco.pgn">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
+        <Content Include="Assets\elegance-distributions.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+        <Content Include="Assets\elegance-goldens.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
     </ItemGroup>
 
     <ItemGroup>
@@ -59,6 +65,7 @@
         <None Remove="Views\Tools\PgnInfoPage.xaml" />
         <None Remove="Views\Tools\CategoryTaggerPage.xaml" />
         <None Remove="Views\Tools\EcoTaggerPage.xaml" />
+        <None Remove="Views\Tools\ElegancePage.xaml" />
         <None Remove="Views\Tools\FilterPage.xaml" />
         <None Remove="Views\Tools\ChessAnalyzerPage.xaml" />
         <None Remove="Views\Tools\ChessUnannotatorPage.xaml" />
@@ -118,6 +125,9 @@
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\EcoTaggerPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\ElegancePage.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\FilterPage.xaml">

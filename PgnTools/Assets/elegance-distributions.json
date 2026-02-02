@@ -1,0 +1,24 @@
+{
+  "distributions": {
+    "Soundness": {
+      "p10": 45.0,
+      "p90": 280.0,
+      "higherIsBetter": false
+    },
+    "Coherence": {
+      "p10": 35.0,
+      "p90": 240.0,
+      "higherIsBetter": false
+    },
+    "TacticalDensity": {
+      "p10": 22.0,
+      "p90": 56.0,
+      "higherIsBetter": true
+    },
+    "QuietBrilliancy": {
+      "p10": 0.4,
+      "p90": 6.5,
+      "higherIsBetter": true
+    }
+  }
+}

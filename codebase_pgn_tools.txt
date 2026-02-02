@@ -1,5 +1,5 @@
 # PgnTools codebase snapshot
-# Generated: 2026-02-01 14:29:08
+# Generated: 2026-02-01 23:52:34
 # Root: D:\GitHub\PgnTools
 # Scope: PgnTools source + selected text assets (eco.pgn, list.txt) + build/workflow files
 
@@ -461,88 +461,6 @@ FodyWeavers.xsd
 *.sln.iml
 ===== END: .gitignore =====
 
-===== BEGIN: Agents.md =====
-# PgnTools AI Context & Development Guidelines
-
-## 1. Role & Objective
-
-You are a **Senior .NET 10 Architect** and **Chess Domain Expert**. You are assisting in the development of **PgnTools**, a high-performance WinUI 3 desktop application for managing Portable Game Notation (PGN) files.
-
-**Primary Goals:**
-
-1. **Performance:** Zero-allocation parsing where possible. The app must handle multi-gigabyte PGN files without freezing the UI or exhausting memory.
-2. **Modernity:** Utilize strict C# 14 and .NET 10 features.
-3. **Compliance:** Strict adherence to the PGN Specification (Standard).
-
-## 2. Tech Stack & Architecture
-
-* **Framework:** .NET 10 (Preview/Latest)
-* **UI Framework:** WinUI 3 (Windows App SDK)
-* **Language:** C# 14
-* **MVVM Library:** `CommunityToolkit.Mvvm` (Source Generators)
-* **Dependency Injection:** `Microsoft.Extensions.DependencyInjection`
-
-## 3. Coding Standards & Patterns
-
-### A. MVVM (Model-View-ViewModel)
-
-* **Strict Separation:** Logic belongs in ViewModels, not Code-Behind (`.xaml.cs`).
-* **Source Generators:** Use `[ObservableProperty]` and `[RelayCommand]` attributes rather than manual implementation of `INotifyPropertyChanged`.
-* **Navigation:** Use the `NavigationService` pattern defined in `PgnTools/Services/NavigationService.cs`.
-
-### B. WinUI 3 & XAML
-
-* **Theming (CRITICAL):**
-* NEVER hardcode colors (e.g., `Red`, `#000000`).
-* ALWAYS use `ThemeResource` brushes (e.g., `ApplicationPageBackgroundThemeBrush`, `SystemControlBackgroundBaseLowBrush`) to support **Dark Mode** and **High Contrast** automatically.
-
-
-* **Controls:** Prefer modern WinUI controls (`ItemsRepeater`, `InfoBar`, `NavigationView`) over legacy wrappers.
-
-### C. C# 14 & .NET 10 Guidelines
-
-* **Primary Constructors:** Use primary constructors for dependency injection in classes.
-```csharp
-// DO THIS
-public partial class GameViewModel(IGameService gameService) : ObservableObject { ... }
-
-```
-
-
-* **Pattern Matching:** Use list patterns and recursive patterns for parsing logic.
-* **File-Scoped Namespaces:** Enforce file-scoped namespaces to reduce nesting.
-
-## 4. Domain Logic: PGN Parsing & Chess
-
-* **Streaming First:**
-* **NEVER** read an entire PGN file into a `string` or `byte[]`.
-* Use `System.IO.Pipelines` or `FileStream` with small buffers.
-* Implement state-machine parsers that emit games one by one (yield return).
-
-
-* **PGN Standards:**
-* Respect the **Seven Tag Roster** order.
-* Handle recursive annotation variations (RAV) `(...)` and numeric annotation glyphs (NAG) `$1` correctly.
-* Quotes in tag values must be escaped strictly according to the standard.
-
-
-* **Engine Integration:** When interacting with UCI engines (Stockfish/Lc0), use asynchronous process management (`Process` class) and non-blocking I/O redirects.
-
-## 5. Performance Constraints
-
-* **UI Thread:** Heavy operations (parsing, filtering, engine analysis) must run on background threads (Task.Run) and report progress via `IProgress<T>`.
-* **Memory:** Utilize `Span<T>` and `Memory<T>` for string manipulation during parsing to avoid Large Object Heap (LOH) fragmentation.
-
-## 6. Project Structure References
-
-* **ViewModels:** `PgnTools/ViewModels/`
-* **Views:** `PgnTools/Views/`
-* **Services:** `PgnTools/Services/`
-* **Models:** `PgnTools/Models/`
-
-When generating code, always verify it compiles against the .NET 10 preview SDK and aligns with the strict types defined in `PgnTools/Models/`.
-===== END: Agents.md =====
-
 ===== BEGIN: generate_codebase_dump.ps1 =====
 [CmdletBinding()]
 param(
@@ -770,6 +688,7 @@ SOFTWARE.
             <!-- Converters -->
             <converters:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
             <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+            <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter"/>
             <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
             
             <!-- Colors -->
@@ -21877,165 +21796,6 @@ public partial class App : Application
 1. d4 Nf6 2. c4 g6 3. Nc3 Bg7 4. e4 d6 5. Nf3 O-O 6. Be2 e5 7. O-O Nc6 8. d5 Ne7 9. Ne1 Nd7 10. f3 f5 *
 ===== END: PgnTools/Assets/eco.pgn =====
 
-===== BEGIN: PgnTools/Assets/list.txt =====
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2024-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2023-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2022-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2021-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2020-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2019-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2018-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2017-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2016-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2015-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2014-01.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-12.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-11.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-10.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-09.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-08.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-07.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-06.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-05.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-04.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-03.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-02.pgn.zst
-https://database.lichess.org/standard/lichess_db_standard_rated_2013-01.pgn.zst
-===== END: PgnTools/Assets/list.txt =====
-
 ===== BEGIN: PgnTools/Converters/Converters.cs =====
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Data;
@@ -22085,6 +21845,30 @@ public class BoolToVisibilityConverter : IValueConverter
         if (value is Visibility visibility)
         {
             return visibility == Visibility.Visible;
+        }
+        return DependencyProperty.UnsetValue;
+    }
+}
+
+/// <summary>
+/// Converts a boolean value to inverse Visibility.
+/// </summary>
+public class InverseBoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is bool boolValue)
+        {
+            return boolValue ? Visibility.Collapsed : Visibility.Visible;
+        }
+        return DependencyProperty.UnsetValue;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language)
+    {
+        if (value is Visibility visibility)
+        {
+            return visibility != Visibility.Visible;
         }
         return DependencyProperty.UnsetValue;
     }
@@ -22296,6 +22080,8 @@ namespace PgnTools.Helpers;
 
 public static class FileReplacementHelper
 {
+    private const int MaxReplaceAttempts = 6;
+
     public static void ReplaceFile(string tempFilePath, string destinationPath)
     {
         if (string.IsNullOrWhiteSpace(tempFilePath))
@@ -22318,14 +22104,43 @@ public static class FileReplacementHelper
             Directory.CreateDirectory(directory);
         }
 
-        try
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
         {
-            File.Replace(tempFilePath, destinationPath, null);
+            try
+            {
+                if (File.Exists(destinationPath))
+                {
+                    File.Replace(tempFilePath, destinationPath, null);
+                }
+                else
+                {
+                    File.Move(tempFilePath, destinationPath);
+                }
+
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                // Destination does not exist yet, so fallback to a move.
+                File.Move(tempFilePath, destinationPath);
+                return;
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
         }
-        catch (FileNotFoundException)
-        {
-            File.Move(tempFilePath, destinationPath);
-        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
     }
 }
 ===== END: PgnTools/Helpers/FileReplacementHelper.cs =====
@@ -22481,6 +22296,127 @@ public static class PgnHeaderExtensions
 }
 ===== END: PgnTools/Helpers/PgnHeaderExtensions.cs =====
 
+===== BEGIN: PgnTools/Helpers/ToolIconResolver.cs =====
+using System.Collections.Concurrent;
+using System.Text;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Resolves optional per-tool icon images from Assets with a filename convention.
+/// </summary>
+public static class ToolIconResolver
+{
+    private static readonly string[] Extensions = [".png", ".ico", ".jpg", ".jpeg"];
+    private static readonly ConcurrentDictionary<string, string> Cache = new(StringComparer.OrdinalIgnoreCase);
+
+    public static Uri? ResolveIconUri(string toolKey, string toolName)
+    {
+        var relativePath = ResolveIconRelativePath(toolKey, toolName);
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return null;
+        }
+
+        return new Uri(ToAbsolutePath(relativePath), UriKind.Absolute);
+    }
+
+    public static string? ResolveIconRelativePath(string toolKey, string toolName)
+    {
+        var cacheKey = $"{toolKey}|{toolName}";
+        var cached = Cache.GetOrAdd(cacheKey, _ => ResolveIconRelativePathCore(toolKey, toolName) ?? string.Empty);
+        return string.IsNullOrWhiteSpace(cached) ? null : cached;
+    }
+
+    private static string? ResolveIconRelativePathCore(string toolKey, string toolName)
+    {
+        var tokens = BuildCandidateTokens(toolKey, toolName);
+        foreach (var token in tokens)
+        {
+            foreach (var extension in Extensions)
+            {
+                var fileName = $"{token}{extension}";
+                foreach (var folder in GetCandidateFolders())
+                {
+                    var relativePath = $"{folder}/{fileName}";
+                    if (File.Exists(ToAbsolutePath(relativePath)))
+                    {
+                        return relativePath;
+                    }
+                }
+
+                foreach (var prefixed in GetPrefixedFileNames(token, extension))
+                {
+                    foreach (var folder in GetCandidateFolders())
+                    {
+                        var relativePath = $"{folder}/{prefixed}";
+                        if (File.Exists(ToAbsolutePath(relativePath)))
+                        {
+                            return relativePath;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> GetCandidateFolders()
+    {
+        yield return "Assets/Icons";
+        yield return "Assets";
+    }
+
+    private static IEnumerable<string> GetPrefixedFileNames(string token, string extension)
+    {
+        yield return $"icon-{token}{extension}";
+        yield return $"{token}-icon{extension}";
+    }
+
+    private static HashSet<string> BuildCandidateTokens(string toolKey, string toolName)
+    {
+        var tokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            toolKey,
+            toolName,
+            SanitizeToken(toolKey),
+            SanitizeToken(toolName),
+            toolKey.ToLowerInvariant(),
+            SanitizeToken(toolName).ToLowerInvariant()
+        };
+
+        tokens.RemoveWhere(string.IsNullOrWhiteSpace);
+        return tokens;
+    }
+
+    private static string SanitizeToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ToAbsolutePath(string relativePath)
+    {
+        var localPath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+        return Path.Combine(AppContext.BaseDirectory, localPath);
+    }
+}
+===== END: PgnTools/Helpers/ToolIconResolver.cs =====
+
 ===== BEGIN: PgnTools/Imports.cs =====
 global using System.Collections.ObjectModel;
 global using System.IO;
@@ -22631,7 +22567,17 @@ public record ToolMenuItem(
     string Name,
     string Description,
     string IconGlyph,
-    Type PageType);
+    Type PageType)
+{
+    public string? IconAssetRelativePath =>
+        ToolIconResolver.ResolveIconRelativePath(Key, Name);
+
+    public Uri? IconAssetUri =>
+        ToolIconResolver.ResolveIconUri(Key, Name);
+
+    public bool HasIconAsset =>
+        ToolIconResolver.ResolveIconRelativePath(Key, Name) is not null;
+}
 
 /// <summary>
 /// Tool registry containing all available tools.
@@ -22773,7 +22719,10 @@ public static class ToolRegistry
         <Content Include="Assets\eco.pgn">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
-        <Content Include="Assets\list.txt">
+        <Content Include="Assets\elegance-distributions.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+        <Content Include="Assets\elegance-goldens.json">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
@@ -22784,6 +22733,7 @@ public static class ToolRegistry
         <None Remove="Views\Tools\PgnInfoPage.xaml" />
         <None Remove="Views\Tools\CategoryTaggerPage.xaml" />
         <None Remove="Views\Tools\EcoTaggerPage.xaml" />
+        <None Remove="Views\Tools\ElegancePage.xaml" />
         <None Remove="Views\Tools\FilterPage.xaml" />
         <None Remove="Views\Tools\ChessAnalyzerPage.xaml" />
         <None Remove="Views\Tools\ChessUnannotatorPage.xaml" />
@@ -22807,6 +22757,22 @@ public static class ToolRegistry
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Keep custom tool icon images in Assets available at runtime. -->
+        <None Update="Assets\**\*.png">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.ico">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.jpg">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="Assets\**\*.jpeg">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Microsoft.WindowsAppSDK" />
         <PackageReference Include="Microsoft.Web.WebView2" />
         <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
@@ -22827,6 +22793,9 @@ public static class ToolRegistry
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\EcoTaggerPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\ElegancePage.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\FilterPage.xaml">
@@ -23736,7 +23705,8 @@ public interface IChessAnalyzerService
         int depth,
         string? tablebasePath,
         IProgress<AnalyzerProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false);
 }
 
 public readonly record struct AnalyzerProgress(long ProcessedGames, long TotalGames, double Percent);
@@ -23765,6 +23735,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
     private readonly PgnWriter _pgnWriter;
 
     private readonly record struct PgnToken(string Text, bool IsMove, string? San);
+    private readonly record struct AnalyzedGameResult(string MoveText, EleganceScore? Elegance);
 
     public ChessAnalyzerService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
@@ -23779,7 +23750,8 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         int depth,
         string? tablebasePath,
         IProgress<AnalyzerProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false)
     {
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
@@ -23837,16 +23809,8 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
         try
         {
-            await using var outputStream = new FileStream(
-                tempOutputPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-
-            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-
+            var processedGames = 0L;
+            
             UciEngine? engine = null;
             var cancellationRegistration = default(CancellationTokenRegistration);
 
@@ -23874,54 +23838,71 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             try
             {
-                engine = await StartEngineAsync();
-
-                var processedGames = 0L;
-                var firstOutput = true;
-                progress?.Report(new AnalyzerProgress(0, totalGames, 0));
-
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                await using (var outputStream = new FileStream(
+                    tempOutputPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    BufferSize,
+                    FileOptions.SequentialScan | FileOptions.Asynchronous))
+                using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    processedGames++;
+                    engine = await StartEngineAsync();
 
-                    try
+                    var firstOutput = true;
+                    progress?.Report(new AnalyzerProgress(0, totalGames, 0));
+
+                    await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
                     {
-                        await engine.NewGameAsync(cancellationToken);
-                        game.MoveText = await AnalyzeGameAsync(game, engine, depth, cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
-                        game.Headers["Annotator"] = "PgnTools";
-                        game.Headers["AnalysisDepth"] = depth.ToString();
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception)
-                    {
-                        if (engine.HasExited)
+                        processedGames++;
+
+                        try
                         {
-                            engine.Dispose();
-                            engine = await StartEngineAsync();
+                            await engine.NewGameAsync(cancellationToken);
+                            var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken);
+                            game.MoveText = analysis.MoveText;
+                            cancellationToken.ThrowIfCancellationRequested();
+                            game.Headers["Annotator"] = "PgnTools";
+                            game.Headers["AnalysisDepth"] = depth.ToString();
+
+                            if (addEleganceTags && analysis.Elegance.HasValue)
+                            {
+                                var elegance = analysis.Elegance.Value;
+                                game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
+                                game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception)
+                        {
+                            if (engine.HasExited)
+                            {
+                                engine.Dispose();
+                                engine = await StartEngineAsync();
+                            }
+
+                            // If analysis fails for a given game, preserve the original movetext
+                            // and continue processing the rest of the file.
                         }
 
-                        // If analysis fails for a given game, preserve the original movetext
-                        // and continue processing the rest of the file.
+                        if (!firstOutput)
+                        {
+                            await writer.WriteLineAsync();
+                        }
+
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        firstOutput = false;
+
+                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
                     }
 
-                    if (!firstOutput)
-                    {
-                        await writer.WriteLineAsync();
-                    }
-
-                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
-                    firstOutput = false;
-
-                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
-                    progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
+                    await writer.FlushAsync();
                 }
-
-                await writer.FlushAsync();
 
                 FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                 progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
@@ -23973,19 +23954,26 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         "*"
     ];
 
-    private async Task<string> AnalyzeGameAsync(PgnGame game, UciEngine engine, int depth, CancellationToken cancellationToken)
+    private async Task<AnalyzedGameResult> AnalyzeGameAsync(
+        PgnGame game,
+        UciEngine engine,
+        int depth,
+        bool addEleganceTags,
+        CancellationToken cancellationToken)
     {
         var board = CreateBoardFromHeaders(game.Headers);
         var tokens = TokenizeMoveTextPreserving(game.MoveText);
 
         if (tokens.Count == 0 || tokens.TrueForAll(token => !token.IsMove))
         {
-            return game.MoveText;
+            return new AnalyzedGameResult(game.MoveText, null);
         }
 
         var builder = new StringBuilder(game.MoveText.Length + tokens.Count * 24);
         var scoreBefore = await engine.AnalyzeAsync(board.ToFen(), depth, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
+
+        var metrics = addEleganceTags ? new RunningEleganceMetrics() : default;
 
         foreach (var token in tokens)
         {
@@ -24002,8 +23990,16 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                 throw new InvalidOperationException($"Unable to parse move token: {token.Text}");
             }
 
+            var moverSide = board.Turn;
+            var san = token.San;
+            var hasCapture = san.IndexOf('x') >= 0;
+            var hasCheck = san.IndexOf('+') >= 0;
+            var hasMate = san.IndexOf('#') >= 0;
+            var hasPromotion = san.IndexOf('=') >= 0;
+            var isQuiet = !hasCapture && !hasCheck && !hasMate && !hasPromotion;
+
             // Apply the move. If this throws, the caller will preserve original movetext.
-            board.Move(token.San);
+            board.Move(san);
 
             var scoreAfter = await engine.AnalyzeAsync(board.ToFen(), depth, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
@@ -24016,6 +24012,66 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             var annotatedMove = BuildAnnotatedMove(token.Text, nag, evalText);
             builder.Append(annotatedMove);
+
+            if (addEleganceTags)
+            {
+                metrics.PlyCount++;
+                metrics.EvaluatedPlyCount++;
+
+                if (hasCapture || hasCheck || hasMate || hasPromotion)
+                {
+                    metrics.ForcingMoveCount++;
+                }
+
+                if (deltaCp <= BlunderThresholdCp)
+                {
+                    metrics.BlunderCount++;
+                }
+                else if (deltaCp <= MistakeThresholdCp)
+                {
+                    metrics.MistakeCount++;
+                }
+                else if (deltaCp <= InaccuracyThresholdCp)
+                {
+                    metrics.DubiousCount++;
+                }
+
+                if (isQuiet && deltaCp >= 150)
+                {
+                    metrics.QuietImprovementCount++;
+                }
+
+                var evalWhiteCp = afterWhite.Centipawns;
+                if (metrics.PreviousEvalWhiteCp.HasValue)
+                {
+                    metrics.SwingAbsSum += Math.Abs(evalWhiteCp - metrics.PreviousEvalWhiteCp.Value);
+                    metrics.SwingCount++;
+                }
+
+                metrics.PreviousEvalWhiteCp = evalWhiteCp;
+
+                metrics.MoverDeltaSum += deltaCp;
+                metrics.MoverDeltaSquareSum += deltaCp * (double)deltaCp;
+                metrics.MoverDeltaCount++;
+
+                var evalForMoverSide = moverSide == PieceColor.White ? evalWhiteCp : -evalWhiteCp;
+                if (moverSide == PieceColor.White)
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.WhiteLastEval,
+                        ref metrics.WhitePreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+                else
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.BlackLastEval,
+                        ref metrics.BlackPreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+            }
 
             // After the move, the engine evaluation is from the perspective of the
             // next side to move, which is exactly the "before" score for the next ply.
@@ -24036,7 +24092,41 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             }
         }
 
-        return builder.ToString();
+        EleganceScore? elegance = null;
+        if (addEleganceTags && metrics.PlyCount > 0)
+        {
+            var forcingPercent = metrics.PlyCount > 0
+                ? metrics.ForcingMoveCount * 100d / metrics.PlyCount
+                : 0d;
+
+            var averageAbsSwing = metrics.SwingCount > 0
+                ? metrics.SwingAbsSum / metrics.SwingCount
+                : 350d;
+
+            var evalStdDev = 220d;
+            if (metrics.MoverDeltaCount > 0)
+            {
+                var mean = metrics.MoverDeltaSum / metrics.MoverDeltaCount;
+                var variance = (metrics.MoverDeltaSquareSum / metrics.MoverDeltaCount) - (mean * mean);
+                evalStdDev = Math.Sqrt(Math.Max(0d, variance));
+            }
+
+            var eleganceMetrics = new EleganceEvaluationMetrics(
+                metrics.PlyCount,
+                metrics.EvaluatedPlyCount,
+                forcingPercent,
+                metrics.QuietImprovementCount,
+                metrics.TrendBreakCount,
+                metrics.BlunderCount,
+                metrics.MistakeCount,
+                metrics.DubiousCount,
+                averageAbsSwing,
+                evalStdDev);
+
+            elegance = EleganceScoreCalculator.Calculate(eleganceMetrics);
+        }
+
+        return new AnalyzedGameResult(builder.ToString(), elegance);
     }
 
     private static ChessBoard CreateBoardFromHeaders(IReadOnlyDictionary<string, string> headers)
@@ -24096,6 +24186,38 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         // so we invert the sign to get the mover's perspective again.
         var afterForMover = -after.Centipawns;
         return afterForMover - before.Centipawns;
+    }
+
+    private static void UpdateTrendMetrics(
+        double evalForSide,
+        ref double? lastEval,
+        ref double? previousDelta,
+        ref int trendBreakCount)
+    {
+        if (!lastEval.HasValue)
+        {
+            lastEval = evalForSide;
+            return;
+        }
+
+        var delta1 = evalForSide - lastEval.Value;
+        if (previousDelta.HasValue)
+        {
+            var previousSign = Math.Sign(previousDelta.Value);
+            var currentSign = Math.Sign(delta1);
+            var delta2 = delta1 - previousDelta.Value;
+
+            if (previousSign != 0 &&
+                currentSign != 0 &&
+                previousSign != currentSign &&
+                Math.Abs(delta2) >= 50d)
+            {
+                trendBreakCount++;
+            }
+        }
+
+        previousDelta = delta1;
+        lastEval = evalForSide;
     }
 
     private static string? GetNagForDelta(int deltaCp)
@@ -24408,6 +24530,28 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         }
 
         return totalGames;
+    }
+
+    private struct RunningEleganceMetrics
+    {
+        public int PlyCount;
+        public int EvaluatedPlyCount;
+        public int ForcingMoveCount;
+        public int QuietImprovementCount;
+        public int TrendBreakCount;
+        public int BlunderCount;
+        public int MistakeCount;
+        public int DubiousCount;
+        public double SwingAbsSum;
+        public int SwingCount;
+        public double MoverDeltaSum;
+        public double MoverDeltaSquareSum;
+        public int MoverDeltaCount;
+        public int? PreviousEvalWhiteCp;
+        public double? WhiteLastEval;
+        public double? WhitePreviousDelta;
+        public double? BlackLastEval;
+        public double? BlackPreviousDelta;
     }
 }
 
@@ -26883,11 +27027,10 @@ public enum Lc0DownloadPhase
 }
 
 public sealed record Lc0DownloadOptions(
-    string OutputFolderPath,
-    DateTime? StartDate,
-    DateTime? EndDate,
-    int? MaxPages,
-    int? MaxMatches);
+    string OutputFilePath,
+    DateOnly ArchiveMonth,
+    bool ExcludeNonStandard,
+    bool OnlyCheckmates);
 
 public sealed record Lc0DownloadProgress(
     Lc0DownloadPhase Phase,
@@ -26899,8 +27042,9 @@ public sealed record Lc0DownloadProgress(
 public sealed record Lc0DownloadResult(
     int TotalMatches,
     int ProcessedMatches,
-    int SkippedMatches,
-    int FailedMatches);
+    int FailedMatches,
+    long GamesSeen,
+    long GamesKept);
 
 public interface ILc0DownloaderService
 {
@@ -26915,6 +27059,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
     private const int BufferSize = 65536;
     private const int MaxRetries = 3;
     private const int EmptyPageLimit = 2;
+    private const int MaxScrapePages = 5000;
     private static readonly Uri MatchesBaseUri = new("https://training.lczero.org/matches/");
     private static readonly Uri StorageBaseUri = new("https://storage.lczero.org/files/match_pgns/");
     private static readonly HttpClient HttpClient = CreateClient();
@@ -26949,68 +27094,63 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         CancellationToken ct = default)
     {
         if (options == null) throw new ArgumentNullException(nameof(options));
-        if (string.IsNullOrWhiteSpace(options.OutputFolderPath))
+        if (string.IsNullOrWhiteSpace(options.OutputFilePath))
         {
-            throw new ArgumentException("Output folder path is required.", nameof(options.OutputFolderPath));
+            throw new ArgumentException("Output file path is required.", nameof(options.OutputFilePath));
         }
 
-        var outputRoot = Path.GetFullPath(options.OutputFolderPath);
-        Directory.CreateDirectory(outputRoot);
+        var outputPath = Path.GetFullPath(options.OutputFilePath);
+        var outputDirectory = Path.GetDirectoryName(outputPath);
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            throw new InvalidOperationException("Output file path must include a valid directory.");
+        }
 
-        var statePath = Path.Combine(outputRoot, "lc0_processed_ids.txt");
-        var processedIds = LoadProcessedIds(statePath);
+        Directory.CreateDirectory(outputDirectory);
+
+        var monthStart = new DateTime(options.ArchiveMonth.Year, options.ArchiveMonth.Month, 1);
+        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
 
         progress.Report(new Lc0DownloadProgress(
             Lc0DownloadPhase.Scraping,
-            "Scraping match metadata..."));
+            $"Scraping match metadata for {options.ArchiveMonth:yyyy-MM}..."));
 
-        var allMatches = await ScrapeMatchesAsync(options, progress, ct);
-
-        var skippedExisting = 0;
-        if (processedIds.Count > 0)
-        {
-            skippedExisting = allMatches.RemoveAll(m => processedIds.Contains(m.MatchId));
-        }
-
-        if (options.MaxMatches is { } cap && cap > 0 && allMatches.Count > cap)
-        {
-            allMatches = allMatches.Take(cap).ToList();
-        }
-
+        var allMatches = await ScrapeMatchesAsync(monthStart, monthEnd, progress, ct);
         if (allMatches.Count == 0)
         {
             progress.Report(new Lc0DownloadProgress(
                 Lc0DownloadPhase.Completed,
-                "No matches to download after filtering.",
+                $"No matches found for {options.ArchiveMonth:yyyy-MM}.",
                 0,
                 0,
                 100));
 
-            return new Lc0DownloadResult(0, 0, skippedExisting, 0);
+            return new Lc0DownloadResult(0, 0, 0, 0, 0);
         }
 
         allMatches.Sort((a, b) => a.Date.CompareTo(b.Date));
 
-        var processedCount = 0;
-        var failedCount = 0;
-        var totalMatches = allMatches.Count;
+        var processedMatches = 0;
+        var failedMatches = 0;
+        long gamesSeen = 0;
+        long gamesKept = 0;
 
-        await using var stateStream = new FileStream(
-            statePath,
-            FileMode.Append,
+        var totalMatches = allMatches.Count;
+        await using var outputStream = new FileStream(
+            outputPath,
+            FileMode.Create,
             FileAccess.Write,
-            FileShare.Read,
+            FileShare.None,
             BufferSize,
             FileOptions.Asynchronous);
-        await using var stateWriter = new StreamWriter(stateStream, new UTF8Encoding(false));
-
-        await using var writerCache = new MonthlyWriterCache(outputRoot, _pgnWriter);
+        using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+        var outputWriter = new OutputWriter(writer);
 
         for (var i = 0; i < allMatches.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var match = allMatches[i];
 
+            var match = allMatches[i];
             var percent = (i / (double)totalMatches) * 100.0;
             progress.Report(new Lc0DownloadProgress(
                 Lc0DownloadPhase.Downloading,
@@ -27019,16 +27159,23 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 totalMatches,
                 percent));
 
-            var outcome = await DownloadAndProcessMatchAsync(match, writerCache, ct);
+            var outcome = await DownloadAndProcessMatchAsync(
+                match,
+                outputWriter,
+                options.ExcludeNonStandard,
+                options.OnlyCheckmates,
+                ct);
+
+            gamesSeen += outcome.GamesSeen;
+            gamesKept += outcome.GamesKept;
+
             if (outcome.Success)
             {
-                processedCount++;
-                await stateWriter.WriteLineAsync(match.MatchId.ToString());
-                await stateWriter.FlushAsync();
+                processedMatches++;
             }
             else
             {
-                failedCount++;
+                failedMatches++;
                 if (!string.IsNullOrWhiteSpace(outcome.Message))
                 {
                     progress.Report(new Lc0DownloadProgress(
@@ -27047,43 +27194,41 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             }
         }
 
+        await writer.FlushAsync().ConfigureAwait(false);
+
         progress.Report(new Lc0DownloadProgress(
             Lc0DownloadPhase.Completed,
-            "Lc0 download complete.",
+            $"Lc0 archive complete. Kept {gamesKept:N0} game(s).",
             totalMatches,
             totalMatches,
             100));
 
-        return new Lc0DownloadResult(totalMatches, processedCount, skippedExisting, failedCount);
+        return new Lc0DownloadResult(totalMatches, processedMatches, failedMatches, gamesSeen, gamesKept);
     }
 
     private async Task<List<Lc0MatchEntry>> ScrapeMatchesAsync(
-        Lc0DownloadOptions options,
+        DateTime startDate,
+        DateTime endDate,
         IProgress<Lc0DownloadProgress> progress,
         CancellationToken ct)
     {
         var matches = new List<Lc0MatchEntry>();
+        var seenMatchIds = new HashSet<int>();
         var emptyPages = 0;
         var page = 1;
-        var maxPages = options.MaxPages;
 
-        while (!maxPages.HasValue || page <= maxPages.Value)
+        while (page <= MaxScrapePages)
         {
             ct.ThrowIfCancellationRequested();
-
-            var percent = maxPages.HasValue && maxPages.Value > 0
-                ? (page - 1) / (double)maxPages.Value * 100.0
-                : (double?)null;
 
             progress.Report(new Lc0DownloadProgress(
                 Lc0DownloadPhase.Scraping,
                 $"Scraping page {page}...",
                 page,
-                maxPages,
-                percent));
+                null,
+                null));
 
             var pageMatches = await FetchMatchesPageAsync(page, progress, ct);
-
             if (pageMatches.Count == 0)
             {
                 emptyPages++;
@@ -27097,16 +27242,17 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             }
 
             emptyPages = 0;
-
-            var filtered = FilterMatches(pageMatches, options.StartDate, options.EndDate);
-            matches.AddRange(filtered);
-
-            if (options.MaxMatches is { } cap && cap > 0 && matches.Count >= cap)
+            var filtered = FilterMatches(pageMatches, startDate, endDate);
+            foreach (var match in filtered)
             {
-                break;
+                if (seenMatchIds.Add(match.MatchId))
+                {
+                    matches.Add(match);
+                }
             }
 
-            if (options.StartDate.HasValue && pageMatches.All(m => m.Date.Date < options.StartDate.Value.Date))
+            // Pages are newest to oldest; stop once we moved before the selected month.
+            if (pageMatches.All(m => m.Date.Date < startDate.Date))
             {
                 break;
             }
@@ -27119,8 +27265,8 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private static List<Lc0MatchEntry> FilterMatches(
         IEnumerable<Lc0MatchEntry> matches,
-        DateTime? startDate,
-        DateTime? endDate)
+        DateTime startDate,
+        DateTime endDate)
     {
         var filtered = new List<Lc0MatchEntry>();
 
@@ -27128,12 +27274,12 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         {
             var matchDate = match.Date.Date;
 
-            if (startDate.HasValue && matchDate < startDate.Value.Date)
+            if (matchDate < startDate.Date)
             {
                 continue;
             }
 
-            if (endDate.HasValue && matchDate > endDate.Value.Date)
+            if (matchDate > endDate.Date)
             {
                 continue;
             }
@@ -27219,7 +27365,9 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private async Task<Lc0DownloadOutcome> DownloadAndProcessMatchAsync(
         Lc0MatchEntry match,
-        MonthlyWriterCache writerCache,
+        OutputWriter outputWriter,
+        bool excludeNonStandard,
+        bool onlyCheckmates,
         CancellationToken ct)
     {
         string? lastError = null;
@@ -27241,10 +27389,22 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
             try
             {
-                var gamesWritten = await ProcessDownloadedFileAsync(result.TempPath, candidate.FileKind, match, writerCache, ct);
-                if (gamesWritten > 0)
+                var processResult = await ProcessDownloadedFileAsync(
+                    result.TempPath,
+                    candidate.FileKind,
+                    match,
+                    outputWriter,
+                    excludeNonStandard,
+                    onlyCheckmates,
+                    ct);
+
+                if (processResult.GamesSeen > 0)
                 {
-                    return new Lc0DownloadOutcome(true, $"Processed {gamesWritten} game(s).");
+                    return new Lc0DownloadOutcome(
+                        true,
+                        $"Kept {processResult.GamesKept:N0} game(s).",
+                        processResult.GamesSeen,
+                        processResult.GamesKept);
                 }
 
                 lastError = "No PGN games found.";
@@ -27257,7 +27417,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             {
                 try
                 {
-                    if (!string.IsNullOrWhiteSpace(result.TempPath) && File.Exists(result.TempPath))
+                    if (File.Exists(result.TempPath))
                     {
                         File.Delete(result.TempPath);
                     }
@@ -27268,7 +27428,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             }
         }
 
-        return new Lc0DownloadOutcome(false, lastError ?? "All URL patterns failed.");
+        return new Lc0DownloadOutcome(false, lastError ?? "All URL patterns failed.", 0, 0);
     }
 
     private async Task<DownloadResult> DownloadToTempAsync(Uri url, Lc0FileKind fileKind, CancellationToken ct)
@@ -27326,14 +27486,17 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         return DownloadResult.Failed();
     }
 
-    private async Task<int> ProcessDownloadedFileAsync(
+    private async Task<Lc0ProcessingResult> ProcessDownloadedFileAsync(
         string filePath,
         Lc0FileKind fileKind,
         Lc0MatchEntry match,
-        MonthlyWriterCache writerCache,
+        OutputWriter outputWriter,
+        bool excludeNonStandard,
+        bool onlyCheckmates,
         CancellationToken ct)
     {
-        var gamesWritten = 0;
+        long gamesSeen = 0;
+        long gamesKept = 0;
 
         if (fileKind == Lc0FileKind.TarGz)
         {
@@ -27361,7 +27524,15 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                     continue;
                 }
 
-                gamesWritten += await ProcessPgnStreamAsync(entry.DataStream, match, writerCache, ct);
+                var result = await ProcessPgnStreamAsync(
+                    entry.DataStream,
+                    match,
+                    outputWriter,
+                    excludeNonStandard,
+                    onlyCheckmates,
+                    ct);
+                gamesSeen += result.GamesSeen;
+                gamesKept += result.GamesKept;
             }
         }
         else
@@ -27374,29 +27545,93 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 BufferSize,
                 FileOptions.SequentialScan | FileOptions.Asynchronous);
 
-            gamesWritten += await ProcessPgnStreamAsync(pgnStream, match, writerCache, ct);
+            var result = await ProcessPgnStreamAsync(
+                pgnStream,
+                match,
+                outputWriter,
+                excludeNonStandard,
+                onlyCheckmates,
+                ct);
+            gamesSeen += result.GamesSeen;
+            gamesKept += result.GamesKept;
         }
 
-        return gamesWritten;
+        return new Lc0ProcessingResult(gamesSeen, gamesKept);
     }
 
-    private async Task<int> ProcessPgnStreamAsync(
+    private async Task<Lc0ProcessingResult> ProcessPgnStreamAsync(
         Stream stream,
         Lc0MatchEntry match,
-        MonthlyWriterCache writerCache,
+        OutputWriter outputWriter,
+        bool excludeNonStandard,
+        bool onlyCheckmates,
         CancellationToken ct)
     {
-        var count = 0;
+        long gamesSeen = 0;
+        long gamesKept = 0;
+
         await foreach (var game in _pgnReader.ReadGamesAsync(stream, ct))
         {
             ct.ThrowIfCancellationRequested();
+            gamesSeen++;
+
+            if (!ShouldKeepGame(game, excludeNonStandard, onlyCheckmates))
+            {
+                continue;
+            }
 
             UpdateHeaders(game, match);
-            await writerCache.AppendGameAsync(match.Date, game, ct);
-            count++;
+
+            if (outputWriter.NeedsSeparator)
+            {
+                await outputWriter.Writer.WriteLineAsync().ConfigureAwait(false);
+            }
+
+            await _pgnWriter.WriteGameAsync(outputWriter.Writer, game, ct).ConfigureAwait(false);
+            outputWriter.NeedsSeparator = true;
+            gamesKept++;
         }
 
-        return count;
+        return new Lc0ProcessingResult(gamesSeen, gamesKept);
+    }
+
+    private static bool ShouldKeepGame(PgnGame game, bool excludeNonStandard, bool onlyCheckmates)
+    {
+        if (excludeNonStandard && !IsStandardVariant(game.Headers))
+        {
+            return false;
+        }
+
+        if (onlyCheckmates && !IsCheckmateGame(game))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsStandardVariant(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!headers.TryGetHeaderValue("Variant", out var variant) || string.IsNullOrWhiteSpace(variant))
+        {
+            return true;
+        }
+
+        var normalized = variant.Trim();
+        return normalized.Equals("Standard", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("Chess", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("From Position", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCheckmateGame(PgnGame game)
+    {
+        if (game.Headers.TryGetHeaderValue("Termination", out var termination) &&
+            termination.Contains("checkmate", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(game.MoveText) && game.MoveText.Contains('#');
     }
 
     private static void UpdateHeaders(PgnGame game, Lc0MatchEntry match)
@@ -27425,24 +27660,35 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private static IReadOnlyList<(Uri Url, Lc0FileKind FileKind)> BuildMatchUrls(int trainingRunId, int matchId)
     {
-        var plainBase = matchId.ToString(CultureInfo.InvariantCulture);
-        var matchBase = $"match_{matchId}";
-        var runPart = trainingRunId > 0
-            ? $"{trainingRunId}/"
-            : string.Empty;
-        return
-        [
-            // Match PGNs are stored under match_pgns/{run}/{matchId}.pgn
-            (new Uri(StorageBaseUri, $"{runPart}{plainBase}.pgn"), Lc0FileKind.Pgn),
-            (new Uri(StorageBaseUri, $"{runPart}{plainBase}.pgn.tar.gz"), Lc0FileKind.TarGz),
-            (new Uri(StorageBaseUri, $"{runPart}{matchBase}.pgn"), Lc0FileKind.Pgn),
-            (new Uri(StorageBaseUri, $"{runPart}{matchBase}.pgn.tar.gz"), Lc0FileKind.TarGz),
-            // Root directory fallbacks
-            (new Uri(StorageBaseUri, $"{plainBase}.pgn"), Lc0FileKind.Pgn),
-            (new Uri(StorageBaseUri, $"{plainBase}.pgn.tar.gz"), Lc0FileKind.TarGz),
-            (new Uri(StorageBaseUri, $"{matchBase}.pgn.tar.gz"), Lc0FileKind.TarGz),
-            (new Uri(StorageBaseUri, $"{matchBase}.pgn"), Lc0FileKind.Pgn)
-        ];
+        var runSegments = trainingRunId > 0
+            ? new[] { $"{trainingRunId}/", string.Empty }
+            : [string.Empty];
+
+        var baseNames = new[]
+        {
+            matchId.ToString(CultureInfo.InvariantCulture),
+            $"match_{matchId}"
+        };
+
+        var suffixes = new[]
+        {
+            (Suffix: ".pgn", Kind: Lc0FileKind.Pgn),
+            (Suffix: ".pgn.tar.gz", Kind: Lc0FileKind.TarGz)
+        };
+
+        var urls = new List<(Uri Url, Lc0FileKind FileKind)>(runSegments.Length * baseNames.Length * suffixes.Length);
+        foreach (var runSegment in runSegments)
+        {
+            foreach (var baseName in baseNames)
+            {
+                foreach (var (suffix, kind) in suffixes)
+                {
+                    urls.Add((new Uri(StorageBaseUri, $"{runSegment}{baseName}{suffix}"), kind));
+                }
+            }
+        }
+
+        return urls;
     }
 
     private static bool TryParseMatchDate(string raw, out DateTimeOffset date)
@@ -27458,26 +27704,6 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
     {
         var text = HtmlTagRegex().Replace(html, string.Empty);
         return WebUtility.HtmlDecode(text).Trim();
-    }
-
-    private static HashSet<int> LoadProcessedIds(string path)
-    {
-        var ids = new HashSet<int>();
-
-        if (!File.Exists(path))
-        {
-            return ids;
-        }
-
-        foreach (var line in File.ReadLines(path))
-        {
-            if (int.TryParse(line.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var id))
-            {
-                ids.Add(id);
-            }
-        }
-
-        return ids;
     }
 
     private static HttpClient CreateClient()
@@ -27525,90 +27751,20 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         Failed
     }
 
-    private sealed record Lc0DownloadOutcome(bool Success, string Message);
+    private sealed record Lc0DownloadOutcome(bool Success, string Message, long GamesSeen, long GamesKept);
 
-    private sealed class MonthlyWriterCache : IAsyncDisposable
+    private sealed record Lc0ProcessingResult(long GamesSeen, long GamesKept);
+
+    private sealed class OutputWriter
     {
-        private readonly string _outputRoot;
-        private readonly PgnWriter _pgnWriter;
-        private readonly Dictionary<string, MonthlyWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
-
-        public MonthlyWriterCache(string outputRoot, PgnWriter pgnWriter)
+        public OutputWriter(StreamWriter writer)
         {
-            _outputRoot = outputRoot;
-            _pgnWriter = pgnWriter;
+            Writer = writer;
         }
 
-        public async Task AppendGameAsync(DateTimeOffset date, PgnGame game, CancellationToken ct)
-        {
-            var key = $"{date:yyyy-MM}";
-            if (!_writers.TryGetValue(key, out var writer))
-            {
-                writer = await CreateWriterAsync(date);
-                _writers[key] = writer;
-            }
+        public StreamWriter Writer { get; }
 
-            if (writer.NeedsSeparator)
-            {
-                await writer.Writer.WriteLineAsync().ConfigureAwait(false);
-            }
-
-            await _pgnWriter.WriteGameAsync(writer.Writer, game, ct).ConfigureAwait(false);
-            writer.NeedsSeparator = true;
-        }
-
-        private async Task<MonthlyWriter> CreateWriterAsync(DateTimeOffset date)
-        {
-            var yearFolder = Path.Combine(_outputRoot, date.Year.ToString(CultureInfo.InvariantCulture));
-            var monthFolder = Path.Combine(yearFolder, date.Month.ToString("D2", CultureInfo.InvariantCulture));
-            Directory.CreateDirectory(monthFolder);
-
-            var fileName = $"lc0_matches_{date:yyyy_MM}.pgn";
-            var filePath = Path.Combine(monthFolder, fileName);
-
-            var stream = new FileStream(
-                filePath,
-                FileMode.OpenOrCreate,
-                FileAccess.Write,
-                FileShare.Read,
-                BufferSize,
-                FileOptions.Asynchronous);
-
-            stream.Seek(0, SeekOrigin.End);
-            var needsSeparator = stream.Length > 0;
-
-            var writer = new StreamWriter(stream, new UTF8Encoding(false), BufferSize);
-            return new MonthlyWriter(writer, needsSeparator);
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            foreach (var writer in _writers.Values)
-            {
-                try
-                {
-                    await writer.Writer.FlushAsync().ConfigureAwait(false);
-                    await writer.Writer.DisposeAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                }
-            }
-
-            _writers.Clear();
-        }
-
-        private sealed class MonthlyWriter
-        {
-            public MonthlyWriter(StreamWriter writer, bool needsSeparator)
-            {
-                Writer = writer;
-                NeedsSeparator = needsSeparator;
-            }
-
-            public StreamWriter Writer { get; }
-            public bool NeedsSeparator { get; set; }
-        }
+        public bool NeedsSeparator { get; set; }
     }
 }
 ===== END: PgnTools/Services/Lc0DownloaderService.cs =====
@@ -32834,14 +32990,45 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 
     private static string GetInstallDirectory(string tag, StockfishVariant variant)
     {
-        var baseDir = Path.Combine(
+        var variantSegment = variant.ToString().ToLowerInvariant();
+
+        var assetsPreferred = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "stockfish",
+            tag,
+            variantSegment);
+
+        if (CanWriteToDirectory(assetsPreferred))
+        {
+            return assetsPreferred;
+        }
+
+        return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PgnTools",
             "Stockfish",
             tag,
-            variant.ToString().ToLowerInvariant());
+            variantSegment);
+    }
 
-        return baseDir;
+    private static bool CanWriteToDirectory(string directoryPath)
+    {
+        try
+        {
+            Directory.CreateDirectory(directoryPath);
+            var probePath = Path.Combine(directoryPath, $".write_probe_{Guid.NewGuid():N}.tmp");
+            using (new FileStream(probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+            }
+
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? FindExecutable(string installDirectory, StockfishVariant variant)
@@ -32978,7 +33165,8 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
         new("Stockfish 16", new DateOnly(2023, 6, 30), new DateOnly(2024, 2, 23)),
         new("Stockfish 16.1", new DateOnly(2024, 2, 24), new DateOnly(2024, 9, 5)),
         new("Stockfish 17", new DateOnly(2024, 9, 6), new DateOnly(2025, 3, 29)),
-        new("Stockfish 17.1", new DateOnly(2025, 3, 30), new DateOnly(9999, 12, 31)),
+        new("Stockfish 17.1", new DateOnly(2025, 3, 30), new DateOnly(2026, 1, 30)),
+        new("Stockfish 18", new DateOnly(2026, 1, 31), new DateOnly(9999, 12, 31)),
     ];
 
     private readonly PgnReader _pgnReader;
@@ -34018,6 +34206,7 @@ public sealed partial class ShellPage : Page
         ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
         _navigationService = navigationService ?? throw new System.ArgumentNullException(nameof(navigationService));
         this.InitializeComponent();
+        ApplyToolIconsFromAssets();
         
         // Set up navigation service with the content frame
         _navigationService.Frame = ContentFrame;
@@ -34050,6 +34239,29 @@ public sealed partial class ShellPage : Page
             {
                 ContentFrame.Navigate(tool.PageType);
             }
+        }
+    }
+
+    private void ApplyToolIconsFromAssets()
+    {
+        foreach (var item in NavView.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (item.Tag is not string tag)
+            {
+                continue;
+            }
+
+            var tool = ToolRegistry.GetTool(tag);
+            if (tool?.IconAssetUri == null)
+            {
+                continue;
+            }
+
+            item.Icon = new BitmapIcon
+            {
+                UriSource = tool.IconAssetUri,
+                ShowAsMonochrome = false
+            };
         }
     }
 }
@@ -34770,6 +34982,9 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
     private int _depth = 18;
 
     [ObservableProperty]
+    private bool _addEleganceTags;
+
+    [ObservableProperty]
     private bool _useTablebases;
 
     [ObservableProperty]
@@ -35067,7 +35282,8 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
                 Depth,
                 UseTablebases ? TablebasePath : null,
                 progress,
-                _cancellationTokenSource.Token);
+                _cancellationTokenSource.Token,
+                AddEleganceTags);
 
             if (_cancellationTokenSource?.IsCancellationRequested == true)
             {
@@ -35075,7 +35291,9 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             }
 
             ProgressValue = 100;
-            StatusMessage = "Analysis complete. (Move-by-move evals require SAN/FEN support.)";
+            StatusMessage = AddEleganceTags
+                ? "Analysis and Elegance tagging complete. (Move-by-move evals require SAN/FEN support.)"
+                : "Analysis complete. (Move-by-move evals require SAN/FEN support.)";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, _progressTotal > 0 ? _progressTotal : _progressGames, _progressTotal, "games");
         }
@@ -35206,18 +35424,29 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         }
 
         EnginePath = _settings.GetValue($"{SettingsPrefix}.{nameof(EnginePath)}", string.Empty);
-        EngineName = !string.IsNullOrWhiteSpace(EnginePath) && File.Exists(EnginePath)
-            ? Path.GetFileName(EnginePath)
-            : string.Empty;
         if (!string.IsNullOrWhiteSpace(EnginePath) && !File.Exists(EnginePath))
         {
             EnginePath = string.Empty;
         }
 
+        if (string.IsNullOrWhiteSpace(EnginePath) || IsTemporaryPath(EnginePath))
+        {
+            var preferredEnginePath = ResolvePreferredEnginePath();
+            if (!string.IsNullOrWhiteSpace(preferredEnginePath))
+            {
+                EnginePath = preferredEnginePath;
+            }
+        }
+
+        EngineName = !string.IsNullOrWhiteSpace(EnginePath) && File.Exists(EnginePath)
+            ? Path.GetFileName(EnginePath)
+            : string.Empty;
+
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
 
         Depth = _settings.GetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
+        AddEleganceTags = _settings.GetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
         UseTablebases = _settings.GetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
         TablebasePath = _settings.GetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
         if (!string.IsNullOrWhiteSpace(TablebasePath) && !Directory.Exists(TablebasePath))
@@ -35233,8 +35462,60 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(EnginePath)}", EnginePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
         _settings.SetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
         _settings.SetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
+    }
+
+    private static string ResolvePreferredEnginePath()
+    {
+        var assetsRoot = Path.Combine(AppContext.BaseDirectory, "Assets");
+        var assetsCandidate = FindStockfishExeUnder(assetsRoot);
+        if (!string.IsNullOrWhiteSpace(assetsCandidate))
+        {
+            return assetsCandidate;
+        }
+
+        var localAppDataRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PgnTools",
+            "Stockfish");
+
+        return FindStockfishExeUnder(localAppDataRoot) ?? string.Empty;
+    }
+
+    private static string? FindStockfishExeUnder(string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Directory.EnumerateFiles(rootPath, "*.exe", SearchOption.AllDirectories)
+                .Where(path => Path.GetFileName(path).Contains("stockfish", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path.Contains($"{Path.DirectorySeparatorChar}Assets{Path.DirectorySeparatorChar}stockfish{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenByDescending(File.GetLastWriteTimeUtc)
+                .ThenBy(path => path.Length)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsTemporaryPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
+        var fullPath = Path.GetFullPath(path);
+        return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -36767,44 +37048,47 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
-    private bool _adjustingDates;
+    private bool _outputPathSuggested;
+    private string _lastOutputFolder = string.Empty;
+    private static readonly DateOnly EarliestArchiveMonth = new(2018, 1, 1);
+    private static readonly System.Text.RegularExpressions.Regex ArchiveTokenRegex =
+        new(@"^\d{4}-\d{2}$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex SuggestedNameRegex =
+        new(@"^lc0-(\d{4}-\d{2}|0000-00)\.pgn$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     private const string SettingsPrefix = nameof(Lc0DownloaderViewModel);
 
     [ObservableProperty]
-    private string _outputFolderPath = string.Empty;
+    private List<string> _availableArchives = new();
 
     [ObservableProperty]
-    private string _outputFolderName = string.Empty;
+    private string? _selectedArchive;
 
     [ObservableProperty]
-    private DateTimeOffset? _startDate;
+    private bool _excludeNonStandard;
 
     [ObservableProperty]
-    private DateTimeOffset? _endDate;
+    private bool _onlyCheckmates;
 
     [ObservableProperty]
-    private bool _snapToFullMonths = true;
+    private string _outputFilePath = string.Empty;
 
     [ObservableProperty]
-    private bool _showAdvancedOptions;
-
-    [ObservableProperty]
-    private string _maxPages = string.Empty;
-
-    [ObservableProperty]
-    private string _maxMatches = string.Empty;
+    private string _outputFileName = string.Empty;
 
     [ObservableProperty]
     private bool _isRunning;
 
     [ObservableProperty]
-    private bool _isIndeterminate;
+    private bool _isIndeterminate = true;
 
     [ObservableProperty]
     private double _progressValue;
 
     [ObservableProperty]
-    private string _statusMessage = "Select output folder and download options";
+    private string _statusMessage = "Select archive and output file";
 
     public Lc0DownloaderViewModel(
         ILc0DownloaderService service,
@@ -36816,71 +37100,73 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _settings = settings;
         Title = "Lc0";
         StatusSeverity = InfoBarSeverity.Informational;
-        IsIndeterminate = true;
         LoadState();
+        LoadArchiveList();
     }
 
     [RelayCommand]
-    private async Task SelectOutputFolderAsync()
+    private async Task BrowseOutputAsync()
     {
         try
         {
-            var folder = await FilePickerHelper.PickFolderAsync(
+            var file = await FilePickerHelper.PickSaveFileAsync(
                 _windowService.WindowHandle,
-                $"{SettingsPrefix}.Picker.OutputFolder");
-            if (folder == null)
+                GetSuggestedFileName(),
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                _outputPathSuggested = false;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task StartAsync()
+    {
+        if (!TryParseArchiveMonth(SelectedArchive, out var archiveMonth))
+        {
+            StatusMessage = "Select a valid monthly archive.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            ApplySuggestedOutputPath();
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                await BrowseOutputAsync();
+            }
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
             }
+        }
 
-            var validation = await FileValidationHelper.ValidateWritableFolderAsync(folder.Path);
+        var outputDirectory = Path.GetDirectoryName(OutputFilePath) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            var validation = await FileValidationHelper.ValidateWritableFolderAsync(outputDirectory);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
             }
-
-            OutputFolderPath = folder.Path;
-            OutputFolderName = folder.Name;
-            StatusMessage = $"Selected output folder: {folder.Name}";
-            StatusSeverity = InfoBarSeverity.Informational;
         }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error selecting output folder: {ex.Message}";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
-    }
-
-    [RelayCommand(CanExecute = nameof(CanRun))]
-    private async Task RunAsync()
-    {
-        if (string.IsNullOrWhiteSpace(OutputFolderPath))
-        {
-            return;
-        }
-
-        var validation = await FileValidationHelper.ValidateWritableFolderAsync(OutputFolderPath);
-        if (!validation.Success)
-        {
-            StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
-            StatusSeverity = InfoBarSeverity.Error;
-            return;
-        }
-
-        var startDate = StartDate?.Date;
-        var endDate = EndDate?.Date;
-
-        if (startDate.HasValue && endDate.HasValue && startDate.Value > endDate.Value)
-        {
-            StatusMessage = "Start date must be before end date.";
-            StatusSeverity = InfoBarSeverity.Error;
-            return;
-        }
-
-        var maxPages = ParsePositiveInt(MaxPages);
-        var maxMatches = ParsePositiveInt(MaxMatches);
 
         if (!await _executionLock.WaitAsync(0))
         {
@@ -36892,7 +37178,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             IsRunning = true;
             IsIndeterminate = true;
             ProgressValue = 0;
-            StatusMessage = "Preparing Lc0 download...";
+            StatusMessage = $"Preparing Lc0 archive {archiveMonth:yyyy-MM}...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
@@ -36919,11 +37205,10 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
             var result = await _service.DownloadAndProcessAsync(
                 new Lc0DownloadOptions(
-                    OutputFolderPath,
-                    startDate,
-                    endDate,
-                    maxPages,
-                    maxMatches),
+                    OutputFilePath,
+                    archiveMonth,
+                    ExcludeNonStandard,
+                    OnlyCheckmates),
                 progress,
                 _cancellationTokenSource.Token);
 
@@ -36932,27 +37217,25 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
             if (result.TotalMatches == 0)
             {
-                StatusMessage = "No matches found for the selected range.";
+                StatusMessage = $"No matches found for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
             }
             else if (result.FailedMatches > 0)
             {
-                StatusMessage = $"Completed with errors. {result.ProcessedMatches:N0} processed, {result.FailedMatches:N0} failed.";
-                if (result.SkippedMatches > 0)
-                {
-                    StatusMessage += $" {result.SkippedMatches:N0} already processed.";
-                }
-
+                StatusMessage =
+                    $"Completed with errors. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0}/{result.TotalMatches:N0} matches; {result.FailedMatches:N0} failed.";
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else if (result.GamesKept == 0)
+            {
+                StatusMessage =
+                    $"No games matched the selected filters for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
             }
             else
             {
-                StatusMessage = $"Completed. {result.ProcessedMatches:N0} matches processed.";
-                if (result.SkippedMatches > 0)
-                {
-                    StatusMessage += $" {result.SkippedMatches:N0} already processed.";
-                }
-
+                StatusMessage =
+                    $"Completed. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0} matches.";
                 StatusSeverity = InfoBarSeverity.Success;
             }
 
@@ -36980,21 +37263,9 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         }
     }
 
-    private static int? ParsePositiveInt(string raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value > 0
-            ? value
-            : null;
-    }
-
     private bool CanRun() =>
         !IsRunning &&
-        !string.IsNullOrWhiteSpace(OutputFolderPath);
+        !string.IsNullOrWhiteSpace(SelectedArchive);
 
     [RelayCommand]
     private void Cancel()
@@ -37005,38 +37276,30 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
 
-    partial void OnOutputFolderPathChanged(string value)
+    partial void OnSelectedArchiveChanged(string? value)
     {
-        RunCommand.NotifyCanExecuteChanged();
-    }
-
-    partial void OnStartDateChanged(DateTimeOffset? value)
-    {
-        if (SnapToFullMonths)
+        if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
         {
-            NormalizeMonthRange();
+            ApplySuggestedOutputPath();
         }
+
+        StartCommand.NotifyCanExecuteChanged();
     }
 
-    partial void OnEndDateChanged(DateTimeOffset? value)
+    partial void OnOutputFilePathChanged(string value)
     {
-        if (SnapToFullMonths)
-        {
-            NormalizeMonthRange();
-        }
-    }
+        OutputFileName = string.IsNullOrWhiteSpace(value) ? string.Empty : Path.GetFileName(value);
 
-    partial void OnSnapToFullMonthsChanged(bool value)
-    {
-        if (value)
+        var directory = Path.GetDirectoryName(value);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            NormalizeMonthRange();
+            _lastOutputFolder = directory;
         }
     }
 
     partial void OnIsRunningChanged(bool value)
     {
-        RunCommand.NotifyCanExecuteChanged();
+        StartCommand.NotifyCanExecuteChanged();
     }
 
     public void Dispose()
@@ -37056,70 +37319,140 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
     private void LoadState()
     {
-        OutputFolderPath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
-        OutputFolderName = string.IsNullOrWhiteSpace(OutputFolderPath) ? string.Empty : Path.GetFileName(OutputFolderPath.TrimEnd(Path.DirectorySeparatorChar));
+        ExcludeNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        OnlyCheckmates = _settings.GetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _lastOutputFolder = _settings.GetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
 
-        StartDate = _settings.GetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
-        EndDate = _settings.GetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
-        SnapToFullMonths = _settings.GetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
-        MaxPages = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
-        MaxMatches = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
-
-        if (SnapToFullMonths)
+        var selected = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive);
+        if (!string.IsNullOrWhiteSpace(selected))
         {
-            NormalizeMonthRange();
+            SelectedArchive = selected;
+        }
+
+        _outputPathSuggested = string.IsNullOrWhiteSpace(OutputFilePath) || IsSuggestedFileName(OutputFileName);
+        if (_outputPathSuggested && !string.IsNullOrWhiteSpace(SelectedArchive))
+        {
+            ApplySuggestedOutputPath();
         }
     }
 
     private void SaveState()
     {
-        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(StartDate)}", StartDate);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(EndDate)}", EndDate);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(SnapToFullMonths)}", SnapToFullMonths);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxPages)}", MaxPages);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxMatches)}", MaxMatches);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
 
-    private void NormalizeMonthRange()
+    private void LoadArchiveList()
     {
-        if (_adjustingDates)
+        var utcNow = DateTime.UtcNow;
+        var latestArchiveMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
+        if (latestArchiveMonth < EarliestArchiveMonth)
+        {
+            AvailableArchives = new List<string>();
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        var archives = BuildAvailableArchives(latestArchiveMonth, EarliestArchiveMonth);
+        AvailableArchives = archives;
+
+        if (archives.Count == 0)
+        {
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedArchive) ||
+            !archives.Any(archive => string.Equals(archive, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedArchive = archives[0];
+        }
+    }
+
+    private static List<string> BuildAvailableArchives(DateOnly newestMonth, DateOnly oldestMonth)
+    {
+        var archives = new List<string>();
+        for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
+        {
+            archives.Add($"{month:yyyy-MM}");
+        }
+
+        return archives;
+    }
+
+    private void ApplySuggestedOutputPath()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedArchive))
         {
             return;
         }
 
-        try
+        var suggestedName = GetSuggestedFileName();
+        if (string.IsNullOrWhiteSpace(suggestedName))
         {
-            _adjustingDates = true;
-
-            if (StartDate.HasValue)
-            {
-                var start = StartDate.Value;
-                var normalized = new DateTimeOffset(start.Year, start.Month, 1, 0, 0, 0, start.Offset);
-                if (normalized != StartDate.Value)
-                {
-                    StartDate = normalized;
-                }
-            }
-
-            if (EndDate.HasValue)
-            {
-                var end = EndDate.Value;
-                var lastDay = DateTime.DaysInMonth(end.Year, end.Month);
-                var normalized = new DateTimeOffset(end.Year, end.Month, lastDay, 0, 0, 0, end.Offset);
-                if (normalized != EndDate.Value)
-                {
-                    EndDate = normalized;
-                }
-            }
+            return;
         }
-        finally
+
+        var directory = GetPreferredOutputFolder();
+        OutputFilePath = Path.Combine(directory, suggestedName);
+        _outputPathSuggested = true;
+    }
+
+    private string GetPreferredOutputFolder()
+    {
+        var directory = Path.GetDirectoryName(OutputFilePath);
+        if (!string.IsNullOrWhiteSpace(directory))
         {
-            _adjustingDates = false;
+            return directory;
         }
+
+        if (!string.IsNullOrWhiteSpace(_lastOutputFolder))
+        {
+            return _lastOutputFolder;
+        }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    }
+
+    private string GetSuggestedFileName()
+    {
+        var monthToken = string.IsNullOrWhiteSpace(SelectedArchive) ? "0000-00" : SelectedArchive;
+        return $"lc0-{monthToken}.pgn";
+    }
+
+    private static bool TryParseArchiveMonth(string? archiveToken, out DateOnly month)
+    {
+        month = default;
+
+        if (string.IsNullOrWhiteSpace(archiveToken) || !ArchiveTokenRegex.IsMatch(archiveToken))
+        {
+            return false;
+        }
+
+        return DateOnly.TryParseExact(
+            archiveToken,
+            "yyyy-MM",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out month);
+    }
+
+    private static bool IsSuggestedFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        return SuggestedNameRegex.IsMatch(fileName);
     }
 }
-
 ===== END: PgnTools/ViewModels/Tools/Lc0DownloaderViewModel.cs =====
 
 ===== BEGIN: PgnTools/ViewModels/Tools/LichessDbDownloaderViewModel.cs =====
@@ -37139,6 +37472,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
     private bool _outputPathSuggested;
     private LichessDbProgress? _lastProgress;
     private string _lastOutputFolder = string.Empty;
+    private static readonly DateOnly EarliestArchiveMonth = new(2013, 1, 1);
     private static readonly System.Text.RegularExpressions.Regex SuggestedNameRegex =
         new(@"^lichess-\d+-(\d{4}-\d{2}|0000-00)\.pgn$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase |
@@ -37198,57 +37532,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         Title = "Lichess DB Filter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
-        _ = LoadArchiveListAsync();
-    }
-
-    private async Task LoadArchiveListAsync()
-    {
-        try
-        {
-            var baseDir = AppContext.BaseDirectory;
-            var listPath = Path.Combine(baseDir, "Assets", "list.txt");
-            if (!File.Exists(listPath))
-            {
-                var fallback = Path.Combine("Assets", "list.txt");
-                if (File.Exists(fallback))
-                {
-                    listPath = fallback;
-                }
-            }
-
-            if (!File.Exists(listPath))
-            {
-                AvailableArchives = new List<string>();
-                StatusMessage = "Archive list not found (Assets/list.txt).";
-                StatusSeverity = InfoBarSeverity.Warning;
-                return;
-            }
-
-            var lines = await File.ReadAllLinesAsync(listPath);
-            var urls = lines
-                .Select(line => line.Trim())
-                .Where(line => line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            AvailableArchives = urls;
-
-            if (urls.Count == 0)
-            {
-                StatusMessage = "Archive list is empty.";
-                StatusSeverity = InfoBarSeverity.Warning;
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(SelectedArchive) || !urls.Contains(SelectedArchive))
-            {
-                SelectedArchive = urls.FirstOrDefault();
-            }
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error loading archive list: {ex.Message}";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
+        LoadArchiveList();
     }
 
     [RelayCommand]
@@ -37466,6 +37750,55 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
 
+    private void LoadArchiveList()
+    {
+        var latestArchiveMonth = GetLatestArchiveMonth();
+        if (latestArchiveMonth < EarliestArchiveMonth)
+        {
+            AvailableArchives = new List<string>();
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        var urls = BuildArchiveUrls(latestArchiveMonth, EarliestArchiveMonth);
+        AvailableArchives = urls;
+
+        if (urls.Count == 0)
+        {
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedArchive) ||
+            !urls.Any(url => string.Equals(url, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedArchive = urls[0];
+        }
+    }
+
+    private static DateOnly GetLatestArchiveMonth()
+    {
+        var utcNow = DateTime.UtcNow;
+        var firstOfCurrentMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
+        return firstOfCurrentMonth.AddMonths(-1);
+    }
+
+    private static List<string> BuildArchiveUrls(DateOnly newestMonth, DateOnly oldestMonth)
+    {
+        var urls = new List<string>();
+        for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
+        {
+            urls.Add(BuildArchiveUrl(month));
+        }
+
+        return urls;
+    }
+
+    private static string BuildArchiveUrl(DateOnly month) =>
+        $"https://database.lichess.org/standard/lichess_db_standard_rated_{month:yyyy-MM}.pgn.zst";
+
     private void ApplySuggestedOutputPath()
     {
         if (string.IsNullOrWhiteSpace(SelectedArchive))
@@ -37604,7 +37937,6 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         return $"{value:0.##} {units[unitIndex]}";
     }
 }
-
 ===== END: PgnTools/ViewModels/Tools/LichessDbDownloaderViewModel.cs =====
 
 ===== BEGIN: PgnTools/ViewModels/Tools/LichessDownloaderViewModel.cs =====
@@ -41187,6 +41519,9 @@ public sealed partial class CheckmateFilterPage : Page
                            Value="{x:Bind ViewModel.Depth, Mode=TwoWay}"/>
             </StackPanel>
 
+            <CheckBox Content="Add Elegance tags (0-100) during analysis"
+                      IsChecked="{x:Bind ViewModel.AddEleganceTags, Mode=TwoWay}"/>
+
             <TextBlock Text="Tablebases"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <CheckBox Content="Use Syzygy tablebases"
@@ -42065,7 +42400,7 @@ public sealed partial class FilterPage : Page
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
             <TextBlock Text="Lc0" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Download match PGNs from storage.lczero.org, tag them, and collate into monthly files."
+            <TextBlock Text="Build a single monthly Lc0 archive from training.lczero.org and save it as one PGN file."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -42073,7 +42408,20 @@ public sealed partial class FilterPage : Page
 
         <!-- Inputs -->
         <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
-            <TextBlock Text="Output Folder"
+            <TextBlock Text="Monthly Archive"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableArchives}"
+                      SelectedItem="{x:Bind ViewModel.SelectedArchive, Mode=TwoWay}"
+                      HorizontalAlignment="Stretch"/>
+
+            <TextBlock Text="Filters"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Exclude non-standard variants"
+                      IsChecked="{x:Bind ViewModel.ExcludeNonStandard, Mode=TwoWay}"/>
+            <CheckBox Content="Only checkmates"
+                      IsChecked="{x:Bind ViewModel.OnlyCheckmates, Mode=TwoWay}"/>
+
+            <TextBlock Text="Output File"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -42082,48 +42430,20 @@ public sealed partial class FilterPage : Page
                 </Grid.ColumnDefinitions>
 
                 <TextBox Grid.Column="0"
-                         PlaceholderText="Select output folder..."
-                         Text="{x:Bind ViewModel.OutputFolderPath, Mode=OneWay}"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
                          IsReadOnly="True"
                          Margin="0,0,12,0"/>
 
                 <Button Grid.Column="1"
                         Content="Browse..."
-                        Command="{x:Bind ViewModel.SelectOutputFolderCommand}"
+                        Command="{x:Bind ViewModel.BrowseOutputCommand}"
                         Style="{StaticResource Action}"/>
             </Grid>
 
-            <TextBlock Text="Month Range (optional)"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
-                <CalendarDatePicker Header="Start Month"
-                                    Date="{x:Bind ViewModel.StartDate, Mode=TwoWay}"/>
-                <CalendarDatePicker Header="End Month"
-                                    Date="{x:Bind ViewModel.EndDate, Mode=TwoWay}"/>
-            </StackPanel>
-
-            <CheckBox Content="Snap to full months (1st to last day)"
-                      IsChecked="{x:Bind ViewModel.SnapToFullMonths, Mode=TwoWay}"/>
-
-            <CheckBox Content="Show advanced options"
-                      IsChecked="{x:Bind ViewModel.ShowAdvancedOptions, Mode=TwoWay}"/>
-
-            <StackPanel Spacing="12"
-                        Visibility="{x:Bind ViewModel.ShowAdvancedOptions, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
-                <TextBlock Text="Max Pages (optional)"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                <TextBox PlaceholderText="Leave blank to scan until empty"
-                         Text="{x:Bind ViewModel.MaxPages, Mode=TwoWay}"/>
-
-                <TextBlock Text="Max Matches (optional)"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                <TextBox PlaceholderText="Leave blank for all matches"
-                         Text="{x:Bind ViewModel.MaxMatches, Mode=TwoWay}"/>
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" Spacing="12">
-                <Button Content="Run"
-                        Command="{x:Bind ViewModel.RunCommand}"
+                <Button Content="Start Extraction"
+                        Command="{x:Bind ViewModel.StartCommand}"
                         Style="{StaticResource PrimaryAction}"/>
 
                 <Button Content="Cancel"
@@ -44322,9 +44642,17 @@ public sealed partial class TwicDownloaderPage : Page
                                 CommandParameter="{Binding}">
                             <StackPanel Spacing="10">
                                 <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <FontIcon Glyph="{Binding IconGlyph}"
-                                              Foreground="{StaticResource PrimaryBrush}"
-                                              FontSize="28"/>
+                                    <Grid Width="28" Height="28">
+                                        <Image Source="{Binding IconAssetUri}"
+                                               Width="28"
+                                               Height="28"
+                                               Stretch="Uniform"
+                                               Visibility="{Binding HasIconAsset, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                        <FontIcon Glyph="{Binding IconGlyph}"
+                                                  Foreground="{StaticResource PrimaryBrush}"
+                                                  FontSize="28"
+                                                  Visibility="{Binding HasIconAsset, Converter={StaticResource InverseBoolToVisibilityConverter}}"/>
+                                    </Grid>
                                     <TextBlock Text="{Binding Name}"
                                                FontSize="18"
                                                Style="{StaticResource BodyStrongTextBlockStyle}"/>

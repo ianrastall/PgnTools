@@ -4,6 +4,8 @@ namespace PgnTools.Helpers;
 
 public static class FileReplacementHelper
 {
+    private const int MaxReplaceAttempts = 6;
+
     public static void ReplaceFile(string tempFilePath, string destinationPath)
     {
         if (string.IsNullOrWhiteSpace(tempFilePath))
@@ -26,13 +28,42 @@ public static class FileReplacementHelper
             Directory.CreateDirectory(directory);
         }
 
-        try
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
         {
-            File.Replace(tempFilePath, destinationPath, null);
+            try
+            {
+                if (File.Exists(destinationPath))
+                {
+                    File.Replace(tempFilePath, destinationPath, null);
+                }
+                else
+                {
+                    File.Move(tempFilePath, destinationPath);
+                }
+
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                // Destination does not exist yet, so fallback to a move.
+                File.Move(tempFilePath, destinationPath);
+                return;
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
         }
-        catch (FileNotFoundException)
-        {
-            File.Move(tempFilePath, destinationPath);
-        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
     }
 }

@@ -12,10 +12,10 @@
     <Page.Resources>
         <Style x:Key="ToolCardButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="{ThemeResource SystemControlBackgroundBaseLowBrush}"/>
-            <Setter Property="BorderBrush" Value="{ThemeResource SystemControlForegroundBaseLowBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="12"/>
-            <Setter Property="Padding" Value="16"/>
+            <Setter Property="BorderBrush" Value="{StaticResource AccentLightBrush}"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="CornerRadius" Value="14"/>
+            <Setter Property="Padding" Value="20"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="VerticalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
@@ -37,7 +37,7 @@
                                     </VisualState>
                                     <VisualState x:Name="Pressed">
                                         <VisualState.Setters>
-                                            <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentDarkBrush}"/>
+                                            <Setter Target="CardBorder.BorderBrush" Value="{StaticResource AccentBrush}"/>
                                             <Setter Target="CardBorder.Background" Value="{StaticResource AccentLightBrushLow}"/>
                                         </VisualState.Setters>
                                     </VisualState>
@@ -74,8 +74,8 @@
                       VerticalScrollBarVisibility="Auto">
             <controls:ItemsRepeater ItemsSource="{Binding Tools}">
                 <controls:ItemsRepeater.Layout>
-                    <controls:UniformGridLayout MinItemWidth="260"
-                                                MinItemHeight="160"
+                    <controls:UniformGridLayout MinItemWidth="320"
+                                                MinItemHeight="200"
                                                 MinRowSpacing="16"
                                                 MinColumnSpacing="16"
                                                 ItemsJustification="SpaceEvenly"/>
@@ -89,25 +89,25 @@
                                 CommandParameter="{Binding}">
                             <StackPanel Spacing="10">
                                 <StackPanel Orientation="Horizontal" Spacing="12">
-                                    <Grid Width="28" Height="28">
+                                    <Grid Width="34" Height="34">
                                         <Image Source="{Binding IconAssetUri}"
-                                               Width="28"
-                                               Height="28"
+                                               Width="34"
+                                               Height="34"
                                                Stretch="Uniform"
                                                Visibility="{Binding HasIconAsset, Converter={StaticResource BoolToVisibilityConverter}}"/>
                                         <FontIcon Glyph="{Binding IconGlyph}"
-                                                  Foreground="{StaticResource PrimaryBrush}"
-                                                  FontSize="28"
+                                                  Foreground="{StaticResource AccentLightBrush}"
+                                                  FontSize="34"
                                                   Visibility="{Binding HasIconAsset, Converter={StaticResource InverseBoolToVisibilityConverter}}"/>
                                     </Grid>
                                     <TextBlock Text="{Binding Name}"
-                                               FontSize="18"
+                                               FontSize="20"
                                                Style="{StaticResource BodyStrongTextBlockStyle}"/>
                                 </StackPanel>
                                 <TextBlock Text="{Binding Description}"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                            TextWrapping="Wrap"
-                                           FontSize="15"/>
+                                           FontSize="16"/>
                             </StackPanel>
                         </Button>
                     </DataTemplate>

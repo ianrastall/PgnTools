@@ -16,7 +16,8 @@ public interface IChessAnalyzerService
         int depth,
         string? tablebasePath,
         IProgress<AnalyzerProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false);
 }
 
 public readonly record struct AnalyzerProgress(long ProcessedGames, long TotalGames, double Percent);
@@ -45,6 +46,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
     private readonly PgnWriter _pgnWriter;
 
     private readonly record struct PgnToken(string Text, bool IsMove, string? San);
+    private readonly record struct AnalyzedGameResult(string MoveText, EleganceScore? Elegance);
 
     public ChessAnalyzerService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
@@ -59,7 +61,8 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         int depth,
         string? tablebasePath,
         IProgress<AnalyzerProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false)
     {
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
@@ -117,16 +120,8 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
         try
         {
-            await using var outputStream = new FileStream(
-                tempOutputPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-
-            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-
+            var processedGames = 0L;
+            
             UciEngine? engine = null;
             var cancellationRegistration = default(CancellationTokenRegistration);
 
@@ -154,54 +149,71 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             try
             {
-                engine = await StartEngineAsync();
-
-                var processedGames = 0L;
-                var firstOutput = true;
-                progress?.Report(new AnalyzerProgress(0, totalGames, 0));
-
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                await using (var outputStream = new FileStream(
+                    tempOutputPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    BufferSize,
+                    FileOptions.SequentialScan | FileOptions.Asynchronous))
+                using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    processedGames++;
+                    engine = await StartEngineAsync();
 
-                    try
+                    var firstOutput = true;
+                    progress?.Report(new AnalyzerProgress(0, totalGames, 0));
+
+                    await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
                     {
-                        await engine.NewGameAsync(cancellationToken);
-                        game.MoveText = await AnalyzeGameAsync(game, engine, depth, cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
-                        game.Headers["Annotator"] = "PgnTools";
-                        game.Headers["AnalysisDepth"] = depth.ToString();
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception)
-                    {
-                        if (engine.HasExited)
+                        processedGames++;
+
+                        try
                         {
-                            engine.Dispose();
-                            engine = await StartEngineAsync();
+                            await engine.NewGameAsync(cancellationToken);
+                            var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken);
+                            game.MoveText = analysis.MoveText;
+                            cancellationToken.ThrowIfCancellationRequested();
+                            game.Headers["Annotator"] = "PgnTools";
+                            game.Headers["AnalysisDepth"] = depth.ToString();
+
+                            if (addEleganceTags && analysis.Elegance.HasValue)
+                            {
+                                var elegance = analysis.Elegance.Value;
+                                game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
+                                game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception)
+                        {
+                            if (engine.HasExited)
+                            {
+                                engine.Dispose();
+                                engine = await StartEngineAsync();
+                            }
+
+                            // If analysis fails for a given game, preserve the original movetext
+                            // and continue processing the rest of the file.
                         }
 
-                        // If analysis fails for a given game, preserve the original movetext
-                        // and continue processing the rest of the file.
+                        if (!firstOutput)
+                        {
+                            await writer.WriteLineAsync();
+                        }
+
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        firstOutput = false;
+
+                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
                     }
 
-                    if (!firstOutput)
-                    {
-                        await writer.WriteLineAsync();
-                    }
-
-                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
-                    firstOutput = false;
-
-                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
-                    progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
+                    await writer.FlushAsync();
                 }
-
-                await writer.FlushAsync();
 
                 FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                 progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
@@ -253,19 +265,33 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         "*"
     ];
 
-    private async Task<string> AnalyzeGameAsync(PgnGame game, UciEngine engine, int depth, CancellationToken cancellationToken)
+    private async Task<AnalyzedGameResult> AnalyzeGameAsync(
+        PgnGame game,
+        UciEngine engine,
+        int depth,
+        bool addEleganceTags,
+        CancellationToken cancellationToken)
     {
         var board = CreateBoardFromHeaders(game.Headers);
         var tokens = TokenizeMoveTextPreserving(game.MoveText);
 
         if (tokens.Count == 0 || tokens.TrueForAll(token => !token.IsMove))
         {
-            return game.MoveText;
+            return new AnalyzedGameResult(game.MoveText, null);
         }
 
         var builder = new StringBuilder(game.MoveText.Length + tokens.Count * 24);
-        var scoreBefore = await engine.AnalyzeAsync(board.ToFen(), depth, cancellationToken);
+        var fenBefore = board.ToFen();
+        var scoreBefore = await engine.AnalyzeAsync(fenBefore, depth, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
+
+        var metrics = addEleganceTags ? new RunningEleganceMetrics() : default;
+        var whiteMaterialBefore = 0;
+        var blackMaterialBefore = 0;
+        if (addEleganceTags)
+        {
+            ComputeMaterialTotalsCp(fenBefore, out whiteMaterialBefore, out blackMaterialBefore);
+        }
 
         foreach (var token in tokens)
         {
@@ -282,24 +308,126 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                 throw new InvalidOperationException($"Unable to parse move token: {token.Text}");
             }
 
-            // Apply the move. If this throws, the caller will preserve original movetext.
-            board.Move(token.San);
+            var moverSide = board.Turn;
+            var san = token.San;
+            var hasCapture = san.IndexOf('x') >= 0;
+            var hasCheck = san.IndexOf('+') >= 0;
+            var hasMate = san.IndexOf('#') >= 0;
+            var hasPromotion = san.IndexOf('=') >= 0;
+            var isQuiet = !hasCapture && !hasCheck && !hasMate && !hasPromotion;
 
-            var scoreAfter = await engine.AnalyzeAsync(board.ToFen(), depth, cancellationToken);
+            // Apply the move. If this throws, the caller will preserve original movetext.
+            board.Move(san);
+
+            var fenAfter = board.ToFen();
+            var scoreAfter = await engine.AnalyzeAsync(fenAfter, depth, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             var deltaCp = ComputeDeltaForMover(scoreBefore, scoreAfter);
             var nag = GetNagForDelta(deltaCp);
 
-            var afterWhite = ToWhitePerspective(scoreAfter, board.Turn);
+            var sideToMoveAfter = board.Turn;
+            var afterWhite = ToWhitePerspective(scoreAfter, sideToMoveAfter);
             var evalText = FormatEval(afterWhite);
 
             var annotatedMove = BuildAnnotatedMove(token.Text, nag, evalText);
             builder.Append(annotatedMove);
 
+            if (addEleganceTags)
+            {
+                metrics.PlyCount++;
+                metrics.EvaluatedPlyCount++;
+
+                ComputeMaterialTotalsCp(fenAfter, out var whiteMaterialAfter, out var blackMaterialAfter);
+
+                var whiteMaterialLossCp = whiteMaterialBefore - whiteMaterialAfter;
+                if (whiteMaterialLossCp > 0)
+                {
+                    UpdateSacrificeMetrics(
+                        PieceColor.White,
+                        whiteMaterialLossCp,
+                        scoreBefore,
+                        moverSide,
+                        scoreAfter,
+                        sideToMoveAfter,
+                        ref metrics);
+                }
+
+                var blackMaterialLossCp = blackMaterialBefore - blackMaterialAfter;
+                if (blackMaterialLossCp > 0)
+                {
+                    UpdateSacrificeMetrics(
+                        PieceColor.Black,
+                        blackMaterialLossCp,
+                        scoreBefore,
+                        moverSide,
+                        scoreAfter,
+                        sideToMoveAfter,
+                        ref metrics);
+                }
+
+                whiteMaterialBefore = whiteMaterialAfter;
+                blackMaterialBefore = blackMaterialAfter;
+
+                if (hasCapture || hasCheck || hasMate || hasPromotion)
+                {
+                    metrics.ForcingMoveCount++;
+                }
+
+                if (deltaCp <= BlunderThresholdCp)
+                {
+                    metrics.BlunderCount++;
+                }
+                else if (deltaCp <= MistakeThresholdCp)
+                {
+                    metrics.MistakeCount++;
+                }
+                else if (deltaCp <= InaccuracyThresholdCp)
+                {
+                    metrics.DubiousCount++;
+                }
+
+                if (isQuiet && deltaCp >= 150)
+                {
+                    metrics.QuietImprovementCount++;
+                }
+
+                var evalWhiteCp = afterWhite.Centipawns;
+                if (metrics.PreviousEvalWhiteCp.HasValue)
+                {
+                    metrics.SwingAbsSum += Math.Abs(evalWhiteCp - metrics.PreviousEvalWhiteCp.Value);
+                    metrics.SwingCount++;
+                }
+
+                metrics.PreviousEvalWhiteCp = evalWhiteCp;
+
+                metrics.MoverDeltaSum += deltaCp;
+                metrics.MoverDeltaSquareSum += deltaCp * (double)deltaCp;
+                metrics.MoverDeltaCount++;
+
+                var evalForMoverSide = moverSide == PieceColor.White ? evalWhiteCp : -evalWhiteCp;
+                if (moverSide == PieceColor.White)
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.WhiteLastEval,
+                        ref metrics.WhitePreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+                else
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.BlackLastEval,
+                        ref metrics.BlackPreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+            }
+
             // After the move, the engine evaluation is from the perspective of the
             // next side to move, which is exactly the "before" score for the next ply.
             scoreBefore = scoreAfter;
+            fenBefore = fenAfter;
         }
 
         if (!ContainsResultToken(tokens))
@@ -316,7 +444,45 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             }
         }
 
-        return builder.ToString();
+        EleganceScore? elegance = null;
+        if (addEleganceTags && metrics.PlyCount > 0)
+        {
+            var forcingPercent = metrics.PlyCount > 0
+                ? metrics.ForcingMoveCount * 100d / metrics.PlyCount
+                : 0d;
+
+            var averageAbsSwing = metrics.SwingCount > 0
+                ? metrics.SwingAbsSum / metrics.SwingCount
+                : 350d;
+
+            var evalStdDev = 220d;
+            if (metrics.MoverDeltaCount > 0)
+            {
+                var mean = metrics.MoverDeltaSum / metrics.MoverDeltaCount;
+                var variance = (metrics.MoverDeltaSquareSum / metrics.MoverDeltaCount) - (mean * mean);
+                evalStdDev = Math.Sqrt(Math.Max(0d, variance));
+            }
+
+            var eleganceMetrics = new EleganceEvaluationMetrics(
+                metrics.PlyCount,
+                metrics.EvaluatedPlyCount,
+                forcingPercent,
+                metrics.QuietImprovementCount,
+                metrics.TrendBreakCount,
+                metrics.BlunderCount,
+                metrics.MistakeCount,
+                metrics.DubiousCount,
+                averageAbsSwing,
+                evalStdDev,
+                metrics.SoundSacrificeCount,
+                metrics.UnsoundSacrificeCount,
+                metrics.SoundSacrificeCp,
+                metrics.UnsoundSacrificeCp);
+
+            elegance = EleganceScoreCalculator.Calculate(eleganceMetrics);
+        }
+
+        return new AnalyzedGameResult(builder.ToString(), elegance);
     }
 
     private static ChessBoard CreateBoardFromHeaders(IReadOnlyDictionary<string, string> headers)
@@ -376,6 +542,140 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         // so we invert the sign to get the mover's perspective again.
         var afterForMover = -after.Centipawns;
         return afterForMover - before.Centipawns;
+    }
+
+    private static void UpdateSacrificeMetrics(
+        PieceColor sideLosingMaterial,
+        int materialLossCp,
+        EngineScore scoreBefore,
+        PieceColor sideToMoveBefore,
+        EngineScore scoreAfter,
+        PieceColor sideToMoveAfter,
+        ref RunningEleganceMetrics metrics)
+    {
+        // Ignore tiny losses (for example, transient rounding or malformed data).
+        if (materialLossCp < 100)
+        {
+            return;
+        }
+
+        var evalBeforeForLosingSide = ToPerspectiveCentipawns(scoreBefore, sideLosingMaterial, sideToMoveBefore);
+        var evalAfterForLosingSide = ToPerspectiveCentipawns(scoreAfter, sideLosingMaterial, sideToMoveAfter);
+        var evalDeltaForLosingSide = evalAfterForLosingSide - evalBeforeForLosingSide;
+
+        var maxAllowedDrop = materialLossCp switch
+        {
+            >= 500 => -140,
+            >= 300 => -120,
+            _ => -90
+        };
+
+        var absoluteFloor = materialLossCp switch
+        {
+            >= 500 => -220,
+            >= 300 => -180,
+            _ => -140
+        };
+
+        if (evalAfterForLosingSide >= absoluteFloor && evalDeltaForLosingSide >= maxAllowedDrop)
+        {
+            metrics.SoundSacrificeCount++;
+            metrics.SoundSacrificeCp += materialLossCp;
+        }
+        else
+        {
+            metrics.UnsoundSacrificeCount++;
+            metrics.UnsoundSacrificeCp += materialLossCp;
+        }
+    }
+
+    private static int ToPerspectiveCentipawns(EngineScore score, PieceColor perspective, PieceColor sideToMove)
+    {
+        var whitePerspective = ToWhitePerspective(score, sideToMove).Centipawns;
+        return perspective == PieceColor.White ? whitePerspective : -whitePerspective;
+    }
+
+    private static void ComputeMaterialTotalsCp(string fen, out int whiteMaterialCp, out int blackMaterialCp)
+    {
+        whiteMaterialCp = 0;
+        blackMaterialCp = 0;
+
+        if (string.IsNullOrWhiteSpace(fen))
+        {
+            return;
+        }
+
+        var span = fen.AsSpan();
+        var boardEnd = span.IndexOf(' ');
+        if (boardEnd < 0)
+        {
+            boardEnd = span.Length;
+        }
+
+        foreach (var symbol in span[..boardEnd])
+        {
+            if (symbol == '/' || (symbol >= '1' && symbol <= '8'))
+            {
+                continue;
+            }
+
+            var value = GetPieceMaterialValueCp(symbol);
+            if (value == 0)
+            {
+                continue;
+            }
+
+            if (char.IsUpper(symbol))
+            {
+                whiteMaterialCp += value;
+            }
+            else
+            {
+                blackMaterialCp += value;
+            }
+        }
+    }
+
+    private static int GetPieceMaterialValueCp(char piece) => piece switch
+    {
+        'P' or 'p' => 100,
+        'N' or 'n' => 320,
+        'B' or 'b' => 330,
+        'R' or 'r' => 500,
+        'Q' or 'q' => 900,
+        _ => 0
+    };
+
+    private static void UpdateTrendMetrics(
+        double evalForSide,
+        ref double? lastEval,
+        ref double? previousDelta,
+        ref int trendBreakCount)
+    {
+        if (!lastEval.HasValue)
+        {
+            lastEval = evalForSide;
+            return;
+        }
+
+        var delta1 = evalForSide - lastEval.Value;
+        if (previousDelta.HasValue)
+        {
+            var previousSign = Math.Sign(previousDelta.Value);
+            var currentSign = Math.Sign(delta1);
+            var delta2 = delta1 - previousDelta.Value;
+
+            if (previousSign != 0 &&
+                currentSign != 0 &&
+                previousSign != currentSign &&
+                Math.Abs(delta2) >= 50d)
+            {
+                trendBreakCount++;
+            }
+        }
+
+        previousDelta = delta1;
+        lastEval = evalForSide;
     }
 
     private static string? GetNagForDelta(int deltaCp)
@@ -688,6 +988,32 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         }
 
         return totalGames;
+    }
+
+    private struct RunningEleganceMetrics
+    {
+        public int PlyCount;
+        public int EvaluatedPlyCount;
+        public int ForcingMoveCount;
+        public int QuietImprovementCount;
+        public int TrendBreakCount;
+        public int BlunderCount;
+        public int MistakeCount;
+        public int DubiousCount;
+        public int SoundSacrificeCount;
+        public int UnsoundSacrificeCount;
+        public int SoundSacrificeCp;
+        public int UnsoundSacrificeCp;
+        public double SwingAbsSum;
+        public int SwingCount;
+        public double MoverDeltaSum;
+        public double MoverDeltaSquareSum;
+        public int MoverDeltaCount;
+        public int? PreviousEvalWhiteCp;
+        public double? WhiteLastEval;
+        public double? WhitePreviousDelta;
+        public double? BlackLastEval;
+        public double? BlackPreviousDelta;
     }
 }
 

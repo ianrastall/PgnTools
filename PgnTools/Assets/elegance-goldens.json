@@ -1,0 +1,19 @@
+{
+  "Cases": [
+    {
+      "Name": "Immortal Game",
+      "InputFilePath": "goldens\\anderssen-kieseritzky-1851.pgn",
+      "MinScore": 90
+    },
+    {
+      "Name": "Morphy vs Lichtenhein 1857",
+      "InputFilePath": "goldens\\morphy-lichtenhein-1857.pgn",
+      "MinScore": 85
+    },
+    {
+      "Name": "Amateur Baseline",
+      "InputFilePath": "goldens\\amateur-baseline.pgn",
+      "MaxScore": 60
+    }
+  ]
+}

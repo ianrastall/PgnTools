@@ -268,14 +268,45 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 
     private static string GetInstallDirectory(string tag, StockfishVariant variant)
     {
-        var baseDir = Path.Combine(
+        var variantSegment = variant.ToString().ToLowerInvariant();
+
+        var assetsPreferred = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "stockfish",
+            tag,
+            variantSegment);
+
+        if (CanWriteToDirectory(assetsPreferred))
+        {
+            return assetsPreferred;
+        }
+
+        return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PgnTools",
             "Stockfish",
             tag,
-            variant.ToString().ToLowerInvariant());
+            variantSegment);
+    }
 
-        return baseDir;
+    private static bool CanWriteToDirectory(string directoryPath)
+    {
+        try
+        {
+            Directory.CreateDirectory(directoryPath);
+            var probePath = Path.Combine(directoryPath, $".write_probe_{Guid.NewGuid():N}.tmp");
+            using (new FileStream(probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+            }
+
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? FindExecutable(string installDirectory, StockfishVariant variant)

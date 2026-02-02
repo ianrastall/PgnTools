@@ -3,20 +3,19 @@ using System.IO;
 namespace PgnTools.ViewModels.Tools;
 
 /// <summary>
-/// ViewModel for the Chess Analyzer tool.
+/// ViewModel for the Elegance tool.
 /// </summary>
-public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
+public partial class EleganceViewModel : BaseViewModel, IDisposable
 {
-    private readonly IChessAnalyzerService _chessAnalyzerService;
+    private readonly IEleganceService _eleganceService;
+    private readonly IEleganceGoldenValidationService _goldenValidationService;
     private readonly IStockfishDownloaderService _stockfishDownloaderService;
     private readonly IAppSettingsService _settings;
     private readonly IWindowService _windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
-    private long _progressGames;
-    private long _progressTotal;
-    private const string SettingsPrefix = nameof(ChessAnalyzerViewModel);
+    private const string SettingsPrefix = nameof(EleganceViewModel);
 
     [ObservableProperty]
     private string _inputFilePath = string.Empty;
@@ -37,37 +36,30 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
     private string _outputFileName = string.Empty;
 
     [ObservableProperty]
-    private int _depth = 18;
-
-    [ObservableProperty]
-    private bool _addEleganceTags;
-
-    [ObservableProperty]
-    private bool _useTablebases;
-
-    [ObservableProperty]
-    private string _tablebasePath = string.Empty;
+    private int _depth = 14;
 
     [ObservableProperty]
     private bool _isRunning;
 
     [ObservableProperty]
-    private double _progressValue;
+    private string _statusMessage = "Select input/output PGN files and a UCI engine";
 
     [ObservableProperty]
-    private string _statusMessage = "Select an input PGN and a UCI engine (e.g., Stockfish)";
+    private double _progressValue;
 
-    public ChessAnalyzerViewModel(
-        IChessAnalyzerService chessAnalyzerService,
+    public EleganceViewModel(
+        IEleganceService eleganceService,
+        IEleganceGoldenValidationService goldenValidationService,
         IStockfishDownloaderService stockfishDownloaderService,
         IWindowService windowService,
         IAppSettingsService settings)
     {
-        _chessAnalyzerService = chessAnalyzerService;
+        _eleganceService = eleganceService;
+        _goldenValidationService = goldenValidationService;
         _stockfishDownloaderService = stockfishDownloaderService;
         _windowService = windowService;
         _settings = settings;
-        Title = "Chess Analyzer";
+        Title = "Elegance";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
@@ -102,7 +94,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
-                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_analyzed.pgn";
+                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}-elegance.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
                 OutputFileName = Path.GetFileName(OutputFilePath);
             }
@@ -110,6 +102,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
         }
     }
 
@@ -210,8 +203,8 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         try
         {
             var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
-                ? "analyzed.pgn"
-                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_analyzed.pgn";
+                ? "output-elegance.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}-elegance.pgn";
 
             var file = await FilePickerHelper.PickSaveFileAsync(
                 _windowService.WindowHandle,
@@ -238,33 +231,6 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             StatusSeverity = InfoBarSeverity.Error;
         }
     }
-
-    [RelayCommand]
-    private async Task SelectTablebaseFolderAsync()
-    {
-        try
-        {
-            var folder = await FilePickerHelper.PickFolderAsync(
-                _windowService.WindowHandle,
-                $"{SettingsPrefix}.Picker.Tablebases");
-            if (folder == null)
-            {
-                return;
-            }
-
-            TablebasePath = folder.Path;
-            UseTablebases = true;
-            StatusMessage = $"Selected tablebase folder: {folder.Name}";
-            StatusSeverity = InfoBarSeverity.Informational;
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Error selecting tablebase folder: {ex.Message}";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
-    }
-
-    private bool CanDownloadLatestEngine() => !IsRunning;
 
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RunAsync()
@@ -299,10 +265,89 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             return;
         }
 
-        if (UseTablebases && (string.IsNullOrWhiteSpace(TablebasePath) || !Directory.Exists(TablebasePath)))
+        if (!await _executionLock.WaitAsync(0))
         {
-            StatusMessage = "Tablebase folder not found.";
+            return;
+        }
+
+        try
+        {
+            IsRunning = true;
+            ProgressValue = 0;
+            StatusMessage = "Running engine analysis and scoring elegance...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<double>(p =>
+            {
+                ProgressValue = p;
+                StatusMessage = $"Analyzing and scoring... {p:0}%";
+                StatusDetail = BuildProgressDetail(p);
+            });
+
+            var result = await _eleganceService.TagEleganceAsync(
+                InputFilePath,
+                OutputFilePath,
+                EnginePath,
+                Depth,
+                progress,
+                _cancellationTokenSource.Token);
+
+            if (result.ProcessedGames == 0)
+            {
+                StatusMessage = "No games found.";
+                StatusSeverity = InfoBarSeverity.Warning;
+                StatusDetail = BuildProgressDetail(100, 0, null, "games");
+                return;
+            }
+
+            StatusMessage =
+                $"Completed! Tagged {result.ProcessedGames:N0} games • Avg {result.AverageScore:0.0}" +
+                $" (S:{result.AverageSoundness:0.0} C:{result.AverageCoherence:0.0} T:{result.AverageTactical:0.0} Q:{result.AverageQuiet:0.0})";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, result.ProcessedGames, null, "games");
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Elegance tagging cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+        }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanValidateGoldens))]
+    private async Task ValidateGoldensAsync()
+    {
+        if (string.IsNullOrWhiteSpace(EnginePath) || !File.Exists(EnginePath))
+        {
+            StatusMessage = "Select a valid engine first.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+        }
+
+        var manifestPath = Path.Combine(AppContext.BaseDirectory, "Assets", "elegance-goldens.json");
+        if (!File.Exists(manifestPath))
+        {
+            StatusMessage = "Golden manifest not found: Assets/elegance-goldens.json";
+            StatusSeverity = InfoBarSeverity.Warning;
             return;
         }
 
@@ -315,58 +360,61 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         {
             IsRunning = true;
             ProgressValue = 0;
-            StatusMessage = "Initializing engine...";
+            StatusMessage = "Running golden validation...";
             StatusSeverity = InfoBarSeverity.Informational;
-            _progressGames = 0;
-            _progressTotal = 0;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail(0);
 
             _cancellationTokenSource = new CancellationTokenSource();
 
-            var progress = new Progress<AnalyzerProgress>(p =>
+            var statusProgress = new Progress<string>(message =>
             {
-                _progressGames = p.ProcessedGames;
-                _progressTotal = p.TotalGames;
-                ProgressValue = p.Percent;
-                StatusMessage = $"Analyzing games... {p.Percent:0}%";
-                StatusDetail = BuildProgressDetail(p.Percent, p.ProcessedGames, p.TotalGames, "games");
+                StatusMessage = message;
+                StatusDetail = BuildProgressDetail(ProgressValue);
             });
 
-            await _chessAnalyzerService.AnalyzePgnAsync(
-                InputFilePath,
-                OutputFilePath,
+            var summary = await _goldenValidationService.ValidateAsync(
+                manifestPath,
                 EnginePath,
                 Depth,
-                UseTablebases ? TablebasePath : null,
-                progress,
-                _cancellationTokenSource.Token,
-                AddEleganceTags);
-
-            if (_cancellationTokenSource?.IsCancellationRequested == true)
-            {
-                throw new OperationCanceledException(_cancellationTokenSource.Token);
-            }
+                statusProgress,
+                _cancellationTokenSource.Token);
 
             ProgressValue = 100;
-            StatusMessage = AddEleganceTags
-                ? "Analysis and Elegance tagging complete. (Move-by-move evals require SAN/FEN support.)"
-                : "Analysis complete. (Move-by-move evals require SAN/FEN support.)";
-            StatusSeverity = InfoBarSeverity.Success;
-            StatusDetail = BuildProgressDetail(100, _progressTotal > 0 ? _progressTotal : _progressGames, _progressTotal, "games");
+
+            if (summary.Total == 0)
+            {
+                StatusMessage = "No golden cases found in manifest.";
+                StatusSeverity = InfoBarSeverity.Warning;
+                StatusDetail = BuildProgressDetail(100, 0, null, "cases");
+                return;
+            }
+
+            var failed = summary.Cases.Where(c => !c.Passed).ToList();
+            if (failed.Count == 0)
+            {
+                StatusMessage = $"Golden validation passed ({summary.Passed}/{summary.Total}).";
+                StatusSeverity = InfoBarSeverity.Success;
+                StatusDetail = BuildProgressDetail(100, summary.Total, summary.Total, "cases");
+                return;
+            }
+
+            var firstFailure = failed[0];
+            StatusMessage = $"Golden validation failed ({summary.Passed}/{summary.Total}). First: {firstFailure.Name} -> {firstFailure.Message}";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(100, summary.Total, summary.Total, "cases");
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Analysis cancelled";
+            StatusMessage = "Golden validation cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
-            ProgressValue = 0;
-            StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
+            StatusDetail = BuildProgressDetail(ProgressValue);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error: {ex.Message}";
+            StatusMessage = $"Error validating goldens: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-            StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
+            StatusDetail = BuildProgressDetail(ProgressValue);
         }
         finally
         {
@@ -385,13 +433,21 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         !string.IsNullOrWhiteSpace(OutputFilePath) &&
         File.Exists(InputFilePath) &&
         File.Exists(EnginePath) &&
-        (!UseTablebases || (!string.IsNullOrWhiteSpace(TablebasePath) && Directory.Exists(TablebasePath)));
+        Depth > 0;
+
+    private bool CanValidateGoldens() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(EnginePath) &&
+        File.Exists(EnginePath) &&
+        Depth > 0;
+
+    private bool CanDownloadLatestEngine() => !IsRunning;
 
     [RelayCommand]
     private void Cancel()
     {
         _cancellationTokenSource?.Cancel();
-        StatusMessage = "Cancelling... finishing current game.";
+        StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
@@ -403,18 +459,14 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
 
     partial void OnEnginePathChanged(string value)
     {
-        if (!string.IsNullOrWhiteSpace(value) && !File.Exists(value))
-        {
-            StatusMessage = "Engine executable not found.";
-            StatusSeverity = InfoBarSeverity.Error;
-        }
-
         RunCommand.NotifyCanExecuteChanged();
+        ValidateGoldensCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
+        ValidateGoldensCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnDepthChanged(int value)
@@ -437,19 +489,10 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         RunCommand.NotifyCanExecuteChanged();
     }
 
-    partial void OnUseTablebasesChanged(bool value)
-    {
-        RunCommand.NotifyCanExecuteChanged();
-    }
-
-    partial void OnTablebasePathChanged(string value)
-    {
-        RunCommand.NotifyCanExecuteChanged();
-    }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
+        ValidateGoldensCommand.NotifyCanExecuteChanged();
         DownloadLatestEngineCommand.NotifyCanExecuteChanged();
     }
 
@@ -504,14 +547,6 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
 
         Depth = _settings.GetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
-        AddEleganceTags = _settings.GetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
-        UseTablebases = _settings.GetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
-        TablebasePath = _settings.GetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
-        if (!string.IsNullOrWhiteSpace(TablebasePath) && !Directory.Exists(TablebasePath))
-        {
-            TablebasePath = string.Empty;
-            UseTablebases = false;
-        }
     }
 
     private void SaveState()
@@ -520,9 +555,6 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(EnginePath)}", EnginePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
-        _settings.SetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
     }
 
     private static string ResolvePreferredEnginePath()
@@ -576,4 +608,3 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
     }
 }
-
