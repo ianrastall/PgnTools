@@ -121,6 +121,9 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         try
         {
             var processedGames = 0L;
+            var analyzedGames = 0L;
+            var failedGames = 0L;
+            string? firstFailureMessage = null;
             
             UciEngine? engine = null;
             var cancellationRegistration = default(CancellationTokenRegistration);
@@ -170,26 +173,36 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
                         try
                         {
-                            await engine.NewGameAsync(cancellationToken);
-                            var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken);
-                            game.MoveText = analysis.MoveText;
-                            cancellationToken.ThrowIfCancellationRequested();
-                            game.Headers["Annotator"] = "PgnTools";
-                            game.Headers["AnalysisDepth"] = depth.ToString();
-
-                            if (addEleganceTags && analysis.Elegance.HasValue)
+                            await Task.Run(async () =>
                             {
-                                var elegance = analysis.Elegance.Value;
-                                game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
-                                game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
-                            }
+                                await engine.NewGameAsync(cancellationToken).ConfigureAwait(false);
+                                var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken)
+                                    .ConfigureAwait(false);
+
+                                game.MoveText = analysis.MoveText;
+                                cancellationToken.ThrowIfCancellationRequested();
+                                game.Headers["Annotator"] = "PgnTools";
+                                game.Headers["AnalysisDepth"] = depth.ToString(CultureInfo.InvariantCulture);
+
+                                if (addEleganceTags && analysis.Elegance.HasValue)
+                                {
+                                    var elegance = analysis.Elegance.Value;
+                                    game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
+                                    game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
+                                }
+                            }, cancellationToken).ConfigureAwait(false);
+
+                            analyzedGames++;
                         }
                         catch (OperationCanceledException)
                         {
                             throw;
                         }
-                        catch (Exception)
+                        catch (Exception ex)
                         {
+                            failedGames++;
+                            firstFailureMessage ??= $"Game #{processedGames}: {ex.GetType().Name}: {ex.Message}";
+
                             if (engine.HasExited)
                             {
                                 engine.Dispose();
@@ -213,6 +226,12 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     }
 
                     await writer.FlushAsync();
+                }
+
+                if (analyzedGames == 0 && failedGames > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"No games could be analyzed. First failure: {firstFailureMessage ?? "Unknown move parsing error."}");
                 }
 
                 FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
@@ -256,6 +275,10 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
     private static readonly Regex InlineNagRegex = new(
         @"\$\d+",
         RegexOptions.Compiled);
+
+    private static readonly Regex CoordinateMoveRegex = new(
+        @"^(?<piece>[KQRBNP])?(?<from>[a-h][1-8])(?:[-x:]?)(?<to>[a-h][1-8])(?:=?(?<promo>[QRBN]))?$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly HashSet<string> ResultTokens =
     [
@@ -309,15 +332,24 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             }
 
             var moverSide = board.Turn;
-            var san = token.San;
-            var hasCapture = san.IndexOf('x') >= 0;
-            var hasCheck = san.IndexOf('+') >= 0;
-            var hasMate = san.IndexOf('#') >= 0;
-            var hasPromotion = san.IndexOf('=') >= 0;
+            if (!TryResolveMoveNotation(board, token.San, out var resolvedSan))
+            {
+                throw new InvalidOperationException(
+                    $"Unsupported move notation '{token.San}' in token '{token.Text}'.");
+            }
+
+            var hasCapture = resolvedSan.IndexOf('x') >= 0;
+            var hasCheck = resolvedSan.IndexOf('+') >= 0;
+            var hasMate = resolvedSan.IndexOf('#') >= 0;
+            var hasPromotion = resolvedSan.IndexOf('=') >= 0;
             var isQuiet = !hasCapture && !hasCheck && !hasMate && !hasPromotion;
 
             // Apply the move. If this throws, the caller will preserve original movetext.
-            board.Move(san);
+            if (!board.Move(resolvedSan))
+            {
+                throw new InvalidOperationException(
+                    $"Failed to apply move '{resolvedSan}' parsed from token '{token.Text}'.");
+            }
 
             var fenAfter = board.ToFen();
             var scoreAfter = await engine.AnalyzeAsync(fenAfter, depth, cancellationToken);
@@ -758,6 +790,142 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         return token;
     }
 
+    private static bool TryResolveMoveNotation(ChessBoard board, string moveToken, out string resolvedSan)
+    {
+        resolvedSan = string.Empty;
+        if (string.IsNullOrWhiteSpace(moveToken))
+        {
+            return false;
+        }
+
+        var candidate = moveToken.Trim();
+        if (board.IsValidMove(candidate))
+        {
+            resolvedSan = candidate;
+            return true;
+        }
+
+        candidate = TrimNonSanSuffixes(candidate);
+        if (candidate.Length == 0)
+        {
+            return false;
+        }
+
+        if (board.IsValidMove(candidate))
+        {
+            resolvedSan = candidate;
+            return true;
+        }
+
+        var match = CoordinateMoveRegex.Match(candidate);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var from = match.Groups["from"].Value;
+        var to = match.Groups["to"].Value;
+        var pieceGroup = match.Groups["piece"];
+        var promoGroup = match.Groups["promo"];
+
+        var expectedPieceChar = pieceGroup.Success
+            ? char.ToLowerInvariant(pieceGroup.ValueSpan[0])
+            : '\0';
+
+        var expectedPromotionChar = promoGroup.Success
+            ? char.ToLowerInvariant(promoGroup.ValueSpan[0])
+            : '\0';
+
+        foreach (var legalMove in board.Moves(allowAmbiguousCastle: true, generateSan: true))
+        {
+            if (!SquareEquals(legalMove.OriginalPosition, from) ||
+                !SquareEquals(legalMove.NewPosition, to))
+            {
+                continue;
+            }
+
+            if (expectedPieceChar != '\0')
+            {
+                var movePieceChar = char.ToLowerInvariant(legalMove.Piece.Type.AsChar);
+                if (expectedPieceChar != movePieceChar)
+                {
+                    continue;
+                }
+            }
+
+            if (expectedPromotionChar != '\0')
+            {
+                if (!legalMove.IsPromotion)
+                {
+                    continue;
+                }
+
+                var promotionPiece = legalMove.Promotion;
+                if (promotionPiece == null)
+                {
+                    continue;
+                }
+
+                var movePromotionChar = char.ToLowerInvariant(promotionPiece.Type.AsChar);
+                if (expectedPromotionChar != movePromotionChar)
+                {
+                    continue;
+                }
+            }
+            else if (legalMove.IsPromotion)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(legalMove.San))
+            {
+                continue;
+            }
+
+            resolvedSan = legalMove.San;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string TrimNonSanSuffixes(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return string.Empty;
+        }
+
+        var candidate = token.Trim();
+        if (candidate.EndsWith("e.p.", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = candidate[..^4].TrimEnd();
+        }
+        else if (candidate.EndsWith("ep", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = candidate[..^2].TrimEnd();
+        }
+
+        while (candidate.Length > 0)
+        {
+            var last = candidate[^1];
+            if (last is '+' or '#')
+            {
+                candidate = candidate[..^1].TrimEnd();
+                continue;
+            }
+
+            break;
+        }
+
+        return candidate;
+    }
+
+    private static bool SquareEquals(Position position, string square)
+    {
+        return position.ToString().Equals(square, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static List<PgnToken> TokenizeMoveTextPreserving(string moveText)
     {
         var tokens = new List<PgnToken>();
@@ -781,16 +949,11 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             var isMove = false;
             string? san = null;
-            var isEnPassantSuffix = false;
 
-            if (variationDepth == 0 && TryParseMoveToken(text, out var parsedSan, out isEnPassantSuffix))
+            if (variationDepth == 0 && TryParseMoveToken(text, out var parsedSan))
             {
                 isMove = true;
                 san = parsedSan;
-            }
-            else if (variationDepth == 0 && isEnPassantSuffix)
-            {
-                AppendEnPassantSuffix(tokens);
             }
 
             tokens.Add(new PgnToken(text, isMove, san));
@@ -896,10 +1059,9 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         return tokens;
     }
 
-    private static bool TryParseMoveToken(string token, out string san, out bool isEnPassantSuffix)
+    private static bool TryParseMoveToken(string token, out string san)
     {
         san = string.Empty;
-        isEnPassantSuffix = false;
 
         if (string.IsNullOrWhiteSpace(token))
         {
@@ -941,7 +1103,6 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         if (string.Equals(trimmed, "e.p.", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(trimmed, "ep", StringComparison.OrdinalIgnoreCase))
         {
-            isEnPassantSuffix = true;
             return false;
         }
 
@@ -955,27 +1116,6 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
         san = trimmed;
         return true;
-    }
-
-    private static void AppendEnPassantSuffix(List<PgnToken> tokens)
-    {
-        for (var i = tokens.Count - 1; i >= 0; i--)
-        {
-            var token = tokens[i];
-            if (!token.IsMove)
-            {
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(token.San) ||
-                token.San.Contains("e.p.", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            tokens[i] = new PgnToken(token.Text, token.IsMove, token.San + " e.p.");
-            return;
-        }
     }
 
     private async Task<long> CountGamesAsync(string inputFilePath, CancellationToken cancellationToken)
