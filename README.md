@@ -2,13 +2,13 @@
 
 A high-performance WinUI 3 desktop application for managing Portable Game Notation (PGN) files. This comprehensive toolkit provides various utilities for downloading, filtering, tagging, sorting, merging, and analyzing chess games.
 
-## 🤖 AI-Generated Project
+## AI-Generated Project
 
 **This application is completely written by artificial intelligence.** The project owner contributed the ideas and direction, while AI handled all of the implementation, including code, architecture, and documentation.
 
 ---
 
-## 📦 Getting the Application
+## Getting the Application
 
 ### Downloading the Latest Build
 
@@ -25,7 +25,7 @@ The easiest way to get PgnTools is through the GitHub Actions workflow artifacts
 
 ---
 
-## 🗂️ Required Assets
+## Required Assets
 
 PgnTools requires certain asset files to function properly. These must be placed in the `Assets` folder next to the executable.
 
@@ -57,7 +57,7 @@ PgnTools/
 
 ---
 
-## 🛠️ Tools
+## Tools
 
 PgnTools includes the following utilities:
 
@@ -101,7 +101,7 @@ PgnTools includes the following utilities:
 
 ---
 
-## 🔧 Tech Stack
+## Tech Stack
 
 - **.NET 10** (Preview/Latest)
 - **WinUI 3** (Windows App SDK)
@@ -110,6 +110,6 @@ PgnTools includes the following utilities:
 
 ---
 
-## 📄 License
+## License
 
 See the [LICENSE](LICENSE) file for details.
