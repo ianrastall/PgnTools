@@ -83,7 +83,7 @@ public sealed class EleganceService : IEleganceService
         var outputFullPath = Path.GetFullPath(outputFilePath);
         var engineFullPath = Path.GetFullPath(enginePath);
         var tempAnalyzedPath = Path.Combine(Path.GetTempPath(), $"pgntools-elegance-analyzed-{Guid.NewGuid():N}.pgn");
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {

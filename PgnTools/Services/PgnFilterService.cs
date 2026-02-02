@@ -64,7 +64,7 @@ public sealed class PgnFilterService : IPgnFilterService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {
@@ -187,7 +187,7 @@ public sealed class PgnFilterService : IPgnFilterService
                 return new PgnFilterResult(0, 0, 0);
             }
 
-            File.Move(tempOutputPath, outputFullPath, overwrite: true);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
 
             return new PgnFilterResult(processed, kept, modified);

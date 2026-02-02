@@ -104,7 +104,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {
@@ -195,7 +195,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                 return new StockfishNormalizeResult(0, 0);
             }
 
-            File.Move(tempOutputPath, outputFullPath, overwrite: true);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report((processed, $"Normalized {tagsUpdated:N0} tag(s) across {processed:N0} games."));
 
             return new StockfishNormalizeResult(processed, tagsUpdated);

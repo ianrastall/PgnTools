@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
 
@@ -37,6 +39,16 @@ public enum StockfishVariant
 public sealed class StockfishDownloaderService : IStockfishDownloaderService
 {
     private const int BufferSize = 65536;
+    private const int MaxRetryAttempts = 4;
+    private static readonly TimeSpan ReleaseRequestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DownloadRequestTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan[] RetryDelays =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2)
+    ];
     private static readonly Uri LatestReleaseUri = new("https://api.github.com/repos/official-stockfish/Stockfish/releases/latest");
 
     private static readonly HttpClient HttpClient = CreateClient();
@@ -84,7 +96,17 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
     {
         status?.Report("Querying latest Stockfish release...");
 
-        using var response = await HttpClient.GetAsync(LatestReleaseUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await SendWithRetryAsync(
+            () => CreateGitHubRequest(LatestReleaseUri, expectsJson: true),
+            ReleaseRequestTimeout,
+            cancellationToken);
+
+        if (IsRateLimited(response))
+        {
+            throw new InvalidOperationException(
+                "GitHub API rate limit exceeded. Set PGNTOOLS_GITHUB_TOKEN or GITHUB_TOKEN to increase the limit.");
+        }
+
         response.EnsureSuccessStatusCode();
 
         await using var jsonStream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -96,13 +118,20 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 
         var variant = SelectBestVariant();
         var asset = SelectAsset(assets, variant);
-        if (asset == null)
+        if (asset is null)
         {
             throw new InvalidOperationException("No compatible Stockfish Windows asset was found in the latest release.");
         }
 
-        var assetName = asset.Value.name;
-        var downloadUrl = asset.Value.url;
+        var assetName = asset.Name;
+        var downloadUrl = !string.IsNullOrWhiteSpace(asset.BrowserUrl)
+            ? asset.BrowserUrl
+            : asset.ApiUrl;
+
+        if (string.IsNullOrWhiteSpace(downloadUrl))
+        {
+            throw new InvalidOperationException($"Download URL not found for asset '{assetName}'.");
+        }
 
         var installDirectory = GetInstallDirectory(tag, variant);
         if (Directory.Exists(installDirectory))
@@ -118,17 +147,24 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         {
             status?.Report($"Downloading {assetName}...");
 
-            using (var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl))
+            using var assetResponse = await SendWithRetryAsync(
+                () => CreateGitHubRequest(new Uri(downloadUrl), expectsJson: false),
+                DownloadRequestTimeout,
+                cancellationToken);
+
+            if (IsRateLimited(assetResponse))
             {
-                request.Headers.Accept.ParseAdd("application/octet-stream");
-
-                using var assetResponse = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                assetResponse.EnsureSuccessStatusCode();
-
-                await using var assetStream = await assetResponse.Content.ReadAsStreamAsync(cancellationToken);
-                await using var fileStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
-                await assetStream.CopyToAsync(fileStream, cancellationToken);
+                throw new InvalidOperationException(
+                    "GitHub API rate limit exceeded while downloading the asset. Set PGNTOOLS_GITHUB_TOKEN or GITHUB_TOKEN to increase the limit.");
             }
+
+            assetResponse.EnsureSuccessStatusCode();
+
+            await using var assetStream = await assetResponse.Content.ReadAsStreamAsync(cancellationToken);
+            await using var fileStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
+            await assetStream.CopyToAsync(fileStream, cancellationToken);
+            await fileStream.FlushAsync(cancellationToken);
+            fileStream.Flush(true);
 
             status?.Report("Extracting Stockfish...");
             ZipFile.ExtractToDirectory(tempZipPath, installDirectory, overwriteFiles: true);
@@ -163,24 +199,26 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromMinutes(5)
+            Timeout = Timeout.InfiniteTimeSpan
         };
 
         // GitHub API requires a User-Agent header.
         client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
-        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return client;
     }
 
-    private static (string name, string url)? SelectAsset(JsonElement assets, StockfishVariant preferredVariant)
+    private static AssetInfo? SelectAsset(JsonElement assets, StockfishVariant preferredVariant)
     {
         var assetsList = assets.EnumerateArray()
             .Select(a => new
             {
                 Name = a.GetProperty("name").GetString(),
-                Url = a.GetProperty("url").GetString()
+                ApiUrl = a.TryGetProperty("url", out var apiUrl) ? apiUrl.GetString() : null,
+                BrowserUrl = a.TryGetProperty("browser_download_url", out var browserUrl) ? browserUrl.GetString() : null
             })
-            .Where(a => !string.IsNullOrWhiteSpace(a.Name) && !string.IsNullOrWhiteSpace(a.Url))
+            .Where(a => !string.IsNullOrWhiteSpace(a.Name) &&
+                        (!string.IsNullOrWhiteSpace(a.ApiUrl) || !string.IsNullOrWhiteSpace(a.BrowserUrl)))
+            .Select(a => new AssetInfo(a.Name!, a.ApiUrl ?? string.Empty, a.BrowserUrl ?? string.Empty))
             .ToList();
 
         if (assetsList.Count == 0)
@@ -194,7 +232,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
             var match = assetsList.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
             if (match != null)
             {
-                return (match.Name!, match.Url!);
+                return match;
             }
         }
 
@@ -203,7 +241,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
             a.Name!.StartsWith("stockfish-windows-x86-64", StringComparison.OrdinalIgnoreCase) &&
             a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
 
-        return fallback == null ? null : (fallback.Name!, fallback.Url!);
+        return fallback;
     }
 
     private static IReadOnlyList<string> GetVariantAssetNamesInPriority(StockfishVariant variant)
@@ -367,4 +405,134 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         return false;
 #endif
     }
+
+    private static HttpRequestMessage CreateGitHubRequest(Uri uri, bool expectsJson)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri)
+        {
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
+            Version = HttpVersion.Version20
+        };
+
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(
+            expectsJson ? "application/vnd.github+json" : "application/octet-stream"));
+        request.Headers.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+
+        var token = GetGitHubToken();
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+
+        return request;
+    }
+
+    private static string? GetGitHubToken()
+    {
+        var token = Environment.GetEnvironmentVariable("PGNTOOLS_GITHUB_TOKEN");
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return token;
+        }
+
+        token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return token;
+        }
+
+        token = Environment.GetEnvironmentVariable("GH_TOKEN");
+        return string.IsNullOrWhiteSpace(token) ? null : token;
+    }
+
+    private static async Task<HttpResponseMessage> SendWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var lastException = (Exception?)null;
+
+        for (var attempt = 1; attempt <= MaxRetryAttempts; attempt++)
+        {
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.CancelAfter(timeout);
+
+            using var request = requestFactory();
+            try
+            {
+                var response = await HttpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        attemptCts.Token)
+                    .ConfigureAwait(false);
+
+                if (!IsTransientStatusCode(response.StatusCode) || attempt == MaxRetryAttempts)
+                {
+                    return response;
+                }
+
+                response.Dispose();
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxRetryAttempts)
+            {
+                lastException = new TimeoutException("Request timed out.");
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRetryAttempts)
+            {
+                lastException = ex;
+            }
+
+            var delay = GetRetryDelay(attempt);
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException("Failed to reach GitHub after multiple attempts.", lastException);
+    }
+
+    private static TimeSpan GetRetryDelay(int attempt)
+    {
+        if (attempt <= 0 || attempt > RetryDelays.Length)
+        {
+            return TimeSpan.FromSeconds(2);
+        }
+
+        return RetryDelays[attempt - 1];
+    }
+
+    private static bool IsTransientStatusCode(HttpStatusCode statusCode)
+    {
+        return statusCode == HttpStatusCode.RequestTimeout ||
+               statusCode == HttpStatusCode.TooManyRequests ||
+               statusCode == HttpStatusCode.InternalServerError ||
+               statusCode == HttpStatusCode.BadGateway ||
+               statusCode == HttpStatusCode.ServiceUnavailable ||
+               statusCode == HttpStatusCode.GatewayTimeout;
+    }
+
+    private static bool IsRateLimited(HttpResponseMessage response)
+    {
+        if (response.StatusCode != HttpStatusCode.Forbidden)
+        {
+            return false;
+        }
+
+        if (!response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining))
+        {
+            return false;
+        }
+
+        foreach (var value in remaining)
+        {
+            if (string.Equals(value, "0", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private sealed record AssetInfo(string Name, string ApiUrl, string BrowserUrl);
 }

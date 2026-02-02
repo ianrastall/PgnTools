@@ -60,7 +60,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
         var resolvedEcoPath = ResolveEcoReferencePath(ecoReferenceFilePath);
 
         if (!File.Exists(inputFullPath))

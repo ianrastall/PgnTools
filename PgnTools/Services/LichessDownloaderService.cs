@@ -30,7 +30,7 @@ public class LichessDownloaderService : ILichessDownloaderService
         }
 
         var outputFullPath = Path.GetFullPath(outputFile);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (Path.GetDirectoryName(outputFullPath) is { } directory)
         {

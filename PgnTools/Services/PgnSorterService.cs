@@ -83,7 +83,7 @@ public class PgnSorterService : IPgnSorterService
             {
                 var inputFullPath = Path.GetFullPath(inputFilePath);
                 var outputFullPath = Path.GetFullPath(outputFilePath);
-                var tempOutputPath = outputFullPath + ".tmp";
+                var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
                 var tempDirectory = Path.Combine(
                     Path.GetDirectoryName(outputFullPath) ?? Path.GetTempPath(),
                     $"pgnsort_{Guid.NewGuid():N}");
@@ -135,7 +135,7 @@ public class PgnSorterService : IPgnSorterService
                                 return;
                             }
 
-                            File.Move(tempOutputPath, outputFullPath, overwrite: true);
+                            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                             progress?.Report(100);
                             return;
                         }
@@ -189,7 +189,7 @@ public class PgnSorterService : IPgnSorterService
                             .ConfigureAwait(false);
                     }
 
-                    File.Move(tempOutputPath, outputFullPath, overwrite: true);
+                    FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                     progress?.Report(100);
                 }
                 catch

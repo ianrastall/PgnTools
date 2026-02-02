@@ -19,7 +19,7 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
         if (string.IsNullOrWhiteSpace(outputFile)) throw new ArgumentException("Output file path is required.");
 
         var outputFullPath = Path.GetFullPath(outputFile);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
         var tempFolder = Path.Combine(Path.GetTempPath(), $"PgnTools_Mentor_{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempFolder);
 

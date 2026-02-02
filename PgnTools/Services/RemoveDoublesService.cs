@@ -47,7 +47,7 @@ public class RemoveDoublesService : IRemoveDoublesService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {
@@ -128,7 +128,7 @@ public class RemoveDoublesService : IRemoveDoublesService
                 return new RemoveDoublesResult(0, 0, 0);
             }
 
-            File.Move(tempOutputPath, outputFullPath, overwrite: true);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report((processed, $"Saved {kept:N0} unique games ({removed:N0} removed)."));
 
             return new RemoveDoublesResult(processed, kept, removed);

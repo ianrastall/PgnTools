@@ -32,7 +32,7 @@ public class TwicDownloaderService : ITwicDownloaderService
         if (end < start) throw new ArgumentException("End issue must be greater than or equal to start issue.");
 
         var outputFullPath = Path.GetFullPath(outputFile);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
         // Use a unique temp folder to avoid collisions
         var tempFolder = Path.Combine(Path.GetTempPath(), $"PgnTools_Twic_{Guid.NewGuid():N}");
 

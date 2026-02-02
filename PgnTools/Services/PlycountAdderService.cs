@@ -19,7 +19,7 @@ public class PlycountAdderService : IPlycountAdderService
         if (inputFullPath.Equals(outputFullPath, StringComparison.OrdinalIgnoreCase))
             throw new IOException("Input and output cannot be the same file.");
 
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         long totalBytes = new FileInfo(inputFullPath).Length;
         long bytesRead = 0;
@@ -143,58 +143,281 @@ public class PlycountAdderService : IPlycountAdderService
 
     private int CalculatePlies(string text)
     {
-        // Remove comments inside {}
-        var sb = new StringBuilder();
-        bool inBrace = false;
-
-        for (int i = 0; i < text.Length; i++)
+        if (string.IsNullOrWhiteSpace(text))
         {
-            char c = text[i];
-            if (c == '{') { inBrace = true; continue; }
-            if (c == '}') { inBrace = false; continue; }
-            if (inBrace) continue;
-
-            // Also ignore RAV (...)
-            // Note: Simple nested RAV handling is hard,
-            // but for PlyCount we strictly only care about the main line.
-            // A simple heuristic: if we see '(', ignore everything until ')'
-            // This is naive for nested parens, but covers 99% of basic PGNs.
-            // For a robust tool, use a full PGN Parser (PgnReader).
-            // Since this tool is "PlyCountAdder", speed vs accuracy trade-off applies.
-
-            sb.Append(c);
+            return 0;
         }
 
-        var clean = sb.ToString();
-        // Split by whitespace
-        var tokens = clean.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        int count = 0;
+        var count = 0;
+        var token = new StringBuilder(16);
+        var inBrace = false;
+        var inLineComment = false;
+        var variationDepth = 0;
 
-        foreach (var t in tokens)
+        void FlushToken()
         {
-            if (IsMove(t)) count++;
+            if (token.Length == 0)
+            {
+                return;
+            }
+
+            var raw = token.ToString();
+            token.Clear();
+            if (IsMove(raw))
+            {
+                count++;
+            }
         }
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (inLineComment)
+            {
+                if (c is '\n' or '\r')
+                {
+                    inLineComment = false;
+                }
+
+                continue;
+            }
+
+            if (inBrace)
+            {
+                if (c == '}')
+                {
+                    inBrace = false;
+                }
+
+                continue;
+            }
+
+            if (variationDepth > 0)
+            {
+                if (c == '(')
+                {
+                    variationDepth++;
+                }
+                else if (c == ')')
+                {
+                    variationDepth--;
+                }
+
+                continue;
+            }
+
+            if (c == '{')
+            {
+                FlushToken();
+                inBrace = true;
+                continue;
+            }
+
+            if (c == ';')
+            {
+                FlushToken();
+                inLineComment = true;
+                continue;
+            }
+
+            if (c == '(')
+            {
+                FlushToken();
+                variationDepth = 1;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c))
+            {
+                FlushToken();
+                continue;
+            }
+
+            token.Append(c);
+        }
+
+        FlushToken();
         return count;
     }
 
-    private bool IsMove(string token)
+    private static bool IsMove(string token)
     {
-        // Ignore move numbers "1." or "1..."
-        if (token.EndsWith(".")) return false;
-        if (char.IsDigit(token[0])) return false; // Starts with digit usually move number "12.e4" -> needs splitting but assuming spaced PGN
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        var span = token.AsSpan().Trim();
+        span = StripMoveNumberPrefix(span);
+        span = TrimLeadingDots(span);
+
+        if (span.Length == 0 || IsOnlyDots(span))
+        {
+            return false;
+        }
 
         // Ignore results
-        if (token is "1-0" or "0-1" or "1/2-1/2" or "*") return false;
+        if (IsResultToken(span))
+        {
+            return false;
+        }
 
         // Ignore NAGs
-        if (token.StartsWith('$')) return false;
+        if (span[0] == '$' && span.Length > 1 && IsAllDigits(span[1..]))
+        {
+            return false;
+        }
+
+        span = StripTrailingNag(span);
+        span = StripTrailingAnnotations(span);
+        if (span.Length == 0)
+        {
+            return false;
+        }
+
+        if (IsResultToken(span))
+        {
+            return false;
+        }
 
         // Basic sanity check: Must contain letters or O-O
-        if (token.StartsWith("O-O")) return true;
+        if (span.Equals("e.p.", StringComparison.OrdinalIgnoreCase) ||
+            span.Equals("ep", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (IsCastling(span))
+        {
+            return true;
+        }
 
         // e4, Nf3, exd5, R1a3, etc.
         // Should start with a letter (K, Q, R, B, N, a-h)
-        char first = token[0];
+        var first = span[0];
         return char.IsLetter(first);
+    }
+
+    private static ReadOnlySpan<char> StripMoveNumberPrefix(ReadOnlySpan<char> token)
+    {
+        var index = 0;
+        while (index < token.Length && char.IsDigit(token[index]))
+        {
+            index++;
+        }
+
+        if (index == 0)
+        {
+            return token;
+        }
+
+        if (index >= token.Length || token[index] != '.')
+        {
+            return token;
+        }
+
+        while (index < token.Length && token[index] == '.')
+        {
+            index++;
+        }
+
+        return index >= token.Length ? ReadOnlySpan<char>.Empty : token[index..].TrimStart();
+    }
+
+    private static ReadOnlySpan<char> TrimLeadingDots(ReadOnlySpan<char> token)
+    {
+        var index = 0;
+        while (index < token.Length && token[index] == '.')
+        {
+            index++;
+        }
+
+        return index == 0 ? token : token[index..];
+    }
+
+    private static bool IsOnlyDots(ReadOnlySpan<char> token)
+    {
+        foreach (var c in token)
+        {
+            if (c != '.')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsResultToken(ReadOnlySpan<char> token)
+    {
+        return token.Equals("1-0", StringComparison.Ordinal) ||
+               token.Equals("0-1", StringComparison.Ordinal) ||
+               token.Equals("1/2-1/2", StringComparison.Ordinal) ||
+               token.Equals("*", StringComparison.Ordinal);
+    }
+
+    private static ReadOnlySpan<char> StripTrailingNag(ReadOnlySpan<char> token)
+    {
+        var index = token.LastIndexOf('$');
+        if (index < 0 || index == token.Length - 1)
+        {
+            return token;
+        }
+
+        var digits = token[(index + 1)..];
+        foreach (var c in digits)
+        {
+            if (!char.IsDigit(c))
+            {
+                return token;
+            }
+        }
+
+        return token[..index];
+    }
+
+    private static ReadOnlySpan<char> StripTrailingAnnotations(ReadOnlySpan<char> token)
+    {
+        var span = token;
+        while (span.Length > 0)
+        {
+            var last = span[^1];
+            if (last is '!' or '?' or '+' or '#')
+            {
+                span = span[..^1];
+                continue;
+            }
+
+            break;
+        }
+
+        return span;
+    }
+
+    private static bool IsCastling(ReadOnlySpan<char> token)
+    {
+        return token.Equals("O-O", StringComparison.OrdinalIgnoreCase) ||
+               token.Equals("O-O-O", StringComparison.OrdinalIgnoreCase) ||
+               token.Equals("0-0", StringComparison.OrdinalIgnoreCase) ||
+               token.Equals("0-0-0", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAllDigits(ReadOnlySpan<char> span)
+    {
+        if (span.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var c in span)
+        {
+            if (!char.IsDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

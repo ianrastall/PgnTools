@@ -87,7 +87,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
         var engineFullPath = Path.GetFullPath(enginePath);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {

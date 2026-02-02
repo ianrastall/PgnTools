@@ -43,7 +43,7 @@ public class PgnJoinerService : IPgnJoinerService
         }
 
         var outputFullPath = Path.GetFullPath(destinationFile);
-        var tempOutputPath = outputFullPath + ".tmp";
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (files.Any(path => string.Equals(path, outputFullPath, StringComparison.OrdinalIgnoreCase)))
         {
@@ -146,7 +146,7 @@ public class PgnJoinerService : IPgnJoinerService
                 await writer.FlushAsync();
             }
 
-            File.Move(tempOutputPath, outputFullPath, overwrite: true);
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
         }
         catch
