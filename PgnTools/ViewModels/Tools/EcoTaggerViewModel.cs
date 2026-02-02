@@ -5,11 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the ECO Tagger tool.
 /// </summary>
-public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
+public partial class EcoTaggerViewModel(
+    IEcoTaggerService ecoTaggerService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IEcoTaggerService _ecoTaggerService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IEcoTaggerService _ecoTaggerService = ecoTaggerService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -32,20 +35,12 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select input and output PGN files";
-
-    public EcoTaggerViewModel(
-        IEcoTaggerService ecoTaggerService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _ecoTaggerService = ecoTaggerService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "ECO Tagger";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectInputFileAsync()
     {
@@ -58,16 +53,14 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             StatusMessage = $"Selected input: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
@@ -77,13 +70,13 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
                 var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
                 var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_eco_tagged.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -107,17 +100,16 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             OutputFilePath = file.Path;
             StatusMessage = $"Selected output: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -132,25 +124,23 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access ECO file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             EcoReferenceFilePath = file.Path;
             StatusMessage = $"Selected ECO reference: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting ECO file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -161,8 +151,7 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             string.IsNullOrWhiteSpace(EcoReferenceFilePath))
         {
             return;
-        }
-
+    }
         var inputFullPath = Path.GetFullPath(InputFilePath);
         var outputFullPath = Path.GetFullPath(OutputFilePath);
         if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
@@ -170,13 +159,11 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -206,20 +193,20 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             StatusMessage = "ECO tagging complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "ECO tagging cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -227,7 +214,7 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -246,34 +233,28 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnEcoReferenceFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -281,22 +262,20 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
         if (!string.IsNullOrWhiteSpace(InputFilePath) && !File.Exists(InputFilePath))
         {
             InputFilePath = string.Empty;
-        }
-
+    }
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
 
         EcoReferenceFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(EcoReferenceFilePath)}", EcoReferenceFilePath);
         if (!string.IsNullOrWhiteSpace(EcoReferenceFilePath) && !File.Exists(EcoReferenceFilePath))
         {
             EcoReferenceFilePath = "eco.pgn";
-        }
+    }
     }
 
     private void SaveState()
@@ -306,4 +285,9 @@ public partial class EcoTaggerViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(EcoReferenceFilePath)}", EcoReferenceFilePath);
     }
 }
+
+
+
+
+
 

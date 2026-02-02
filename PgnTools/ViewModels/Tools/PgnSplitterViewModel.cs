@@ -3,11 +3,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the PGN Splitter tool.
 /// </summary>
-public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
+public partial class PgnSplitterViewModel(
+    IPgnSplitterService pgnSplitterService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IPgnSplitterService _pgnSplitterService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IPgnSplitterService _pgnSplitterService = pgnSplitterService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -43,20 +46,12 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private long _progressGames;
-
-    public PgnSplitterViewModel(
-        IPgnSplitterService pgnSplitterService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _pgnSplitterService = pgnSplitterService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "PGN Splitter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     public bool IsChunkStrategy => SelectedStrategyIndex == 0;
     public bool IsDateStrategy => SelectedStrategyIndex == 4;
 
@@ -72,26 +67,24 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -105,26 +98,24 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             if (folder == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateWritableFolderAsync(folder.Path);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             OutputFolderPath = folder.Path;
             OutputFolderName = folder.Name;
             StatusMessage = $"Selected output folder: {folder.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output folder: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -133,8 +124,7 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFolderPath))
         {
             return;
-        }
-
+    }
         var chunkSize = (int)Math.Round(ChunkSize);
 
         if (IsChunkStrategy && chunkSize < 1)
@@ -142,21 +132,18 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             StatusMessage = "Chunk size must be at least 1.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         var folderValidation = await FileValidationHelper.ValidateWritableFolderAsync(OutputFolderPath);
         if (!folderValidation.Success)
         {
             StatusMessage = $"Cannot write to folder: {folderValidation.ErrorMessage}";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -205,19 +192,19 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Split complete: {result.Games:N0} games -> {result.FilesCreated:N0} file(s)";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, result.Games, null, "games");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Split cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -225,7 +212,7 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -240,36 +227,30 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         UpdateInputFileMetadata(value);
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFolderPathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnSelectedStrategyIndexChanged(int value)
     {
         OnPropertyChanged(nameof(IsChunkStrategy));
         OnPropertyChanged(nameof(IsDateStrategy));
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -277,15 +258,13 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
         if (!_inputFileExists)
         {
             InputFilePath = string.Empty;
-        }
-
+    }
         OutputFolderPath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFolderPath)}", OutputFolderPath);
         OutputFolderName = string.IsNullOrWhiteSpace(OutputFolderPath)
             ? string.Empty
@@ -295,7 +274,6 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
         SelectedStrategyIndex = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedStrategyIndex)}", SelectedStrategyIndex);
         SelectedDatePrecisionIndex = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedDatePrecisionIndex)}", SelectedDatePrecisionIndex);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
@@ -304,7 +282,6 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedStrategyIndex)}", SelectedStrategyIndex);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedDatePrecisionIndex)}", SelectedDatePrecisionIndex);
     }
-
     private void UpdateInputFileMetadata(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -312,10 +289,14 @@ public partial class PgnSplitterViewModel : BaseViewModel, IDisposable
             _inputFileExists = false;
             InputFileName = string.Empty;
             return;
-        }
-
+    }
         _inputFileExists = File.Exists(value);
         InputFileName = _inputFileExists ? Path.GetFileName(value) : string.Empty;
     }
 }
+
+
+
+
+
 

@@ -5,11 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Lichess Downloader tool.
 /// </summary>
-public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
+public partial class LichessDownloaderViewModel(
+    ILichessDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly ILichessDownloaderService _service;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly ILichessDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -32,20 +35,12 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Enter a Lichess username";
-
-    public LichessDownloaderViewModel(
-        ILichessDownloaderService service,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _service = service;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Lichess Downloader";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectOutputFileAsync()
     {
@@ -70,13 +65,13 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -85,28 +80,25 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(Username))
         {
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             await SelectOutputFileAsync();
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
-            }
+    }
         }
 
         int? max = null;
         if (int.TryParse(MaxGames, out var parsed) && parsed > 0)
         {
             max = parsed;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -126,19 +118,19 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Download complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -146,7 +138,7 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -160,24 +152,20 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
     }
-
     partial void OnUsernameChanged(string value)
     {
         DownloadCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         DownloadCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -185,7 +173,6 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
@@ -193,7 +180,6 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
         MaxGames = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
@@ -201,4 +187,9 @@ public partial class LichessDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
     }
 }
+
+
+
+
+
 

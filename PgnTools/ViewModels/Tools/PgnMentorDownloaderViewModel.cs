@@ -5,11 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the PGN Mentor Downloader tool.
 /// </summary>
-public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
+public partial class PgnMentorDownloaderViewModel(
+    IPgnMentorDownloaderService pgnMentorDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IPgnMentorDownloaderService _pgnMentorDownloaderService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IPgnMentorDownloaderService _pgnMentorDownloaderService = pgnMentorDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -26,20 +29,12 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select output file to download and combine PGNs";
-
-    public PgnMentorDownloaderViewModel(
-        IPgnMentorDownloaderService pgnMentorDownloaderService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _pgnMentorDownloaderService = pgnMentorDownloaderService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "PGN Mentor Downloader";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectOutputFileAsync()
     {
@@ -61,13 +56,13 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -76,13 +71,11 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -106,19 +99,19 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "PGN Mentor download complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "PGN Mentor download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -126,7 +119,7 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -140,24 +133,20 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -165,16 +154,19 @@ public partial class PgnMentorDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
     }
 }
+
+
+
+
+
 

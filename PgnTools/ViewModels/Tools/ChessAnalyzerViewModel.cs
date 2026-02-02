@@ -5,12 +5,16 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Chess Analyzer tool.
 /// </summary>
-public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
+public partial class ChessAnalyzerViewModel(
+    IChessAnalyzerService chessAnalyzerService,
+    IStockfishDownloaderService stockfishDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IChessAnalyzerService _chessAnalyzerService;
-    private readonly IStockfishDownloaderService _stockfishDownloaderService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IChessAnalyzerService _chessAnalyzerService = chessAnalyzerService;
+    private readonly IStockfishDownloaderService _stockfishDownloaderService = stockfishDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -56,22 +60,12 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select an input PGN and a UCI engine (e.g., Stockfish)";
-
-    public ChessAnalyzerViewModel(
-        IChessAnalyzerService chessAnalyzerService,
-        IStockfishDownloaderService stockfishDownloaderService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _chessAnalyzerService = chessAnalyzerService;
-        _stockfishDownloaderService = stockfishDownloaderService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Chess Analyzer";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectInputFileAsync()
     {
@@ -84,16 +78,14 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
@@ -105,12 +97,12 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
                 var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_analyzed.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
                 OutputFileName = Path.GetFileName(OutputFilePath);
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
-        }
+    }
     }
 
     [RelayCommand]
@@ -125,26 +117,24 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access engine: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             EnginePath = file.Path;
             EngineName = file.Name;
             StatusMessage = $"Selected engine: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting engine: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanDownloadLatestEngine))]
@@ -153,8 +143,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -181,19 +170,19 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Stockfish downloaded ({result.Tag}, {result.Variant}).";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Stockfish download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error downloading Stockfish: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -201,7 +190,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     [RelayCommand]
@@ -225,18 +214,17 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             OutputFilePath = file.Path;
             OutputFileName = file.Name;
             StatusMessage = $"Selected output: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -250,18 +238,17 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (folder == null)
             {
                 return;
-            }
-
+    }
             TablebasePath = folder.Path;
             UseTablebases = true;
             StatusMessage = $"Selected tablebase folder: {folder.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting tablebase folder: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     private bool CanDownloadLatestEngine() => !IsRunning;
@@ -274,8 +261,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         var inputFullPath = Path.GetFullPath(InputFilePath);
         var outputFullPath = Path.GetFullPath(OutputFilePath);
         if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
@@ -283,34 +269,29 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (Depth <= 0)
         {
             StatusMessage = "Depth must be greater than zero.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!File.Exists(EnginePath))
         {
             StatusMessage = "Engine executable not found.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (UseTablebases && (string.IsNullOrWhiteSpace(TablebasePath) || !Directory.Exists(TablebasePath)))
         {
             StatusMessage = "Tablebase folder not found.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -346,28 +327,27 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             if (_cancellationTokenSource?.IsCancellationRequested == true)
             {
                 throw new OperationCanceledException(_cancellationTokenSource.Token);
-            }
-
+    }
             ProgressValue = 100;
             StatusMessage = AddEleganceTags
                 ? "Analysis and Elegance tagging complete. (Move-by-move evals require SAN/FEN support.)"
                 : "Analysis complete. (Move-by-move evals require SAN/FEN support.)";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, _progressTotal > 0 ? _progressTotal : _progressGames, _progressTotal, "games");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Analysis cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -375,7 +355,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -395,28 +375,23 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnEnginePathChanged(string value)
     {
         if (!string.IsNullOrWhiteSpace(value) && !File.Exists(value))
         {
             StatusMessage = "Engine executable not found.";
             StatusSeverity = InfoBarSeverity.Error;
-        }
-
+    }
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnDepthChanged(int value)
     {
         const int minDepth = 1;
@@ -426,40 +401,33 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         {
             Depth = minDepth;
             return;
-        }
-
+    }
         if (value > maxDepth)
         {
             Depth = maxDepth;
             return;
-        }
-
+    }
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnUseTablebasesChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnTablebasePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
         DownloadLatestEngineCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -467,33 +435,30 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
         {
             InputFileName = Path.GetFileName(InputFilePath);
-        }
+    }
         else
         {
             InputFilePath = string.Empty;
             InputFileName = string.Empty;
-        }
-
+    }
         EnginePath = _settings.GetValue($"{SettingsPrefix}.{nameof(EnginePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(EnginePath) && !File.Exists(EnginePath))
         {
             EnginePath = string.Empty;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(EnginePath) || IsTemporaryPath(EnginePath))
         {
             var preferredEnginePath = ResolvePreferredEnginePath();
             if (!string.IsNullOrWhiteSpace(preferredEnginePath))
             {
                 EnginePath = preferredEnginePath;
-            }
+    }
         }
 
         EngineName = !string.IsNullOrWhiteSpace(EnginePath) && File.Exists(EnginePath)
@@ -511,7 +476,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         {
             TablebasePath = string.Empty;
             UseTablebases = false;
-        }
+    }
     }
 
     private void SaveState()
@@ -524,7 +489,6 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
         _settings.SetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
     }
-
     private static string ResolvePreferredEnginePath()
     {
         var assetsRoot = Path.Combine(AppContext.BaseDirectory, "Assets");
@@ -532,8 +496,7 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(assetsCandidate))
         {
             return assetsCandidate;
-        }
-
+    }
         var localAppDataRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PgnTools",
@@ -541,14 +504,12 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
 
         return FindStockfishExeUnder(localAppDataRoot) ?? string.Empty;
     }
-
     private static string? FindStockfishExeUnder(string rootPath)
     {
         if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
         {
             return null;
-        }
-
+    }
         try
         {
             return Directory.EnumerateFiles(rootPath, "*.exe", SearchOption.AllDirectories)
@@ -557,11 +518,11 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
                 .ThenByDescending(File.GetLastWriteTimeUtc)
                 .ThenBy(path => path.Length)
                 .FirstOrDefault();
-        }
+    }
         catch
         {
             return null;
-        }
+    }
     }
 
     private static bool IsTemporaryPath(string path)
@@ -569,11 +530,15 @@ public partial class ChessAnalyzerViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(path))
         {
             return false;
-        }
-
+    }
         var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
         var fullPath = Path.GetFullPath(path);
         return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
     }
 }
+
+
+
+
+
 

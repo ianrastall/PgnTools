@@ -5,12 +5,15 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the TWIC Downloader tool.
 /// </summary>
-public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
+public partial class TwicDownloaderViewModel(
+    ITwicDownloaderService twicDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
     private const int BaseIssue = 920;
-    private readonly ITwicDownloaderService _twicDownloaderService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly ITwicDownloaderService _twicDownloaderService = twicDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -42,16 +45,8 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select output file and download range";
-
-    public TwicDownloaderViewModel(
-        ITwicDownloaderService twicDownloaderService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _twicDownloaderService = twicDownloaderService;
-        _windowService = windowService;
-        _settings = settings;
-
         Title = "TWIC Downloader";
         StatusSeverity = InfoBarSeverity.Informational;
         EstimatedLatestIssue = TwicDownloaderService.CalculateEstimatedLatestIssue();
@@ -60,7 +55,6 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         SelectedModeIndex = 0;
         LoadState();
     }
-
     public bool IsCustomRange => SelectedModeIndex == 1;
 
     [RelayCommand]
@@ -84,13 +78,13 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanProbe))]
@@ -99,8 +93,7 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -125,19 +118,19 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Latest issue detected: {latest}";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Probe cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -145,7 +138,7 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -154,8 +147,7 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         var start = IsCustomRange ? (int)Math.Round(StartIssue) : BaseIssue;
         var end = IsCustomRange ? (int)Math.Round(EndIssue) : LatestIssue;
 
@@ -164,13 +156,11 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Enter a valid issue range.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -196,19 +186,19 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "TWIC download complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "TWIC download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -216,7 +206,7 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun()
@@ -224,18 +214,15 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         if (IsRunning || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return false;
-        }
-
+    }
         if (!IsCustomRange)
         {
             return LatestIssue >= BaseIssue;
-        }
-
+    }
         var start = (int)Math.Round(StartIssue);
         var end = (int)Math.Round(EndIssue);
         return start >= 1 && end >= start;
     }
-
     private bool CanProbe() => !IsRunning;
 
     [RelayCommand]
@@ -246,54 +233,46 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnStartIssueChanged(double value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnEndIssueChanged(double value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
         ProbeLatestCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnSelectedModeIndexChanged(int value)
     {
         OnPropertyChanged(nameof(IsCustomRange));
         if (!IsCustomRange)
         {
             EndIssue = LatestIssue;
-        }
+    }
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnLatestIssueChanged(int value)
     {
         if (!IsCustomRange)
         {
             EndIssue = value;
-        }
+    }
         RunCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -301,7 +280,6 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -311,7 +289,6 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         StartIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(StartIssue)}", StartIssue);
         EndIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -320,4 +297,9 @@ public partial class TwicDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
     }
 }
+
+
+
+
+
 

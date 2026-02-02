@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -57,116 +58,133 @@ public partial class PgnReader
         var inBraceComment = false;
         var inLineComment = false;
         var variationDepth = 0;
-        var lineBuffer = new StringBuilder(256);
+        var lineBuffer = ArrayPool<char>.Shared.Rent(256);
+        var lineLength = 0;
         var pendingCarriageReturn = false;
         var buffer = new char[BufferSize];
 
-        while (true)
+        try
         {
-            var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
-                .ConfigureAwait(false);
-            if (read == 0)
+            while (true)
             {
-                break;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            for (var i = 0; i < read; i++)
-            {
-                var c = buffer[i];
-
-                if (pendingCarriageReturn)
+                var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
                 {
-                    pendingCarriageReturn = false;
-                    if (c == '\n')
+                    break;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (var i = 0; i < read; i++)
+                {
+                    var c = buffer[i];
+
+                    if (pendingCarriageReturn)
                     {
+                        pendingCarriageReturn = false;
+                        if (c == '\n')
+                        {
+                            continue;
+                        }
+                    }
+
+                    if (c == '\r')
+                    {
+                        if (TryReadLine(
+                            lineBuffer.AsSpan(0, lineLength),
+                            ref currentGame,
+                            moveText,
+                            ref inMoveSection,
+                            ref inBraceComment,
+                            ref inLineComment,
+                            ref variationDepth,
+                            out var completed))
+                        {
+                            if (completed != null)
+                            {
+                                yield return completed;
+                            }
+                        }
+
+                        lineLength = 0;
+                        pendingCarriageReturn = true;
                         continue;
                     }
-                }
 
-                if (c == '\r')
-                {
-                    if (TryReadLine(
-                        lineBuffer,
-                        ref currentGame,
-                        moveText,
-                        ref inMoveSection,
-                        ref inBraceComment,
-                        ref inLineComment,
-                        ref variationDepth,
-                        out var completed))
+                    if (c == '\n')
                     {
-                        if (completed != null)
+                        if (TryReadLine(
+                            lineBuffer.AsSpan(0, lineLength),
+                            ref currentGame,
+                            moveText,
+                            ref inMoveSection,
+                            ref inBraceComment,
+                            ref inLineComment,
+                            ref variationDepth,
+                            out var completed))
                         {
-                            yield return completed;
+                            if (completed != null)
+                            {
+                                yield return completed;
+                            }
                         }
+
+                        lineLength = 0;
+                        continue;
                     }
 
-                    lineBuffer.Clear();
-                    pendingCarriageReturn = true;
-                    continue;
-                }
-
-                if (c == '\n')
-                {
-                    if (TryReadLine(
-                        lineBuffer,
-                        ref currentGame,
-                        moveText,
-                        ref inMoveSection,
-                        ref inBraceComment,
-                        ref inLineComment,
-                        ref variationDepth,
-                        out var completed))
+                    if (lineLength >= MaxLineLength)
                     {
-                        if (completed != null)
-                        {
-                            yield return completed;
-                        }
+                        throw new InvalidDataException($"PGN line exceeds {MaxLineLength} characters.");
                     }
 
-                    lineBuffer.Clear();
-                    continue;
-                }
+                    if (lineLength == lineBuffer.Length)
+                    {
+                        var nextSize = Math.Max(lineBuffer.Length * 2, lineLength + 1);
+                        var nextBuffer = ArrayPool<char>.Shared.Rent(nextSize);
+                        lineBuffer.AsSpan(0, lineLength).CopyTo(nextBuffer);
+                        ArrayPool<char>.Shared.Return(lineBuffer);
+                        lineBuffer = nextBuffer;
+                    }
 
-                if (lineBuffer.Length >= MaxLineLength)
-                {
-                    throw new InvalidDataException($"PGN line exceeds {MaxLineLength} characters.");
+                    lineBuffer[lineLength++] = c;
                 }
-
-                lineBuffer.Append(c);
             }
-        }
 
-        if (lineBuffer.Length > 0)
-        {
-            if (TryReadLine(
-                lineBuffer,
-                ref currentGame,
-                moveText,
-                ref inMoveSection,
-                ref inBraceComment,
-                ref inLineComment,
-                ref variationDepth,
-                out var completed))
+            if (lineLength > 0)
             {
-                if (completed != null)
+                if (TryReadLine(
+                    lineBuffer.AsSpan(0, lineLength),
+                    ref currentGame,
+                    moveText,
+                    ref inMoveSection,
+                    ref inBraceComment,
+                    ref inLineComment,
+                    ref variationDepth,
+                    out var completed))
                 {
-                    yield return completed;
+                    if (completed != null)
+                    {
+                        yield return completed;
+                    }
                 }
             }
-        }
 
-        if (currentGame != null && (currentGame.Headers.Count > 0 || moveText.Length > 0))
+            if (currentGame != null && (currentGame.Headers.Count > 0 || moveText.Length > 0))
+            {
+                currentGame.MoveText = moveText.ToString().Trim();
+                yield return currentGame;
+            }
+        }
+        finally
         {
-            currentGame.MoveText = moveText.ToString().Trim();
-            yield return currentGame;
+            ArrayPool<char>.Shared.Return(lineBuffer);
         }
     }
 
     private static bool TryReadLine(
-        StringBuilder lineBuffer,
+        ReadOnlySpan<char> lineSpan,
         ref PgnGame? currentGame,
         StringBuilder moveText,
         ref bool inMoveSection,
@@ -176,7 +194,7 @@ public partial class PgnReader
         out PgnGame? completedGame)
     {
         completedGame = null;
-        if (lineBuffer.Length == 0)
+        if (lineSpan.Length == 0)
         {
             if (inMoveSection)
             {
@@ -196,8 +214,6 @@ public partial class PgnReader
             return false;
         }
 
-        var line = lineBuffer.ToString();
-        var lineSpan = line.AsSpan();
         var trimmedSpan = TrimSpan(lineSpan);
 
         if (trimmedSpan.Length == 0)
@@ -224,8 +240,7 @@ public partial class PgnReader
         var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
         {
-            var trimmed = trimmedSpan.ToString();
-            if (TryParseHeaderLine(trimmed, out var tagKey, out var rawValue))
+            if (TryParseHeaderLine(trimmedSpan, out var tagKey, out var rawValue))
             {
                 if (inMoveSection && currentGame != null)
                 {
@@ -395,14 +410,14 @@ public partial class PgnReader
         return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 
-    private static bool TryParseHeaderLine(string line, out string key, out string rawValue)
+    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
     {
         key = string.Empty;
         rawValue = string.Empty;
 
         if (line.Length <= MaxHeaderRegexLength)
         {
-            var match = HeaderRegex().Match(line);
+            var match = HeaderRegex().Match(line.ToString());
             if (match.Success)
             {
                 key = match.Groups["tag"].Value;
@@ -430,12 +445,12 @@ public partial class PgnReader
         return trimmed;
     }
 
-    private static bool TryParseHeaderFallback(string line, out string key, out string rawValue)
+    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
     {
         key = string.Empty;
         rawValue = string.Empty;
 
-        var span = line.AsSpan().Trim();
+        var span = line.Trim();
         if (span.Length < 2 || span[0] != '[')
         {
             return false;

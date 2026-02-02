@@ -6,11 +6,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Chess.com Downloader tool.
 /// </summary>
-public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
+public partial class ChesscomDownloaderViewModel(
+    IChesscomDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IChesscomDownloaderService _service;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IChesscomDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -34,20 +37,12 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private double _progressValue;
-
-    public ChesscomDownloaderViewModel(
-        IChesscomDownloaderService service,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _service = service;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Chess.com Downloader";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectOutputFileAsync()
     {
@@ -72,13 +67,13 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -87,22 +82,20 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(Username))
         {
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             await SelectOutputFileAsync();
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
-            }
+    }
         }
 
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -121,8 +114,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                 StatusSeverity = InfoBarSeverity.Warning;
                 StatusDetail = BuildProgressDetail(0, 0, 0, "archives");
                 return;
-            }
-
+    }
             var outputFullPath = Path.GetFullPath(OutputFilePath);
             var tempOutputPath = outputFullPath + ".tmp";
             var completedWrite = false;
@@ -130,8 +122,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
             if (Path.GetDirectoryName(outputFullPath) is { } directory)
             {
                 Directory.CreateDirectory(directory);
-            }
-
+    }
             var completed = 0;
             var failed = 0;
             var firstOutput = true;
@@ -155,8 +146,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                         {
                             failed++;
                             continue;
-                        }
-
+    }
                         StatusMessage = $"Downloading {year}/{month:D2} ({i + 1}/{archives.Count})...";
 
                         try
@@ -166,31 +156,26 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                             {
                                 await writer.WriteLineAsync();
                                 await writer.WriteLineAsync();
-                            }
-
+    }
                             if (!string.IsNullOrWhiteSpace(pgn))
                             {
                                 await writer.WriteLineAsync(pgn.TrimEnd());
-                            }
-
+    }
                             firstOutput = false;
                             completed++;
-                        }
+    }
                         catch
                         {
                             failed++;
-                        }
-
+    }
                         ProgressValue = (i + 1) / (double)archives.Count * 100.0;
                         StatusDetail = BuildProgressDetail(ProgressValue, i + 1, archives.Count, "archives");
-                    }
-
+    }
                     await writer.FlushAsync();
-                }
-
+    }
                 FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
                 completedWrite = true;
-            }
+    }
             finally
             {
                 if (!completedWrite && File.Exists(tempOutputPath))
@@ -198,7 +183,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
                     try
                     {
                         File.Delete(tempOutputPath);
-                    }
+    }
                     catch
                     {
                     }
@@ -208,20 +193,20 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Download complete. {completed:N0} archive(s) saved{(failed > 0 ? $", {failed:N0} failed." : ".")}";
             StatusSeverity = failed > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, completed + failed, archives.Count, "archives");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -229,7 +214,7 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -243,17 +228,14 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnUsernameChanged(string value)
     {
         DownloadAllCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         DownloadAllCommand.NotifyCanExecuteChanged();
     }
-
     private static bool TryParseArchive(string archiveUrl, out int year, out int month)
     {
         year = 0;
@@ -262,24 +244,20 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(archiveUrl))
         {
             return false;
-        }
-
+    }
         var parts = archiveUrl.TrimEnd('/').Split('/');
         if (parts.Length < 2)
         {
             return false;
-        }
-
+    }
         return int.TryParse(parts[^2], out year) && int.TryParse(parts[^1], out month);
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -287,18 +265,21 @@ public partial class ChesscomDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
     }
 }
+
+
+
+
+
 

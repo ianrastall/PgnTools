@@ -5,12 +5,16 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Elo Adder tool.
 /// </summary>
-public partial class EloAdderViewModel : BaseViewModel, IDisposable
+public partial class EloAdderViewModel(
+    IEloAdderService eloService,
+    IRatingDatabase ratingDb,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IEloAdderService _eloService;
-    private readonly IRatingDatabase _ratingDb;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IEloAdderService _eloService = eloService;
+    private readonly IRatingDatabase _ratingDb = ratingDb;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -36,22 +40,12 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private double _progressValue;
-
-    public EloAdderViewModel(
-        IEloAdderService eloService,
-        IRatingDatabase ratingDb,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _eloService = eloService;
-        _ratingDb = ratingDb;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Elo Adder";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectInputFileAsync()
     {
@@ -64,16 +58,14 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
@@ -85,13 +77,13 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
                 var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_rated.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
                 OutputFileName = Path.GetFileName(OutputFilePath);
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -118,13 +110,13 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -133,8 +125,7 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         var inputFullPath = Path.GetFullPath(InputFilePath);
         var outputFullPath = Path.GetFullPath(OutputFilePath);
 
@@ -143,13 +134,11 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -178,20 +167,20 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Elo ratings added.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Elo adder cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -199,7 +188,7 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -216,29 +205,24 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -246,28 +230,30 @@ public partial class EloAdderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
         {
             InputFileName = Path.GetFileName(InputFilePath);
-        }
+    }
         else
         {
             InputFilePath = string.Empty;
             InputFileName = string.Empty;
-        }
-
+    }
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
     }
 }
+
+
+
+
+
 

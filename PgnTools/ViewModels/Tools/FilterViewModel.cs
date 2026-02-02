@@ -5,11 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the general PGN Filter tool.
 /// </summary>
-public partial class FilterViewModel : BaseViewModel, IDisposable
+public partial class FilterViewModel(
+    IPgnFilterService filterService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IPgnFilterService _filterService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IPgnFilterService _filterService = filterService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -65,20 +68,12 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select input and output PGN files";
-
-    public FilterViewModel(
-        IPgnFilterService filterService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _filterService = filterService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Filter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectInputFileAsync()
     {
@@ -91,16 +86,14 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
@@ -112,13 +105,13 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
                 var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_filtered.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
                 OutputFileName = Path.GetFileName(OutputFilePath);
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -142,18 +135,17 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             OutputFilePath = file.Path;
             OutputFileName = file.Name;
             StatusMessage = $"Selected output: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -162,8 +154,7 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         var inputFullPath = Path.GetFullPath(InputFilePath);
         var outputFullPath = Path.GetFullPath(OutputFilePath);
 
@@ -172,27 +163,23 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (MinElo > 0 && MaxElo > 0 && MaxElo < MinElo)
         {
             StatusMessage = "Max Elo must be greater than or equal to Min Elo.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (MinPlyCount > 0 && MaxPlyCount > 0 && MaxPlyCount < MinPlyCount)
         {
             StatusMessage = "Max ply count must be greater than or equal to Min ply count.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -235,20 +222,20 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
                 : $"Done. Processed: {result.Processed:N0}, Kept: {result.Kept:N0}, Updated: {result.Modified:N0}.";
             StatusSeverity = result.Processed == 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, result.Processed, null, "games");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Filtering cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -256,7 +243,7 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -273,29 +260,24 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -303,20 +285,18 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
         {
             InputFileName = Path.GetFileName(InputFilePath);
-        }
+    }
         else
         {
             InputFilePath = string.Empty;
             InputFileName = string.Empty;
-        }
-
+    }
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
 
@@ -331,7 +311,6 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
         RemoveVariations = _settings.GetValue($"{SettingsPrefix}.{nameof(RemoveVariations)}", RemoveVariations);
         RemoveNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(RemoveNonStandard)}", RemoveNonStandard);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
@@ -348,4 +327,9 @@ public partial class FilterViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(RemoveNonStandard)}", RemoveNonStandard);
     }
 }
+
+
+
+
+
 

@@ -5,13 +5,18 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Elegance tool.
 /// </summary>
-public partial class EleganceViewModel : BaseViewModel, IDisposable
+public partial class EleganceViewModel(
+    IEleganceService eleganceService,
+    IEleganceGoldenValidationService goldenValidationService,
+    IStockfishDownloaderService stockfishDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IEleganceService _eleganceService;
-    private readonly IEleganceGoldenValidationService _goldenValidationService;
-    private readonly IStockfishDownloaderService _stockfishDownloaderService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IEleganceService _eleganceService = eleganceService;
+    private readonly IEleganceGoldenValidationService _goldenValidationService = goldenValidationService;
+    private readonly IStockfishDownloaderService _stockfishDownloaderService = stockfishDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -46,24 +51,12 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private double _progressValue;
-
-    public EleganceViewModel(
-        IEleganceService eleganceService,
-        IEleganceGoldenValidationService goldenValidationService,
-        IStockfishDownloaderService stockfishDownloaderService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _eleganceService = eleganceService;
-        _goldenValidationService = goldenValidationService;
-        _stockfishDownloaderService = stockfishDownloaderService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Elegance";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectInputFileAsync()
     {
@@ -76,16 +69,14 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             InputFilePath = file.Path;
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
@@ -97,13 +88,13 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
                 var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}-elegance.pgn";
                 OutputFilePath = Path.Combine(directory, suggestedName);
                 OutputFileName = Path.GetFileName(OutputFilePath);
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand]
@@ -118,26 +109,24 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access engine: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             EnginePath = file.Path;
             EngineName = file.Name;
             StatusMessage = $"Selected engine: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting engine: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanDownloadLatestEngine))]
@@ -146,8 +135,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -174,19 +162,19 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Stockfish downloaded ({result.Tag}, {result.Variant}).";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Stockfish download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error downloading Stockfish: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -194,7 +182,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     [RelayCommand]
@@ -218,18 +206,17 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             OutputFilePath = file.Path;
             OutputFileName = file.Name;
             StatusMessage = $"Selected output: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -240,8 +227,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-        }
-
+    }
         var inputFullPath = Path.GetFullPath(InputFilePath);
         var outputFullPath = Path.GetFullPath(OutputFilePath);
         if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
@@ -249,27 +235,23 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (Depth <= 0)
         {
             StatusMessage = "Depth must be greater than zero.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!File.Exists(EnginePath))
         {
             StatusMessage = "Engine executable not found.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -302,27 +284,26 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
                 StatusSeverity = InfoBarSeverity.Warning;
                 StatusDetail = BuildProgressDetail(100, 0, null, "games");
                 return;
-            }
-
+    }
             StatusMessage =
                 $"Completed! Tagged {result.ProcessedGames:N0} games • Avg {result.AverageScore:0.0}" +
                 $" (S:{result.AverageSoundness:0.0} C:{result.AverageCoherence:0.0} T:{result.AverageTactical:0.0} Q:{result.AverageQuiet:0.0})";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, result.ProcessedGames, null, "games");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Elegance tagging cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -330,7 +311,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanValidateGoldens))]
@@ -341,21 +322,18 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             StatusMessage = "Select a valid engine first.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-        }
-
+    }
         var manifestPath = Path.Combine(AppContext.BaseDirectory, "Assets", "elegance-goldens.json");
         if (!File.Exists(manifestPath))
         {
             StatusMessage = "Golden manifest not found: Assets/elegance-goldens.json";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -388,8 +366,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
                 StatusSeverity = InfoBarSeverity.Warning;
                 StatusDetail = BuildProgressDetail(100, 0, null, "cases");
                 return;
-            }
-
+    }
             var failed = summary.Cases.Where(c => !c.Passed).ToList();
             if (failed.Count == 0)
             {
@@ -397,25 +374,24 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
                 StatusSeverity = InfoBarSeverity.Success;
                 StatusDetail = BuildProgressDetail(100, summary.Total, summary.Total, "cases");
                 return;
-            }
-
+    }
             var firstFailure = failed[0];
             StatusMessage = $"Golden validation failed ({summary.Passed}/{summary.Total}). First: {firstFailure.Name} -> {firstFailure.Message}";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(100, summary.Total, summary.Total, "cases");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Golden validation cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error validating goldens: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -423,7 +399,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -451,24 +427,20 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnInputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnEnginePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
         ValidateGoldensCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
         ValidateGoldensCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnDepthChanged(int value)
     {
         const int minDepth = 1;
@@ -478,31 +450,26 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         {
             Depth = minDepth;
             return;
-        }
-
+    }
         if (value > maxDepth)
         {
             Depth = maxDepth;
             return;
-        }
-
+    }
         RunCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
         ValidateGoldensCommand.NotifyCanExecuteChanged();
         DownloadLatestEngineCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -510,33 +477,30 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
         {
             InputFileName = Path.GetFileName(InputFilePath);
-        }
+    }
         else
         {
             InputFilePath = string.Empty;
             InputFileName = string.Empty;
-        }
-
+    }
         EnginePath = _settings.GetValue($"{SettingsPrefix}.{nameof(EnginePath)}", string.Empty);
         if (!string.IsNullOrWhiteSpace(EnginePath) && !File.Exists(EnginePath))
         {
             EnginePath = string.Empty;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(EnginePath) || IsTemporaryPath(EnginePath))
         {
             var preferredEnginePath = ResolvePreferredEnginePath();
             if (!string.IsNullOrWhiteSpace(preferredEnginePath))
             {
                 EnginePath = preferredEnginePath;
-            }
+    }
         }
 
         EngineName = !string.IsNullOrWhiteSpace(EnginePath) && File.Exists(EnginePath)
@@ -548,7 +512,6 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
 
         Depth = _settings.GetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
     }
-
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
@@ -556,7 +519,6 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
     }
-
     private static string ResolvePreferredEnginePath()
     {
         var assetsRoot = Path.Combine(AppContext.BaseDirectory, "Assets");
@@ -564,8 +526,7 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(assetsCandidate))
         {
             return assetsCandidate;
-        }
-
+    }
         var localAppDataRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PgnTools",
@@ -573,14 +534,12 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
 
         return FindStockfishExeUnder(localAppDataRoot) ?? string.Empty;
     }
-
     private static string? FindStockfishExeUnder(string rootPath)
     {
         if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
         {
             return null;
-        }
-
+    }
         try
         {
             return Directory.EnumerateFiles(rootPath, "*.exe", SearchOption.AllDirectories)
@@ -589,11 +548,11 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
                 .ThenByDescending(File.GetLastWriteTimeUtc)
                 .ThenBy(path => path.Length)
                 .FirstOrDefault();
-        }
+    }
         catch
         {
             return null;
-        }
+    }
     }
 
     private static bool IsTemporaryPath(string path)
@@ -601,10 +560,14 @@ public partial class EleganceViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(path))
         {
             return false;
-        }
-
+    }
         var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
         var fullPath = Path.GetFullPath(path);
         return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
     }
 }
+
+
+
+
+

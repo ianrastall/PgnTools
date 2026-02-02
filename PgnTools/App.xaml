@@ -12,6 +12,7 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="Themes/AppBrushes.xaml" />
             </ResourceDictionary.MergedDictionaries>
             
             <!-- Converters -->
@@ -20,13 +21,7 @@
             <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter"/>
             <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
             
-            <!-- Colors -->
-            <SolidColorBrush x:Key="AccentBrush" Color="{ThemeResource SystemAccentColor}" />
-            <SolidColorBrush x:Key="AccentDarkBrush" Color="{ThemeResource SystemAccentColorDark2}" />
-            <SolidColorBrush x:Key="AccentLightBrush" Color="{ThemeResource SystemAccentColorLight2}" />
-            <SolidColorBrush x:Key="AccentLightBrushLow" Color="{ThemeResource SystemAccentColorLight2}" Opacity="0.12" />
-
-            <SolidColorBrush x:Key="PrimaryBrush" Color="{ThemeResource SystemAccentColor}" />
+            <!-- Colors live in Themes/AppBrushes.xaml -->
 
             <!-- Icons -->
             <x:String x:Key="IconApp">&#xE7C1;</x:String>
@@ -58,9 +53,9 @@
                    TargetType="Button"
                    BasedOn="{StaticResource Action}">
                 <Setter Property="Background"
-                        Value="{StaticResource PrimaryBrush}" />
+                        Value="{ThemeResource PrimaryBrush}" />
                 <Setter Property="BorderBrush"
-                        Value="{StaticResource AccentDarkBrush}" />
+                        Value="{ThemeResource AccentDarkBrush}" />
                 <Setter Property="BorderThickness"
                         Value="1" />
                 <Setter Property="CornerRadius"

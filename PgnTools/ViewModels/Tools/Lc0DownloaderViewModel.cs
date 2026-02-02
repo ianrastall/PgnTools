@@ -5,11 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Lc0 Downloader tool.
 /// </summary>
-public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
+public partial class Lc0DownloaderViewModel(
+    ILc0DownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly ILc0DownloaderService _service;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly ILc0DownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -54,21 +57,13 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select archive and output file";
-
-    public Lc0DownloaderViewModel(
-        ILc0DownloaderService service,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _service = service;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Lc0";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
         LoadArchiveList();
     }
-
     [RelayCommand]
     private async Task BrowseOutputAsync()
     {
@@ -89,13 +84,13 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
                 _outputPathSuggested = false;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -106,19 +101,18 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Select a valid monthly archive.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             ApplySuggestedOutputPath();
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 await BrowseOutputAsync();
-            }
+    }
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
-            }
+    }
         }
 
         var outputDirectory = Path.GetDirectoryName(OutputFilePath) ?? string.Empty;
@@ -130,14 +124,13 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
                 StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
+    }
         }
 
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -158,12 +151,11 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
                 {
                     ProgressValue = update.Percent.Value;
                     IsIndeterminate = false;
-                }
+    }
                 else
                 {
                     IsIndeterminate = true;
-                }
-
+    }
                 var unit = update.Phase == Lc0DownloadPhase.Scraping ? "pages" : "matches";
                 StatusDetail = BuildProgressDetail(update.Percent, update.Current, update.Total, unit);
             });
@@ -184,40 +176,39 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             {
                 StatusMessage = $"No matches found for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
-            }
+    }
             else if (result.FailedMatches > 0)
             {
                 StatusMessage =
                     $"Completed with errors. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0}/{result.TotalMatches:N0} matches; {result.FailedMatches:N0} failed.";
                 StatusSeverity = InfoBarSeverity.Warning;
-            }
+    }
             else if (result.GamesKept == 0)
             {
                 StatusMessage =
                     $"No games matched the selected filters for {archiveMonth:yyyy-MM}.";
                 StatusSeverity = InfoBarSeverity.Warning;
-            }
+    }
             else
             {
                 StatusMessage =
                     $"Completed. Wrote {result.GamesKept:N0} game(s) from {result.ProcessedMatches:N0} matches.";
                 StatusSeverity = InfoBarSeverity.Success;
-            }
-
+    }
             StatusDetail = BuildProgressDetail(100, result.ProcessedMatches, result.TotalMatches, "matches");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Lc0 download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(ProgressValue);
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -225,7 +216,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -240,17 +231,14 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
     }
-
     partial void OnSelectedArchiveChanged(string? value)
     {
         if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             ApplySuggestedOutputPath();
-        }
-
+    }
         StartCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnOutputFilePathChanged(string value)
     {
         OutputFileName = string.IsNullOrWhiteSpace(value) ? string.Empty : Path.GetFileName(value);
@@ -259,21 +247,19 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(directory))
         {
             _lastOutputFolder = directory;
-        }
+    }
     }
 
     partial void OnIsRunningChanged(bool value)
     {
         StartCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -281,7 +267,6 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         ExcludeNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
@@ -293,13 +278,12 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(selected))
         {
             SelectedArchive = selected;
-        }
-
+    }
         _outputPathSuggested = string.IsNullOrWhiteSpace(OutputFilePath) || IsSuggestedFileName(OutputFileName);
         if (_outputPathSuggested && !string.IsNullOrWhiteSpace(SelectedArchive))
         {
             ApplySuggestedOutputPath();
-        }
+    }
     }
 
     private void SaveState()
@@ -310,7 +294,6 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
-
     private void LoadArchiveList()
     {
         var utcNow = DateTime.UtcNow;
@@ -321,8 +304,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "No monthly archives are currently available.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         var archives = BuildAvailableArchives(latestArchiveMonth, EarliestArchiveMonth);
         AvailableArchives = archives;
 
@@ -331,13 +313,12 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "No monthly archives are currently available.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(SelectedArchive) ||
             !archives.Any(archive => string.Equals(archive, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
         {
             SelectedArchive = archives[0];
-        }
+    }
     }
 
     private static List<string> BuildAvailableArchives(DateOnly newestMonth, DateOnly oldestMonth)
@@ -346,51 +327,42 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
         {
             archives.Add($"{month:yyyy-MM}");
-        }
-
+    }
         return archives;
     }
-
     private void ApplySuggestedOutputPath()
     {
         if (string.IsNullOrWhiteSpace(SelectedArchive))
         {
             return;
-        }
-
+    }
         var suggestedName = GetSuggestedFileName();
         if (string.IsNullOrWhiteSpace(suggestedName))
         {
             return;
-        }
-
+    }
         var directory = GetPreferredOutputFolder();
         OutputFilePath = Path.Combine(directory, suggestedName);
         _outputPathSuggested = true;
     }
-
     private string GetPreferredOutputFolder()
     {
         var directory = Path.GetDirectoryName(OutputFilePath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             return directory;
-        }
-
+    }
         if (!string.IsNullOrWhiteSpace(_lastOutputFolder))
         {
             return _lastOutputFolder;
-        }
-
+    }
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
-
     private string GetSuggestedFileName()
     {
         var monthToken = string.IsNullOrWhiteSpace(SelectedArchive) ? "0000-00" : SelectedArchive;
         return $"lc0-{monthToken}.pgn";
     }
-
     private static bool TryParseArchiveMonth(string? archiveToken, out DateOnly month)
     {
         month = default;
@@ -398,8 +370,7 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(archiveToken) || !ArchiveTokenRegex.IsMatch(archiveToken))
         {
             return false;
-        }
-
+    }
         return DateOnly.TryParseExact(
             archiveToken,
             "yyyy-MM",
@@ -407,14 +378,17 @@ public partial class Lc0DownloaderViewModel : BaseViewModel, IDisposable
             DateTimeStyles.None,
             out month);
     }
-
     private static bool IsSuggestedFileName(string? fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return false;
-        }
-
+    }
         return SuggestedNameRegex.IsMatch(fileName);
     }
 }
+
+
+
+
+

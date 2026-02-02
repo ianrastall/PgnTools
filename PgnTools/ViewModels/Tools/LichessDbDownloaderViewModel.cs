@@ -3,11 +3,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the Lichess DB Downloader tool.
 /// </summary>
-public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
+public partial class LichessDbDownloaderViewModel(
+    ILichessDbDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly ILichessDbDownloaderService _service;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly ILichessDbDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -62,21 +65,13 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private string _statusMessage = "Select archive and output file";
-
-    public LichessDbDownloaderViewModel(
-        ILichessDbDownloaderService service,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _service = service;
-        _windowService = windowService;
-        _settings = settings;
         Title = "Lichess DB Filter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
         LoadArchiveList();
     }
-
     [RelayCommand]
     private async Task BrowseOutputAsync()
     {
@@ -97,13 +92,13 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
                 _outputPathSuggested = false;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-            }
+    }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -114,19 +109,18 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "Select a Lichess archive.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             ApplySuggestedOutputPath();
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 await BrowseOutputAsync();
-            }
+    }
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
                 return;
-            }
+    }
         }
 
         var outputDirectory = Path.GetDirectoryName(OutputFilePath) ?? string.Empty;
@@ -138,14 +132,13 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
                 StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
+    }
         }
 
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsRunning = true;
@@ -171,7 +164,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
                 _cancellationTokenSource.Token);
 
             StatusSeverity = InfoBarSeverity.Success;
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Download cancelled";
@@ -179,7 +172,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             StatusDetail = _lastProgress != null
                 ? BuildLichessProgressDetail(_lastProgress)
                 : BuildProgressDetail();
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
@@ -187,7 +180,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             StatusDetail = _lastProgress != null
                 ? BuildLichessProgressDetail(_lastProgress)
                 : BuildProgressDetail();
-        }
+    }
         finally
         {
             IsRunning = false;
@@ -195,7 +188,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanRun() =>
@@ -210,22 +203,20 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
     }
-
     partial void OnSelectedArchiveChanged(string? value)
     {
         if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             ApplySuggestedOutputPath();
-        }
+    }
         StartCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnMinEloChanged(int value)
     {
         if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             ApplySuggestedOutputPath();
-        }
+    }
     }
 
     partial void OnOutputFilePathChanged(string value)
@@ -236,21 +227,19 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(directory))
         {
             _lastOutputFolder = directory;
-        }
+    }
     }
 
     partial void OnIsRunningChanged(bool value)
     {
         StartCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -258,7 +247,6 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         MinElo = _settings.GetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
@@ -272,13 +260,12 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         if (!string.IsNullOrWhiteSpace(selected))
         {
             SelectedArchive = selected;
-        }
-
+    }
         _outputPathSuggested = string.IsNullOrWhiteSpace(OutputFilePath) || IsSuggestedFileName(OutputFileName);
         if (_outputPathSuggested && !string.IsNullOrWhiteSpace(SelectedArchive))
         {
             ApplySuggestedOutputPath();
-        }
+    }
     }
 
     private void SaveState()
@@ -291,7 +278,6 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
     }
-
     private void LoadArchiveList()
     {
         var latestArchiveMonth = GetLatestArchiveMonth();
@@ -301,8 +287,7 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "No monthly archives are currently available.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         var urls = BuildArchiveUrls(latestArchiveMonth, EarliestArchiveMonth);
         AvailableArchives = urls;
 
@@ -311,13 +296,12 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             StatusMessage = "No monthly archives are currently available.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
-        }
-
+    }
         if (string.IsNullOrWhiteSpace(SelectedArchive) ||
             !urls.Any(url => string.Equals(url, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
         {
             SelectedArchive = urls[0];
-        }
+    }
     }
 
     private static DateOnly GetLatestArchiveMonth()
@@ -326,18 +310,15 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         var firstOfCurrentMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
         return firstOfCurrentMonth.AddMonths(-1);
     }
-
     private static List<string> BuildArchiveUrls(DateOnly newestMonth, DateOnly oldestMonth)
     {
         var urls = new List<string>();
         for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
         {
             urls.Add(BuildArchiveUrl(month));
-        }
-
+    }
         return urls;
     }
-
     private static string BuildArchiveUrl(DateOnly month) =>
         $"https://database.lichess.org/standard/lichess_db_standard_rated_{month:yyyy-MM}.pgn.zst";
 
@@ -346,67 +327,55 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrWhiteSpace(SelectedArchive))
         {
             return;
-        }
-
+    }
         var suggestedName = GetSuggestedFileName();
         if (string.IsNullOrWhiteSpace(suggestedName))
         {
             return;
-        }
-
+    }
         var directory = GetPreferredOutputFolder();
         OutputFilePath = Path.Combine(directory, suggestedName);
         _outputPathSuggested = true;
     }
-
     private string GetPreferredOutputFolder()
     {
         var directory = Path.GetDirectoryName(OutputFilePath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             return directory;
-        }
-
+    }
         if (!string.IsNullOrWhiteSpace(_lastOutputFolder))
         {
             return _lastOutputFolder;
-        }
-
+    }
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
-
     private string GetSuggestedFileName()
     {
         var monthToken = ExtractArchiveMonth(SelectedArchive);
         if (string.IsNullOrWhiteSpace(monthToken))
         {
             monthToken = "0000-00";
-        }
-
+    }
         return $"lichess-{MinElo}-{monthToken}.pgn";
     }
-
     private static string ExtractArchiveMonth(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
             return string.Empty;
-        }
-
+    }
         var match = ArchiveMonthRegex.Match(url);
         return match.Success ? match.Value : string.Empty;
     }
-
     private bool IsSuggestedFileName(string? fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return false;
-        }
-
+    }
         return SuggestedNameRegex.IsMatch(fileName);
     }
-
     private void UpdateProgress(LichessDbProgress progress)
     {
         _lastProgress = progress;
@@ -416,14 +385,13 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             IsIndeterminate = false;
             ProgressMaximum = progress.TotalBytes.Value;
             ProgressValue = progress.BytesRead;
-        }
+    }
         else
         {
             IsIndeterminate = true;
             ProgressMaximum = 100;
             ProgressValue = 0;
-        }
-
+    }
         StatusMessage = progress.Stage switch
         {
             LichessDbProgressStage.Completed => "Finished successfully.",
@@ -433,7 +401,6 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
 
         StatusDetail = BuildLichessProgressDetail(progress);
     }
-
     private string BuildLichessProgressDetail(LichessDbProgress progress)
     {
         var parts = new List<string>
@@ -448,22 +415,20 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
             {
                 var total = FormatBytes(progress.TotalBytes.Value);
                 parts.Add($"{bytes} / {total}");
-            }
+    }
             else
             {
                 parts.Add($"{bytes} downloaded");
-            }
+    }
         }
 
         var elapsed = BuildProgressDetail();
         if (!string.IsNullOrWhiteSpace(elapsed))
         {
             parts.Add(elapsed);
-        }
-
+    }
         return string.Join(" • ", parts);
     }
-
     private static string FormatBytes(long bytes)
     {
         const double scale = 1024;
@@ -474,8 +439,12 @@ public partial class LichessDbDownloaderViewModel : BaseViewModel, IDisposable
         {
             value /= scale;
             unitIndex++;
-        }
-
+    }
         return $"{value:0.##} {units[unitIndex]}";
     }
 }
+
+
+
+
+

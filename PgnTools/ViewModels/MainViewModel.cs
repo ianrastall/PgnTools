@@ -1,9 +1,14 @@
-﻿namespace PgnTools.ViewModels;
+namespace PgnTools.ViewModels;
 
-public partial class MainViewModel : BaseViewModel
+public partial class MainViewModel() : BaseViewModel, IInitializable
 {
-    public MainViewModel()
+    public void Initialize()
     {
         Title = "Home";
     }
 }
+
+
+
+
+

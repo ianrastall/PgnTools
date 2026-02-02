@@ -31,9 +31,6 @@ public partial class App : Application
     /// </summary>
     public App()
     {
-        // Required for single-file publishing with Windows App SDK
-        Environment.SetEnvironmentVariable("MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY", AppContext.BaseDirectory);
-        
         Services = ConfigureServices();
         this.InitializeComponent();
     }
@@ -106,46 +103,69 @@ public partial class App : Application
             throw new InvalidOperationException("Application.Current is not available or is not of type App.");
         }
 
-        return app.Services.GetRequiredService<T>();
+        var service = app.Services.GetRequiredService<T>();
+        if (service is IInitializable initializable)
+        {
+            initializable.Initialize();
+        }
+        return service;
     }
 
     private static void RegisterToolServices(IServiceCollection services)
     {
-        var assembly = typeof(App).Assembly;
-        var serviceTypes = assembly.GetTypes()
-            .Where(type => type.IsClass &&
-                           !type.IsAbstract &&
-                           type.Namespace == "PgnTools.Services" &&
-                           type.Name.EndsWith("Service", StringComparison.Ordinal));
-
-        foreach (var implementation in serviceTypes)
-        {
-            var interfaceType = implementation.GetInterface($"I{implementation.Name}");
-            if (interfaceType == null)
-            {
-                continue;
-            }
-
-            if (services.Any(descriptor => descriptor.ServiceType == interfaceType))
-            {
-                continue;
-            }
-
-            services.AddTransient(interfaceType, implementation);
-        }
+        services.AddTransient<ICategoryTaggerService, CategoryTaggerService>();
+        services.AddTransient<ICheckmateFilterService, CheckmateFilterService>();
+        services.AddTransient<IChessAnalyzerService, ChessAnalyzerService>();
+        services.AddTransient<IChesscomDownloaderService, ChesscomDownloaderService>();
+        services.AddTransient<IChessUnannotatorService, ChessUnannotatorService>();
+        services.AddTransient<IEcoTaggerService, EcoTaggerService>();
+        services.AddTransient<IEleganceGoldenValidationService, EleganceGoldenValidationService>();
+        services.AddTransient<IEleganceService, EleganceService>();
+        services.AddTransient<IEloAdderService, EloAdderService>();
+        services.AddTransient<ILc0DownloaderService, Lc0DownloaderService>();
+        services.AddTransient<ILichessDbDownloaderService, LichessDbDownloaderService>();
+        services.AddTransient<ILichessDownloaderService, LichessDownloaderService>();
+        services.AddTransient<IPgnFilterService, PgnFilterService>();
+        services.AddTransient<IPgnInfoService, PgnInfoService>();
+        services.AddTransient<IPgnJoinerService, PgnJoinerService>();
+        services.AddTransient<IPgnMentorDownloaderService, PgnMentorDownloaderService>();
+        services.AddTransient<IPgnSorterService, PgnSorterService>();
+        services.AddTransient<IPgnSplitterService, PgnSplitterService>();
+        services.AddTransient<IPlycountAdderService, PlycountAdderService>();
+        services.AddTransient<IRemoveDoublesService, RemoveDoublesService>();
+        services.AddTransient<IStockfishNormalizerService, StockfishNormalizerService>();
+        services.AddTransient<ITourBreakerService, TourBreakerService>();
+        services.AddTransient<ITwicDownloaderService, TwicDownloaderService>();
     }
 
     private static void RegisterViewModels(IServiceCollection services)
     {
-        var assembly = typeof(App).Assembly;
-        var viewModelTypes = assembly.GetTypes()
-            .Where(type => type.IsClass &&
-                           !type.IsAbstract &&
-                           type.IsSubclassOf(typeof(BaseViewModel)));
+        services.AddTransient<MainViewModel>();
+        services.AddTransient<ShellViewModel>();
+        services.AddTransient<WelcomeViewModel>();
 
-        foreach (var viewModel in viewModelTypes)
-        {
-            services.AddTransient(viewModel);
-        }
+        services.AddTransient<CategoryTaggerViewModel>();
+        services.AddTransient<CheckmateFilterViewModel>();
+        services.AddTransient<ChessAnalyzerViewModel>();
+        services.AddTransient<ChesscomDownloaderViewModel>();
+        services.AddTransient<ChessUnannotatorViewModel>();
+        services.AddTransient<EcoTaggerViewModel>();
+        services.AddTransient<EleganceViewModel>();
+        services.AddTransient<EloAdderViewModel>();
+        services.AddTransient<FilterViewModel>();
+        services.AddTransient<Lc0DownloaderViewModel>();
+        services.AddTransient<LichessDbDownloaderViewModel>();
+        services.AddTransient<LichessDownloaderViewModel>();
+        services.AddTransient<LichessToolsViewModel>();
+        services.AddTransient<PgnJoinerViewModel>();
+        services.AddTransient<PgnInfoViewModel>();
+        services.AddTransient<PgnMentorDownloaderViewModel>();
+        services.AddTransient<PgnSorterViewModel>();
+        services.AddTransient<PgnSplitterViewModel>();
+        services.AddTransient<PlycountAdderViewModel>();
+        services.AddTransient<RemoveDoublesViewModel>();
+        services.AddTransient<StockfishNormalizerViewModel>();
+        services.AddTransient<TourBreakerViewModel>();
+        services.AddTransient<TwicDownloaderViewModel>();
     }
 }

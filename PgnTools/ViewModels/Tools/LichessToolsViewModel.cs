@@ -3,21 +3,21 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel hosting Lichess-related tools on a single page.
 /// </summary>
-public sealed partial class LichessToolsViewModel : BaseViewModel, IDisposable
+public sealed partial class LichessToolsViewModel(
+    LichessDownloaderViewModel userDownloader,
+    LichessDbDownloaderViewModel databaseDownloader) : BaseViewModel, IInitializable, IDisposable
 {
     private bool _disposed;
 
-    public LichessDownloaderViewModel UserDownloader { get; }
-    public LichessDbDownloaderViewModel DatabaseDownloader { get; }
+    public LichessDownloaderViewModel UserDownloader { get; } = userDownloader;
+    public LichessDbDownloaderViewModel DatabaseDownloader { get; } = databaseDownloader;
 
-    public LichessToolsViewModel(
-        LichessDownloaderViewModel userDownloader,
-        LichessDbDownloaderViewModel databaseDownloader)
+    public void Initialize()
     {
-        UserDownloader = userDownloader;
-        DatabaseDownloader = databaseDownloader;
         Title = "Lichess";
         StatusSeverity = InfoBarSeverity.Informational;
+        UserDownloader.Initialize();
+        DatabaseDownloader.Initialize();
     }
 
     public void Dispose()
@@ -32,3 +32,8 @@ public sealed partial class LichessToolsViewModel : BaseViewModel, IDisposable
         DatabaseDownloader.Dispose();
     }
 }
+
+
+
+
+

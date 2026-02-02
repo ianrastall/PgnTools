@@ -6,11 +6,14 @@ namespace PgnTools.ViewModels.Tools;
 /// <summary>
 /// ViewModel for the PGN Info tool.
 /// </summary>
-public partial class PgnInfoViewModel : BaseViewModel, IDisposable
+public partial class PgnInfoViewModel(
+    IPgnInfoService pgnInfoService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IPgnInfoService _pgnInfoService;
-    private readonly IAppSettingsService _settings;
-    private readonly IWindowService _windowService;
+    private readonly IPgnInfoService _pgnInfoService = pgnInfoService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
@@ -36,20 +39,12 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
 
     [ObservableProperty]
     private long _progressGames;
-
-    public PgnInfoViewModel(
-        IPgnInfoService pgnInfoService,
-        IWindowService windowService,
-        IAppSettingsService settings)
+    public void Initialize()
     {
-        _pgnInfoService = pgnInfoService;
-        _windowService = windowService;
-        _settings = settings;
         Title = "PGN Info";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
-
     [RelayCommand]
     private async Task SelectFileAsync()
     {
@@ -62,28 +57,26 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
             if (file == null)
             {
                 return;
-            }
-
+    }
             var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
             if (!validation.Success)
             {
                 StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
                 StatusSeverity = InfoBarSeverity.Error;
                 return;
-            }
-
+    }
             SelectedFilePath = file.Path;
             SelectedFileName = file.Name;
             StatusMessage = $"Ready to analyze: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
             HasResults = false;
             Statistics = null;
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-        }
+    }
     }
 
     [RelayCommand(CanExecute = nameof(CanAnalyze))]
@@ -92,13 +85,11 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
         if (string.IsNullOrEmpty(SelectedFilePath))
         {
             return;
-        }
-
+    }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-        }
-
+    }
         try
         {
             IsAnalyzing = true;
@@ -127,19 +118,19 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
             StatusMessage = $"Analysis complete: {Statistics.Games:N0} games processed";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, Statistics.Games, null, "games");
-        }
+    }
         catch (OperationCanceledException)
         {
             StatusMessage = "Analysis cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
-        }
+    }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
-        }
+    }
         finally
         {
             IsAnalyzing = false;
@@ -147,7 +138,7 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-        }
+    }
     }
 
     private bool CanAnalyze() =>
@@ -162,24 +153,20 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
     }
-
     partial void OnSelectedFilePathChanged(string value)
     {
         AnalyzeCommand.NotifyCanExecuteChanged();
     }
-
     partial void OnIsAnalyzingChanged(bool value)
     {
         AnalyzeCommand.NotifyCanExecuteChanged();
     }
-
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-        }
-
+    }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -187,19 +174,18 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
         _cancellationTokenSource = null;
         _executionLock.Dispose();
     }
-
     private void LoadState()
     {
         SelectedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedFilePath)}", SelectedFilePath);
         if (!string.IsNullOrWhiteSpace(SelectedFilePath) && File.Exists(SelectedFilePath))
         {
             SelectedFileName = Path.GetFileName(SelectedFilePath);
-        }
+    }
         else
         {
             SelectedFilePath = string.Empty;
             SelectedFileName = string.Empty;
-        }
+    }
     }
 
     private void SaveState()
@@ -207,4 +193,9 @@ public partial class PgnInfoViewModel : BaseViewModel, IDisposable
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedFilePath)}", SelectedFilePath);
     }
 }
+
+
+
+
+
 
