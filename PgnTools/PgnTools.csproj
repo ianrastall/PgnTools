@@ -55,6 +55,9 @@
         <Content Include="Assets\elegance-goldens.json">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
+        <Content Include="Assets\Tablebases\download.txt">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
     </ItemGroup>
 
     <ItemGroup>
@@ -75,6 +78,7 @@
         <None Remove="Views\Tools\PlycountAdderPage.xaml" />
         <None Remove="Views\Tools\TwicDownloaderPage.xaml" />
         <None Remove="Views\Tools\PgnMentorDownloaderPage.xaml" />
+        <None Remove="Views\Tools\TablebaseDownloaderPage.xaml" />
         <None Remove="Views\Tools\PgnJoinerPage.xaml" />
         <None Remove="Views\Tools\PgnSorterPage.xaml" />
         <None Remove="Views\Tools\EloAdderPage.xaml" />
@@ -159,6 +163,9 @@
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\PgnMentorDownloaderPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\TablebaseDownloaderPage.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\PgnJoinerPage.xaml">

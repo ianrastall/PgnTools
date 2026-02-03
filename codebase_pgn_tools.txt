@@ -1,7 +1,7 @@
 # PgnTools codebase snapshot
-# Generated: 2026-02-02 13:21:57
+# Generated: 2026-02-02 18:52:42
 # Root: D:\GitHub\PgnTools
-# Scope: PgnTools source + selected text assets (eco.pgn, list.txt) + build/workflow files
+# Scope: PgnTools source + selected text assets (eco.pgn, list.txt, tablebase download list) + build/workflow files
 
 ===== BEGIN: .gitattributes =====
 # Auto detect text files and perform LF normalization
@@ -477,6 +477,19 @@ $outputFullPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
 } else {
     Join-Path $scriptRoot $OutputPath
 }
+$outputFullPath = [System.IO.Path]::GetFullPath($outputFullPath)
+$outputDirectory = Split-Path -Parent $outputFullPath
+if (-not [string]::IsNullOrWhiteSpace($outputDirectory) -and -not (Test-Path -LiteralPath $outputDirectory)) {
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+}
+$outputRelativePath = $null
+try {
+    $outputRelativePath = [System.IO.Path]::GetRelativePath($scriptRoot, $outputFullPath)
+} catch {
+    $outputRelativePath = $null
+}
+$outputRelativePathNormalized = if ($outputRelativePath) { $outputRelativePath -replace "\\", "/" } else { $null }
+$outputPathNormalized = $OutputPath -replace "\\", "/"
 
 $includeFiles = @(
     "Agents.md",
@@ -484,9 +497,12 @@ $includeFiles = @(
     "LICENSE",
     ".gitattributes",
     ".gitignore",
+    "Directory.Packages.props",
     "generate_codebase_dump.ps1",
+    "PgnTools.slnx",
     "PgnTools/Assets/eco.pgn",
-    "PgnTools/Assets/list.txt"
+    "PgnTools/Assets/list.txt",
+    "PgnTools/Assets/Tablebases/download.txt"
 )
 
 $includePrefixes = @(
@@ -529,11 +545,18 @@ function Should-IncludeFile {
         [string]$FullPath
     )
 
-    if ($RelativePath -eq $OutputPath -or $FullPath -eq $outputFullPath) {
+    $fullPathNormalized = [System.IO.Path]::GetFullPath($FullPath)
+    if ($fullPathNormalized -eq $outputFullPath) {
         return $false
     }
 
     $normalized = $RelativePath -replace "\\", "/"
+    if ($normalized -eq $outputPathNormalized) {
+        return $false
+    }
+    if ($outputRelativePathNormalized -and $normalized -eq $outputRelativePathNormalized) {
+        return $false
+    }
 
     $segments = $normalized -split "/"
     foreach ($segment in $segments) {
@@ -587,7 +610,7 @@ try {
     $writer.WriteLine("# PgnTools codebase snapshot")
     $writer.WriteLine("# Generated: $timestamp")
     $writer.WriteLine("# Root: $scriptRoot")
-    $writer.WriteLine("# Scope: PgnTools source + selected text assets (eco.pgn, list.txt) + build/workflow files")
+    $writer.WriteLine("# Scope: PgnTools source + selected text assets (eco.pgn, list.txt, tablebase download list) + build/workflow files")
     $writer.WriteLine()
 
     foreach ($relativePath in $filesToInclude) {
@@ -822,6 +845,7 @@ When generating code, always verify it compiles against the .NET 10 preview SDK 
 ===== END: PgnTools/App.xaml =====
 
 ===== BEGIN: PgnTools/App.xaml.cs =====
+using System.Net.Http;
 using Microsoft.Extensions.Hosting;
 using PgnTools.Models;
 using PgnTools.ViewModels;
@@ -876,6 +900,7 @@ public partial class App : Application
         services.AddSingleton<PgnWriter>();
         
         // Tool Services
+        services.AddSingleton(CreateTablebaseHttpClient());
         services.AddSingleton<IStockfishDownloaderService, StockfishDownloaderService>();
         services.AddSingleton<IRatingDatabase, EmbeddedRatingsDatabase>();
 
@@ -959,6 +984,7 @@ public partial class App : Application
         services.AddTransient<IRemoveDoublesService, RemoveDoublesService>();
         services.AddTransient<IStockfishNormalizerService, StockfishNormalizerService>();
         services.AddTransient<ITourBreakerService, TourBreakerService>();
+        services.AddTransient<ITablebaseDownloaderService, TablebaseDownloaderService>();
         services.AddTransient<ITwicDownloaderService, TwicDownloaderService>();
     }
 
@@ -990,7 +1016,18 @@ public partial class App : Application
         services.AddTransient<RemoveDoublesViewModel>();
         services.AddTransient<StockfishNormalizerViewModel>();
         services.AddTransient<TourBreakerViewModel>();
+        services.AddTransient<TablebaseDownloaderViewModel>();
         services.AddTransient<TwicDownloaderViewModel>();
+    }
+
+    private static HttpClient CreateTablebaseHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
     }
 }
 ===== END: PgnTools/App.xaml.cs =====
@@ -67617,11 +67654,10 @@ namespace PgnTools.Models;
 /// <summary>
 /// Represents a single PGN game with headers and move text.
 /// </summary>
-public sealed class PgnGame(IEnumerable<KeyValuePair<string, string>>? headers = null, string? moveText = null)
+public sealed class PgnGame(Dictionary<string, string>? headers = null, string? moveText = null)
 {
-    public Dictionary<string, string> Headers { get; } = headers != null
-        ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
-        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> Headers { get; } = headers ??
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     public string MoveText { get; set; } = moveText ?? string.Empty;
 }
@@ -67725,6 +67761,7 @@ public static class ToolRegistry
         new("PgnSorter", "Sorter", "Sort games by Elo, Date, etc", "\uE8CB", typeof(PgnSorterPage)),
         new("PgnSplitter", "Splitter", "Split into chunks or filter", "\uE8A4", typeof(PgnSplitterPage)),
         new("StockfishNormalizer", "Stockfish Normalizer", "Fix engine names", "\uE8AC", typeof(StockfishNormalizerPage)),
+        new("Tablebases", "Tablebases", "Download Syzygy tablebases", "\uE896", typeof(TablebaseDownloaderPage)),
         new("TourBreaker", "Tour Breaker", "Extract valid tournaments", "\uE7EE", typeof(TourBreakerPage)),
         new("TwicDownloader", "TWIC Downloader", "The Week in Chess", "\uE896", typeof(TwicDownloaderPage)),
     ];
@@ -67783,6 +67820,7 @@ public static class ToolRegistry
   </Applications>
 
   <Capabilities>
+    <Capability Name="internetClient" />
     <rescap:Capability Name="runFullTrust" />
   </Capabilities>
 </Package>
@@ -67815,10 +67853,8 @@ public static class ToolRegistry
         <Platforms>x64</Platforms>
         <PlatformTarget>x64</PlatformTarget>
         <ApplicationManifest>app.manifest</ApplicationManifest>
-        <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x64</RuntimeIdentifiers>
-        <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x64</RuntimeIdentifiers>
-        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x64</RuntimeIdentifier>
-        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x64</RuntimeIdentifier>
+        <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
         
         <!-- Allow unsafe code for WinRT interop -->
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -67848,6 +67884,9 @@ public static class ToolRegistry
         <Content Include="Assets\elegance-goldens.json">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
+        <Content Include="Assets\Tablebases\download.txt">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
     </ItemGroup>
 
     <ItemGroup>
@@ -67868,6 +67907,7 @@ public static class ToolRegistry
         <None Remove="Views\Tools\PlycountAdderPage.xaml" />
         <None Remove="Views\Tools\TwicDownloaderPage.xaml" />
         <None Remove="Views\Tools\PgnMentorDownloaderPage.xaml" />
+        <None Remove="Views\Tools\TablebaseDownloaderPage.xaml" />
         <None Remove="Views\Tools\PgnJoinerPage.xaml" />
         <None Remove="Views\Tools\PgnSorterPage.xaml" />
         <None Remove="Views\Tools\EloAdderPage.xaml" />
@@ -67952,6 +67992,9 @@ public static class ToolRegistry
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\PgnMentorDownloaderPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\TablebaseDownloaderPage.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\PgnJoinerPage.xaml">
@@ -77207,7 +77250,6 @@ using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace PgnTools.Services;
 
@@ -77218,11 +77260,6 @@ public partial class PgnReader
 {
     private const int BufferSize = 262144;
     private const int MaxLineLength = 262144;
-    private const int MaxHeaderRegexLength = 2048;
-
-    // GeneratedRegex already provides compile-time optimization; RegexOptions.Compiled is redundant.
-    [GeneratedRegex(@"^\s*\[\s*(?<tag>[^\s\]]+)\s+(?<value>""(?:\\.|[^""])*""|'(?:\\.|[^'])*'|[^\]]*)\s*\]\s*$")]
-    private static partial Regex HeaderRegex();
 
     public PgnReader()
     {
@@ -77489,33 +77526,59 @@ public partial class PgnReader
             return string.Empty;
         }
 
-        var builder = new StringBuilder(value.Length);
+        if (value.IndexOf('\\') < 0)
+        {
+            return value;
+        }
+
+        var length = 0;
         var escaping = false;
 
         foreach (var c in value)
         {
-            if (escaping)
-            {
-                builder.Append(c);
-                escaping = false;
-                continue;
-            }
-
-            if (c == '\\')
+            if (!escaping && c == '\\')
             {
                 escaping = true;
                 continue;
             }
 
-            builder.Append(c);
+            length++;
+            escaping = false;
         }
 
         if (escaping)
         {
-            builder.Append('\\');
+            length++;
         }
 
-        return builder.ToString();
+        return string.Create(length, value, (span, state) =>
+        {
+            var idx = 0;
+            var isEscaping = false;
+
+            foreach (var c in state)
+            {
+                if (isEscaping)
+                {
+                    span[idx++] = c;
+                    isEscaping = false;
+                    continue;
+                }
+
+                if (c == '\\')
+                {
+                    isEscaping = true;
+                    continue;
+                }
+
+                span[idx++] = c;
+            }
+
+            if (isEscaping && idx < span.Length)
+            {
+                span[idx] = '\\';
+            }
+        });
     }
 
     private static void UpdateMoveState(
@@ -77617,37 +77680,7 @@ public partial class PgnReader
 
     private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
     {
-        key = string.Empty;
-        rawValue = string.Empty;
-
-        if (line.Length <= MaxHeaderRegexLength)
-        {
-            var match = HeaderRegex().Match(line.ToString());
-            if (match.Success)
-            {
-                key = match.Groups["tag"].Value;
-                rawValue = TrimHeaderValue(match.Groups["value"].Value);
-                return true;
-            }
-        }
-
         return TryParseHeaderFallback(line, out key, out rawValue);
-    }
-
-    private static string TrimHeaderValue(string rawValue)
-    {
-        var trimmed = rawValue.Trim();
-        if (trimmed.Length >= 2)
-        {
-            var first = trimmed[0];
-            var last = trimmed[^1];
-            if ((first == '"' && last == '"') || (first == '\'' && last == '\''))
-            {
-                trimmed = trimmed[1..^1];
-            }
-        }
-
-        return trimmed;
     }
 
     private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
@@ -77678,10 +77711,11 @@ public partial class PgnReader
             return false;
         }
 
-        key = span[..nameLength].ToString();
+        var nameSpan = span[..nameLength];
         span = span[nameLength..].TrimStart();
         if (span.Length == 0)
         {
+            key = nameSpan.ToString();
             rawValue = string.Empty;
             return true;
         }
@@ -77712,6 +77746,7 @@ public partial class PgnReader
 
                 if (c == quote)
                 {
+                    key = nameSpan.ToString();
                     rawValue = builder.ToString();
                     return true;
                 }
@@ -77719,6 +77754,7 @@ public partial class PgnReader
                 builder.Append(c);
             }
 
+            key = nameSpan.ToString();
             rawValue = builder.ToString();
             return true;
         }
@@ -77729,6 +77765,7 @@ public partial class PgnReader
             closingIndex = span.Length;
         }
 
+        key = nameSpan.ToString();
         rawValue = span[..closingIndex].ToString().TrimEnd();
         return true;
     }
@@ -80685,7 +80722,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                     cancellationToken.ThrowIfCancellationRequested();
                     processed++;
 
-                    var headers = new List<KeyValuePair<string, string>>(game.Headers.Count);
+                    var headers = new Dictionary<string, string>(game.Headers.Count, StringComparer.OrdinalIgnoreCase);
 
                     foreach (var header in game.Headers)
                     {
@@ -80698,11 +80735,11 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                                 tagsUpdated++;
                             }
 
-                            headers.Add(new KeyValuePair<string, string>(header.Key, normalized));
+                            headers[header.Key] = normalized;
                         }
                         else
                         {
-                            headers.Add(header);
+                            headers[header.Key] = header.Value;
                         }
                     }
 
@@ -86910,8 +86947,8 @@ public partial class PgnSorterViewModel(
         finally
         {
             IsRunning = false;
-            _cancellationTokenSource?.Dispose();
-            _cancellationTokenSource = null;
+            var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+            cts?.Dispose();
             _executionLock.Release();
             StopProgressTimer();
     }
@@ -86957,10 +86994,22 @@ public partial class PgnSorterViewModel(
     [RelayCommand]
     private void Cancel()
     {
-        _cancellationTokenSource?.Cancel();
-        StatusMessage = "Cancelling...";
-        StatusSeverity = InfoBarSeverity.Warning;
-        StatusDetail = BuildProgressDetail(ProgressValue);
+        var cts = _cancellationTokenSource;
+        if (cts == null || cts.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+            StatusMessage = "Cancelling...";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
     partial void OnInputFilePathChanged(string value)
     {
@@ -86994,9 +87043,12 @@ public partial class PgnSorterViewModel(
     }
         _disposed = true;
         SaveState();
-        _cancellationTokenSource?.Cancel();
-        _cancellationTokenSource?.Dispose();
-        _cancellationTokenSource = null;
+        var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+        if (cts != null)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
         _executionLock.Dispose();
     }
     private void LoadState()
@@ -92449,7 +92501,7 @@ public sealed partial class TwicDownloaderPage : Page
 
     <Page.Resources>
         <Style x:Key="ToolCardButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="{ThemeResource SystemControlBackgroundBaseLowBrush}"/>
+            <Setter Property="Background" Value="{ThemeResource SystemControlBackgroundChromeMediumLowBrush}"/>
             <Setter Property="BorderBrush" Value="{StaticResource AccentLightBrush}"/>
             <Setter Property="BorderThickness" Value="2"/>
             <Setter Property="CornerRadius" Value="14"/>

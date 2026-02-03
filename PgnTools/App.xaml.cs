@@ -1,3 +1,4 @@
+using System.Net.Http;
 using Microsoft.Extensions.Hosting;
 using PgnTools.Models;
 using PgnTools.ViewModels;
@@ -52,6 +53,7 @@ public partial class App : Application
         services.AddSingleton<PgnWriter>();
         
         // Tool Services
+        services.AddSingleton(CreateTablebaseHttpClient());
         services.AddSingleton<IStockfishDownloaderService, StockfishDownloaderService>();
         services.AddSingleton<IRatingDatabase, EmbeddedRatingsDatabase>();
 
@@ -135,6 +137,7 @@ public partial class App : Application
         services.AddTransient<IRemoveDoublesService, RemoveDoublesService>();
         services.AddTransient<IStockfishNormalizerService, StockfishNormalizerService>();
         services.AddTransient<ITourBreakerService, TourBreakerService>();
+        services.AddTransient<ITablebaseDownloaderService, TablebaseDownloaderService>();
         services.AddTransient<ITwicDownloaderService, TwicDownloaderService>();
     }
 
@@ -166,6 +169,17 @@ public partial class App : Application
         services.AddTransient<RemoveDoublesViewModel>();
         services.AddTransient<StockfishNormalizerViewModel>();
         services.AddTransient<TourBreakerViewModel>();
+        services.AddTransient<TablebaseDownloaderViewModel>();
         services.AddTransient<TwicDownloaderViewModel>();
+    }
+
+    private static HttpClient CreateTablebaseHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
     }
 }

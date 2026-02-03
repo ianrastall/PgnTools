@@ -13,6 +13,19 @@ $outputFullPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
 } else {
     Join-Path $scriptRoot $OutputPath
 }
+$outputFullPath = [System.IO.Path]::GetFullPath($outputFullPath)
+$outputDirectory = Split-Path -Parent $outputFullPath
+if (-not [string]::IsNullOrWhiteSpace($outputDirectory) -and -not (Test-Path -LiteralPath $outputDirectory)) {
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+}
+$outputRelativePath = $null
+try {
+    $outputRelativePath = [System.IO.Path]::GetRelativePath($scriptRoot, $outputFullPath)
+} catch {
+    $outputRelativePath = $null
+}
+$outputRelativePathNormalized = if ($outputRelativePath) { $outputRelativePath -replace "\\", "/" } else { $null }
+$outputPathNormalized = $OutputPath -replace "\\", "/"
 
 $includeFiles = @(
     "Agents.md",
@@ -20,9 +33,12 @@ $includeFiles = @(
     "LICENSE",
     ".gitattributes",
     ".gitignore",
+    "Directory.Packages.props",
     "generate_codebase_dump.ps1",
+    "PgnTools.slnx",
     "PgnTools/Assets/eco.pgn",
-    "PgnTools/Assets/list.txt"
+    "PgnTools/Assets/list.txt",
+    "PgnTools/Assets/Tablebases/download.txt"
 )
 
 $includePrefixes = @(
@@ -65,11 +81,18 @@ function Should-IncludeFile {
         [string]$FullPath
     )
 
-    if ($RelativePath -eq $OutputPath -or $FullPath -eq $outputFullPath) {
+    $fullPathNormalized = [System.IO.Path]::GetFullPath($FullPath)
+    if ($fullPathNormalized -eq $outputFullPath) {
         return $false
     }
 
     $normalized = $RelativePath -replace "\\", "/"
+    if ($normalized -eq $outputPathNormalized) {
+        return $false
+    }
+    if ($outputRelativePathNormalized -and $normalized -eq $outputRelativePathNormalized) {
+        return $false
+    }
 
     $segments = $normalized -split "/"
     foreach ($segment in $segments) {
@@ -123,7 +146,7 @@ try {
     $writer.WriteLine("# PgnTools codebase snapshot")
     $writer.WriteLine("# Generated: $timestamp")
     $writer.WriteLine("# Root: $scriptRoot")
-    $writer.WriteLine("# Scope: PgnTools source + selected text assets (eco.pgn, list.txt) + build/workflow files")
+    $writer.WriteLine("# Scope: PgnTools source + selected text assets (eco.pgn, list.txt, tablebase download list) + build/workflow files")
     $writer.WriteLine()
 
     foreach ($relativePath in $filesToInclude) {

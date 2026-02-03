@@ -43,6 +43,7 @@ public static class ToolRegistry
         new("PgnSorter", "Sorter", "Sort games by Elo, Date, etc", "\uE8CB", typeof(PgnSorterPage)),
         new("PgnSplitter", "Splitter", "Split into chunks or filter", "\uE8A4", typeof(PgnSplitterPage)),
         new("StockfishNormalizer", "Stockfish Normalizer", "Fix engine names", "\uE8AC", typeof(StockfishNormalizerPage)),
+        new("Tablebases", "Tablebases", "Download Syzygy tablebases", "\uE896", typeof(TablebaseDownloaderPage)),
         new("TourBreaker", "Tour Breaker", "Extract valid tournaments", "\uE7EE", typeof(TourBreakerPage)),
         new("TwicDownloader", "TWIC Downloader", "The Week in Chess", "\uE896", typeof(TwicDownloaderPage)),
     ];
