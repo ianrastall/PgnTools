@@ -119,70 +119,72 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                     totalBytes,
                     0));
 
-                await using var contentStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                await using var fileStream = new FileStream(
-                    tempPath,
-                    FileMode.Create,
-                    FileAccess.Write,
-                    FileShare.None,
-                    BufferSize,
-                    FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-                var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-                try
                 {
-                    var fileStopwatch = Stopwatch.StartNew();
-                    var lastReport = Stopwatch.StartNew();
-                    long bytesRead = 0;
+                    await using var contentStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                    await using var fileStream = new FileStream(
+                        tempPath,
+                        FileMode.Create,
+                        FileAccess.Write,
+                        FileShare.None,
+                        BufferSize,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-                    while (true)
+                    var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+                    try
                     {
-                        var read = await contentStream.ReadAsync(buffer, ct).ConfigureAwait(false);
-                        if (read <= 0)
+                        var fileStopwatch = Stopwatch.StartNew();
+                        var lastReport = Stopwatch.StartNew();
+                        long bytesRead = 0;
+
+                        while (true)
                         {
-                            break;
+                            var read = await contentStream.ReadAsync(buffer, ct).ConfigureAwait(false);
+                            if (read <= 0)
+                            {
+                                break;
+                            }
+
+                            await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                            bytesRead += read;
+
+                            if (lastReport.Elapsed >= ProgressInterval)
+                            {
+                                var speed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
+                                    ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
+                                    : 0;
+
+                                progress?.Report(new TablebaseProgress(
+                                    category,
+                                    fileName,
+                                    completed,
+                                    urls.Length,
+                                    bytesRead,
+                                    totalBytes,
+                                    speed));
+
+                                lastReport.Restart();
+                            }
                         }
 
-                        await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                        bytesRead += read;
+                        var computedSpeed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
+                            ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
+                            : 0;
+                        finalBytesRead = bytesRead;
+                        finalSpeed = computedSpeed;
 
-                        if (lastReport.Elapsed >= ProgressInterval)
-                        {
-                            var speed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
-                                ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
-                                : 0;
-
-                            progress?.Report(new TablebaseProgress(
-                                category,
-                                fileName,
-                                completed,
-                                urls.Length,
-                                bytesRead,
-                                totalBytes,
-                                speed));
-
-                            lastReport.Restart();
-                        }
+                        progress?.Report(new TablebaseProgress(
+                            category,
+                            fileName,
+                            completed,
+                            urls.Length,
+                            bytesRead,
+                            totalBytes,
+                            computedSpeed));
                     }
-
-                    var computedSpeed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
-                        ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
-                        : 0;
-                    finalBytesRead = bytesRead;
-                    finalSpeed = computedSpeed;
-
-                    progress?.Report(new TablebaseProgress(
-                        category,
-                        fileName,
-                        completed,
-                        urls.Length,
-                        bytesRead,
-                        totalBytes,
-                        computedSpeed));
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(buffer);
+                    }
                 }
 
                 if (!TryReplaceFile(tempPath, filePath))
