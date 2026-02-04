@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$OutputPath = "codebase_pgn_tools.txt"
+    [string]$OutputPath = "codebase_snapshot.txt"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +18,7 @@ $outputDirectory = Split-Path -Parent $outputFullPath
 if (-not [string]::IsNullOrWhiteSpace($outputDirectory) -and -not (Test-Path -LiteralPath $outputDirectory)) {
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 }
+
 $outputRelativePath = $null
 try {
     $outputRelativePath = [System.IO.Path]::GetRelativePath($scriptRoot, $outputFullPath)
@@ -27,38 +28,90 @@ try {
 $outputRelativePathNormalized = if ($outputRelativePath) { $outputRelativePath -replace "\\", "/" } else { $null }
 $outputPathNormalized = $OutputPath -replace "\\", "/"
 
-$includeFiles = @(
-    "Agents.md",
-    "README.md",
-    "LICENSE",
-    ".gitattributes",
+$includeExtensions = @(
+    ".cs",
+    ".xaml",
+    ".csproj",
+    ".sln",
+    ".slnx",
+    ".props",
+    ".targets",
+    ".config",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".xml",
+    ".resx",
+    ".md",
+    ".txt",
+    ".ps1",
+    ".psm1",
+    ".psd1",
+    ".cmd",
+    ".bat",
+    ".sh",
+    ".editorconfig",
     ".gitignore",
-    "Directory.Packages.props",
-    "generate_codebase_dump.ps1",
-    "PgnTools.slnx",
-    "PgnTools/Assets/eco.pgn",
-    "PgnTools/Assets/list.txt",
-    "PgnTools/Assets/Tablebases/download.txt"
+    ".gitattributes",
+    ".ruleset",
+    ".csx",
+    ".sql",
+    ".ini"
 )
 
-$includePrefixes = @(
-    "PgnTools/",
-    ".github/"
+$includeFileNames = @(
+    "LICENSE",
+    "LICENSE.txt",
+    "README",
+    "README.md",
+    "NOTICE",
+    "NOTICE.txt",
+    ".editorconfig",
+    ".gitignore",
+    ".gitattributes"
 )
 
-$excludePrefixes = @(
-    "PgnTools/Assets/"
-)
-
-$excludePathSegments = @(
+$excludeDirNames = @(
     ".git",
     ".vs",
     ".idea",
+    ".vscode",
     "bin",
     "obj",
     "node_modules",
-    "packages"
+    "packages",
+    "dist",
+    "build",
+    "out",
+    "artifacts",
+    "TestResults"
 )
+
+$excludePathPrefixes = @(
+    "Assets/",
+    "PgnTools/Assets/",
+    "Docs/Assets/"
+)
+
+$excludeFilePatterns = @(
+    "codebase_*.txt",
+    "*_codebase*.txt",
+    "*snapshot*.txt"
+)
+
+$includeExtensionSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($ext in $includeExtensions) {
+    if (-not [string]::IsNullOrWhiteSpace($ext)) {
+        $includeExtensionSet.Add($ext) | Out-Null
+    }
+}
+
+$includeFileNameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($name in $includeFileNames) {
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
+        $includeFileNameSet.Add($name) | Out-Null
+    }
+}
 
 function Get-RepoFiles {
     try {
@@ -73,6 +126,58 @@ function Get-RepoFiles {
             $_.FullName.Substring($scriptRoot.Length + 1)
         }
     }
+}
+
+function Test-IsLikelyTextFile {
+    param(
+        [string]$FullPath
+    )
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($FullPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $buffer = New-Object byte[] 4096
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        for ($i = 0; $i -lt $read; $i++) {
+            if ($buffer[$i] -eq 0) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Read-TextFile {
+    param(
+        [string]$FullPath
+    )
+
+    $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        return [System.IO.File]::ReadAllText($FullPath, $utf8Strict)
+    } catch [System.Text.DecoderFallbackException] {
+        return [System.IO.File]::ReadAllText($FullPath, [System.Text.Encoding]::Default)
+    }
+}
+
+function Matches-AnyPattern {
+    param(
+        [string]$Name,
+        [string[]]$Patterns
+    )
+
+    foreach ($pattern in $Patterns) {
+        if ($Name -like $pattern) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Should-IncludeFile {
@@ -96,25 +201,29 @@ function Should-IncludeFile {
 
     $segments = $normalized -split "/"
     foreach ($segment in $segments) {
-        if ($excludePathSegments -contains $segment) {
+        if ($excludeDirNames -contains $segment) {
             return $false
         }
     }
 
-    if ($includeFiles -contains $normalized) {
+    foreach ($prefix in $excludePathPrefixes) {
+        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+
+    $fileName = [System.IO.Path]::GetFileName($normalized)
+    if (Matches-AnyPattern -Name $fileName -Patterns $excludeFilePatterns) {
+        return $false
+    }
+
+    if ($includeFileNameSet.Contains($fileName)) {
         return $true
     }
 
-    foreach ($prefix in $excludePrefixes) {
-        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $false
-        }
-    }
-
-    foreach ($prefix in $includePrefixes) {
-        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $true
-        }
+    $extension = [System.IO.Path]::GetExtension($fileName)
+    if ($includeExtensionSet.Contains($extension)) {
+        return $true
     }
 
     return $false
@@ -122,6 +231,7 @@ function Should-IncludeFile {
 
 $files = Get-RepoFiles
 $filesToInclude = New-Object System.Collections.Generic.List[string]
+$skippedBinary = 0
 
 foreach ($file in $files) {
     if ([string]::IsNullOrWhiteSpace($file)) {
@@ -132,6 +242,10 @@ foreach ($file in $files) {
         continue
     }
     if (-not (Should-IncludeFile -RelativePath $file -FullPath $fullPath)) {
+        continue
+    }
+    if (-not (Test-IsLikelyTextFile -FullPath $fullPath)) {
+        $skippedBinary++
         continue
     }
     $filesToInclude.Add($file) | Out-Null
@@ -146,7 +260,12 @@ try {
     $writer.WriteLine("# PgnTools codebase snapshot")
     $writer.WriteLine("# Generated: $timestamp")
     $writer.WriteLine("# Root: $scriptRoot")
-    $writer.WriteLine("# Scope: PgnTools source + selected text assets (eco.pgn, list.txt, tablebase download list) + build/workflow files")
+    $writer.WriteLine("# Output: $outputFullPath")
+    $writer.WriteLine("# Notes: Assets, binaries, build outputs, and non-text files are excluded.")
+    $writer.WriteLine("# Included files: $($filesToInclude.Count)")
+    if ($skippedBinary -gt 0) {
+        $writer.WriteLine("# Skipped binary-like files: $skippedBinary")
+    }
     $writer.WriteLine()
 
     foreach ($relativePath in $filesToInclude) {
@@ -155,7 +274,7 @@ try {
 
         $writer.WriteLine("===== BEGIN: $labelPath =====")
 
-        $content = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8
+        $content = Read-TextFile -FullPath $fullPath
         if (-not [string]::IsNullOrEmpty($content)) {
             $writer.Write($content)
             if (-not $content.EndsWith("`n")) {
@@ -173,4 +292,4 @@ try {
     $writer.Dispose()
 }
 
-Write-Host "Wrote $($filesToInclude.Count) files to $outputFullPath"
+Write-Host "Wrote $($filesToInclude.Count) files to $outputFullPath (skipped binary-like: $skippedBinary)"
