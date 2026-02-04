@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
+using PgnTools.Helpers;
 using ZstdSharp;
 
 namespace PgnTools.Services;
@@ -68,79 +69,109 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
 
         await EnsureDiskSpaceAsync(url, outputFullPath, ct);
 
-        using var response = await HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
-        await using var networkStream = await response.Content.ReadAsStreamAsync(ct);
-        using var countingStream = new CountingStream(networkStream);
-        using var decompressor = new DecompressionStream(countingStream);
-
-        await using var outputStream = new FileStream(
-            outputFullPath,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            BufferSize,
-            FileOptions.SequentialScan | FileOptions.Asynchronous);
-
-        using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-        var firstGame = true;
-        var gamesSeen = 0L;
-        var gamesKept = 0L;
-        var lastProgressReport = DateTime.MinValue;
-        var totalBytes = response.Content.Headers.ContentLength;
-        var progressStopwatch = progress != null ? System.Diagnostics.Stopwatch.StartNew() : null;
-
-        progress?.Report(new LichessDbProgress(
-            LichessDbProgressStage.Downloading,
-            countingStream.BytesRead,
-            totalBytes,
-            gamesSeen,
-            gamesKept,
-            progressStopwatch?.Elapsed ?? TimeSpan.Zero));
-
-        await foreach (var game in _pgnReader.ReadGamesAsync(decompressor, ct).ConfigureAwait(false))
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            gamesSeen++;
+            using var response = await HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
 
-            if (ShouldKeepGame(game, minElo, excludeBullet, excludeNonStandard, onlyCheckmates))
+            await using var networkStream = await response.Content.ReadAsStreamAsync(ct);
+            using var countingStream = new CountingStream(networkStream);
+            using var decompressor = new DecompressionStream(countingStream);
+
+            var firstGame = true;
+            var gamesSeen = 0L;
+            var gamesKept = 0L;
+            var lastProgressReport = DateTime.MinValue;
+            var totalBytes = response.Content.Headers.ContentLength;
+            var progressStopwatch = progress != null ? System.Diagnostics.Stopwatch.StartNew() : null;
+            var stage = LichessDbProgressStage.Downloading;
+
+            progress?.Report(new LichessDbProgress(
+                stage,
+                countingStream.BytesRead,
+                totalBytes,
+                gamesSeen,
+                gamesKept,
+                progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+
+            await using (var outputStream = new FileStream(
+                               tempOutputPath,
+                               FileMode.Create,
+                               FileAccess.Write,
+                               FileShare.None,
+                               BufferSize,
+                               FileOptions.SequentialScan | FileOptions.Asynchronous))
             {
-                if (!firstGame)
+                using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(decompressor, ct).ConfigureAwait(false))
                 {
-                    await writer.WriteLineAsync().ConfigureAwait(false);
+                    ct.ThrowIfCancellationRequested();
+                    gamesSeen++;
+
+                    if (ShouldKeepGame(game, minElo, excludeBullet, excludeNonStandard, onlyCheckmates))
+                    {
+                        if (!firstGame)
+                        {
+                            await writer.WriteLineAsync().ConfigureAwait(false);
+                        }
+
+                        await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
+                        firstGame = false;
+                        gamesKept++;
+                    }
+
+                    if (progress != null && ShouldReportProgress(gamesSeen, ref lastProgressReport))
+                    {
+                        progress.Report(new LichessDbProgress(
+                            stage,
+                            countingStream.BytesRead,
+                            totalBytes,
+                            gamesSeen,
+                            gamesKept,
+                            progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+                    }
                 }
 
-                await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
-                firstGame = false;
-                gamesKept++;
+                await writer.FlushAsync().ConfigureAwait(false);
             }
 
-            if (progress != null && ShouldReportProgress(gamesSeen, ref lastProgressReport))
-            {
-                var stage = totalBytes.HasValue && countingStream.BytesRead < totalBytes.Value
-                    ? LichessDbProgressStage.Downloading
-                    : LichessDbProgressStage.Filtering;
+            stage = LichessDbProgressStage.Filtering;
+            progress?.Report(new LichessDbProgress(
+                stage,
+                countingStream.BytesRead,
+                totalBytes,
+                gamesSeen,
+                gamesKept,
+                progressStopwatch?.Elapsed ?? TimeSpan.Zero));
 
-                progress.Report(new LichessDbProgress(
-                    stage,
-                    countingStream.BytesRead,
-                    totalBytes,
-                    gamesSeen,
-                    gamesKept,
-                    progressStopwatch?.Elapsed ?? TimeSpan.Zero));
-            }
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+
+            progress?.Report(new LichessDbProgress(
+                LichessDbProgressStage.Completed,
+                countingStream.BytesRead,
+                totalBytes,
+                gamesSeen,
+                gamesKept,
+                progressStopwatch?.Elapsed ?? TimeSpan.Zero));
         }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
 
-        await writer.FlushAsync().ConfigureAwait(false);
-
-        progress?.Report(new LichessDbProgress(
-            LichessDbProgressStage.Completed,
-            countingStream.BytesRead,
-            totalBytes,
-            gamesSeen,
-            gamesKept,
-            progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+            throw;
+        }
     }
 
     private async Task EnsureDiskSpaceAsync(string url, string outputPath, CancellationToken ct)
@@ -155,6 +186,10 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
             {
                 compressedSize = headResponse.Content.Headers.ContentLength;
             }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -172,26 +207,31 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
             return;
         }
 
+        DriveInfo drive;
         try
         {
-            var drive = new DriveInfo(root);
+            drive = new DriveInfo(root);
             if (!drive.IsReady)
             {
                 return;
             }
-
-            var estimatedUncompressed = (long)(compressedSize.Value * EstimatedCompressionRatio);
-            if (drive.AvailableFreeSpace < estimatedUncompressed)
-            {
-                var neededGiB = estimatedUncompressed / 1024 / 1024 / 1024;
-                var availableGiB = drive.AvailableFreeSpace / 1024 / 1024 / 1024;
-                throw new IOException(
-                    $"Insufficient disk space. Need ~{neededGiB} GB, but only {availableGiB} GB available.");
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
             return;
+        }
+
+        var estimatedUncompressed = (long)(compressedSize.Value * EstimatedCompressionRatio);
+        if (drive.AvailableFreeSpace < estimatedUncompressed)
+        {
+            var neededGiB = estimatedUncompressed / 1024 / 1024 / 1024;
+            var availableGiB = drive.AvailableFreeSpace / 1024 / 1024 / 1024;
+            throw new IOException(
+                $"Insufficient disk space. Need ~{neededGiB} GB, but only {availableGiB} GB available.");
         }
     }
 

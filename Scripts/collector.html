@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LLM Round-up Combiner</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); }
+    main { padding: 18px; max-width: 1200px; margin: 0 auto; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 980px) { .row.cols2 { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 12px; background: rgba(127,127,127,.06); }
+    label { display: block; font-weight: 700; margin: 0 0 6px; }
+    textarea, input[type="text"] {
+      width: 100%; box-sizing: border-box;
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 10px; padding: 10px;
+      background: transparent;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px; line-height: 1.35;
+    }
+    textarea { min-height: 170px; resize: vertical; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select {
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(127,127,127,.12);
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button:hover { background: rgba(127,127,127,.18); }
+    select { font-weight: 600; }
+    .small { font-size: 12px; opacity: .85; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border: 1px solid rgba(127,127,127,.45);
+      border-radius: 999px;
+      background: rgba(127,127,127,.08);
+      font-size: 12px;
+    }
+    .inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+    .inline > * { flex: 1; min-width: 240px; }
+    .out textarea { min-height: 280px; }
+    .muted { opacity: .8; }
+    .twoLine {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; margin-bottom: 6px;
+    }
+    .count { font-size: 12px; opacity: .8; }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="toolbar">
+      <div style="flex: 1;">
+        <div style="font-size: 18px; font-weight: 900;">LLM Round-up Combiner</div>
+        <div class="small muted">Paste each model’s response → Combine → Download (.md/.txt) or Copy.</div>
+      </div>
+      <span class="pill" id="status">Ready</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="inline">
+        <div>
+          <label for="title">Session title (optional)</label>
+          <input id="title" type="text" placeholder="e.g., PgnTools: Memory-mapped virtualized list review" />
+        </div>
+        <div>
+          <label for="format">Output format</label>
+          <select id="format" style="width:100%;">
+            <option value="md" selected>Markdown (.md)</option>
+            <option value="txt">Plain text (.txt)</option>
+          </select>
+        </div>
+        <div>
+          <label for="filename">Filename (optional)</label>
+          <input id="filename" type="text" placeholder="auto-generated if empty" />
+          <div class="small muted">Leave blank to auto-stamp with date/time.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="row cols2" style="margin-top: 12px;">
+      <div class="card">
+        <label for="task">Task / Prompt (optional)</label>
+        <textarea id="task" placeholder="Paste the prompt you gave the models."></textarea>
+      </div>
+      <div class="card">
+        <label for="context">Context (optional)</label>
+        <textarea id="context" placeholder="Paste shared code/context (or a short summary)."></textarea>
+      </div>
+    </section>
+
+    <h2 style="margin: 16px 2px 8px;">Model outputs</h2>
+
+    <section class="row cols2" id="boxes"></section>
+
+    <section class="card out" style="margin-top: 12px;">
+      <div class="toolbar" style="margin-bottom: 10px;">
+        <div style="flex:1;">
+          <label for="output" style="margin:0 0 4px;">Combined output</label>
+          <div class="small muted">Ctrl+Enter also runs Combine.</div>
+        </div>
+        <button id="combineBtn" type="button">Combine</button>
+        <button id="copyBtn" type="button">Copy</button>
+        <button id="downloadBtn" type="button">Download</button>
+        <button id="clearBtn" type="button" title="Clears all inputs">Clear all</button>
+      </div>
+      <textarea id="output" readonly placeholder="Click Combine to generate output..."></textarea>
+    </section>
+
+    <section class="small muted" style="margin-top: 12px;">
+      Everything stays local in your browser (no network calls).
+    </section>
+  </main>
+
+<script>
+(() => {
+  const MODELS = [
+    { id: "chatgpt", label: "ChatGPT" },
+    { id: "claude",  label: "Claude"  },
+    { id: "deepseek",label: "DeepSeek"},
+	{ id: "gemini",  label: "Gemini"  },
+    { id: "kimi",    label: "Kimi"    },
+    { id: "qwen",    label: "Qwen"    },
+    { id: "zai",     label: "Z.ai"    },
+  ];
+
+  const el = (id) => document.getElementById(id);
+  const status = el("status");
+  const boxes = el("boxes");
+
+  function setStatus(text) {
+    status.textContent = text;
+    clearTimeout(setStatus._t);
+    setStatus._t = setTimeout(() => status.textContent = "Ready", 2500);
+  }
+
+  function pad2(n) { return String(n).padStart(2, "0"); }
+
+  function nowStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+
+  function safeFileStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  }
+
+  function normalizeNewlines(s) {
+    return String(s || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  function countChars(s) { return (s || "").length; }
+  function countWords(s) {
+    const t = (s || "").trim();
+    return t ? t.split(/\s+/).length : 0;
+  }
+
+  function buildMarkdown() {
+    const title = el("title").value.trim();
+    const task = el("task").value.trim();
+    const context = el("context").value.trim();
+
+    const parts = [];
+    parts.push(`# LLM Round-up${title ? ` — ${title}` : ""}`);
+    parts.push("");
+    parts.push(`- Generated: ${nowStamp()}`);
+    parts.push("");
+
+    if (task) {
+      parts.push("## Task / Prompt");
+      parts.push("");
+      parts.push(task);
+      parts.push("");
+    }
+    if (context) {
+      parts.push("## Context");
+      parts.push("");
+      parts.push("```");
+      parts.push(normalizeNewlines(context));
+      parts.push("```");
+      parts.push("");
+    }
+
+    parts.push("## Responses");
+    parts.push("");
+
+    let count = 0;
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      const val = (ta?.value || "").trim();
+      if (!val) continue;
+
+      count++;
+      parts.push(`### ${m.label}`);
+      parts.push("");
+      parts.push(normalizeNewlines(val));
+      parts.push("");
+      parts.push("---");
+      parts.push("");
+    }
+
+    if (count === 0) {
+      parts.push("_No model outputs were provided._");
+      parts.push("");
+    }
+
+    return parts.join("\n");
+  }
+
+  function buildPlainText() {
+    const title = el("title").value.trim();
+    const task = el("task").value.trim();
+    const context = el("context").value.trim();
+
+    const parts = [];
+    parts.push(`LLM ROUND-UP${title ? ` — ${title}` : ""}`);
+    parts.push(`Generated: ${nowStamp()}`);
+    parts.push("");
+
+    if (task) {
+      parts.push("=== TASK / PROMPT ===");
+      parts.push(normalizeNewlines(task));
+      parts.push("");
+    }
+    if (context) {
+      parts.push("=== CONTEXT ===");
+      parts.push(normalizeNewlines(context));
+      parts.push("");
+    }
+
+    let count = 0;
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      const val = (ta?.value || "").trim();
+      if (!val) continue;
+
+      count++;
+      parts.push(`=== ${m.label} ===`);
+      parts.push(normalizeNewlines(val));
+      parts.push("");
+    }
+
+    if (count === 0) {
+      parts.push("No model outputs were provided.");
+      parts.push("");
+    }
+
+    return parts.join("\n");
+  }
+
+  function combine() {
+    const fmt = el("format").value;
+    const text = (fmt === "md") ? buildMarkdown() : buildPlainText();
+    el("output").value = text;
+    setStatus("Combined");
+  }
+
+  async function copyOutput() {
+    const text = el("output").value;
+    if (!text) { setStatus("Nothing to copy"); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("Copied");
+    } catch {
+      el("output").focus();
+      el("output").select();
+      document.execCommand("copy");
+      setStatus("Copied");
+    }
+  }
+
+  function downloadOutput() {
+    const text = el("output").value;
+    if (!text) { setStatus("Nothing to download"); return; }
+
+    const fmt = el("format").value;
+    const ext = (fmt === "md") ? "md" : "txt";
+
+    let name = el("filename").value.trim();
+    if (!name) {
+      const t = el("title").value.trim();
+      const base = t ? t.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") : "llm_roundup";
+      name = `${base}_${safeFileStamp()}.${ext}`;
+    } else {
+      if (!name.toLowerCase().endsWith("." + ext)) name += "." + ext;
+    }
+
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus("Downloaded");
+  }
+
+  function clearAll() {
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      if (ta) ta.value = "";
+      const c = el(`count_${m.id}`);
+      if (c) c.textContent = "0 words • 0 chars";
+    }
+    el("task").value = "";
+    el("context").value = "";
+    el("title").value = "";
+    el("filename").value = "";
+    el("output").value = "";
+    setStatus("Cleared");
+  }
+
+  function updateCount(id) {
+    const ta = el(`box_${id}`);
+    const c = el(`count_${id}`);
+    if (!ta || !c) return;
+    const v = ta.value || "";
+    c.textContent = `${countWords(v)} words • ${countChars(v)} chars`;
+  }
+
+  function initBoxes() {
+    boxes.innerHTML = "";
+    for (const m of MODELS) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "twoLine";
+
+      const lab = document.createElement("label");
+      lab.setAttribute("for", `box_${m.id}`);
+      lab.textContent = m.label;
+
+      const cnt = document.createElement("div");
+      cnt.className = "count";
+      cnt.id = `count_${m.id}`;
+      cnt.textContent = "0 words • 0 chars";
+
+      top.appendChild(lab);
+      top.appendChild(cnt);
+
+      const ta = document.createElement("textarea");
+      ta.id = `box_${m.id}`;
+      ta.placeholder = `Paste ${m.label} output here...`;
+      ta.addEventListener("input", () => updateCount(m.id));
+
+      const meta = document.createElement("div");
+      meta.className = "small muted";
+      meta.style.marginTop = "6px";
+      meta.textContent = "Included if non-empty.";
+
+      card.appendChild(top);
+      card.appendChild(ta);
+      card.appendChild(meta);
+      boxes.appendChild(card);
+    }
+  }
+
+  el("combineBtn").addEventListener("click", combine);
+  el("copyBtn").addEventListener("click", copyOutput);
+  el("downloadBtn").addEventListener("click", downloadOutput);
+  el("clearBtn").addEventListener("click", clearAll);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.key === "Enter") combine();
+  });
+
+  initBoxes();
+})();
+</script>
+</body>
+</html>

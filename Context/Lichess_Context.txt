@@ -1,0 +1,1786 @@
+# Context Dump: Lichess
+# Date: 2026-02-04 15:32:20
+# File Count: 12
+
+===== BEGIN: Docs\LichessIntegration.md =====
+# Lichess Integration: Technical Reference
+
+**Namespace:** `PgnTools.Services`
+
+This document details the internal architecture of the Lichess integration services. Unlike the high-level functional summaries, this reference focuses on the "under-the-hood" mechanics of streaming pipelines, byte-level processing, and memory management.
+
+---
+
+## 1. Service: `LichessDbDownloaderService`
+
+This service implements a **Zero-Intermediate-Storage** pipeline. It transforms a massive, compressed web stream (Zstandard) into a filtered, uncompressed local PGN file without ever extracting the full dataset to a temporary location.
+
+### 1.1 The Streaming Pipeline
+
+The core of this service is a nested stream architecture designed to process gigabytes of data with a constant, low memory footprint.
+
+**Data Flow Diagram:**
+
+```text
+[Lichess Server] 
+      ↓ (HTTP Response / Network Stream)
+[CountingStream] <Internal Wrapper>
+      ↓ (Tracks raw compressed bytes read)
+[ZstdSharp.DecompressionStream]
+      ↓ (Decompresses chunks on-the-fly)
+[PgnReader]
+      ↓ (Parses text into PgnGame objects)
+[Filter Logic]
+      ↓ (Evaluates Game Headers/Moves)
+[PgnWriter] → [StreamWriter] → [FileStream] → [Disk]
+
+```
+
+### 1.2 Critical Implementation Details
+
+#### A. Network Optimization
+
+The service utilizes `HttpClient.GetAsync` with `HttpCompletionOption.ResponseHeadersRead`.
+
+* **Why:** Default behavior buffers the entire response content into memory. For 30GB+ files, this would cause an immediate `OutOfMemoryException`.
+* **Effect:** Returns control as soon as headers are received, allowing the body to be consumed as a stream.
+
+#### B. The `CountingStream` Wrapper
+
+A private internal class wraps the raw network stream to provide accurate progress reporting for compressed data.
+
+* **Role:** The standard `DecompressionStream` does not expose the number of compressed bytes consumed. `CountingStream` intercepts `Read()` and `ReadAsync()` calls to increment a `BytesRead` counter.
+* **Usage:** This counter is the "Numerator" in the progress bar calculation (Bytes Read / Total Content Length).
+
+#### C. Memory Management
+
+* **Buffer Size:** Fixed at `65536` bytes (64KB) for file operations.
+* **Encoding:** Uses `UTF8Encoding(false)` (UTF-8 without BOM) to match standard PGN specifications.
+* **Object Cycling:** `PgnReader` yields `PgnGame` objects one at a time. Once a game is processed (written or discarded), it falls out of scope, making it eligible for Gen0 garbage collection immediately. This prevents heap fragmentation during long-running downloads.
+
+### 1.3 Filtering Algorithms (Deep Dive)
+
+Filtering occurs post-parse but pre-write. This ensures that rejected games consume zero disk space on the target drive.
+
+#### 1. Elo Filtering
+
+* **Logic:** Determines if a game meets the quality threshold.
+* **Condition:** `if (whiteElo < minElo && blackElo < minElo) return false;`
+* **Nuance:** This is an "OR" retention policy. If *either* player is above the threshold, the game is kept. A game is only rejected if *both* players are below the standard.
+* **Parsing:** Uses `int.TryParse` on headers `WhiteElo` and `BlackElo`. Missing or non-integer ratings treat the value as `0`.
+
+#### 2. Bullet Game Detection
+
+* **Logic:** Identifies games played at very fast time controls.
+* **Mechanism:** Parses the `TimeControl` header (format: `seconds+increment`).
+* **Algorithm:** `TryParseLeadingInt` extracts the initial seconds.
+* **Threshold:** If `seconds < 180` (3 minutes), it is classified as Bullet and rejected if `excludeBullet` is true.
+
+#### 3. Variant Normalization
+
+* **Logic:** Ensures compatibility with engines that only support standard chess.
+* **Allowed Values:** "Standard", "Chess", or "From Position" (case-insensitive).
+* **Rejection:** Any other string (e.g., "Atomic", "Crazyhouse", "Chess960") triggers exclusion.
+
+#### 4. Checkmate Validation
+
+* **Fast Check:** Looks for "checkmate" in the `Termination` header.
+* **Slow Check:** If the header is missing, it scans the `MoveText` string for the `#` character.
+* **Optimization:** The check stops as soon as a match is found to avoid unnecessary string scanning.
+
+### 1.4 Safety Mechanisms
+
+#### Disk Space Pre-Validation
+
+Before initiating the download, the service performs a heuristic check to prevent disk filling disasters:
+
+1. **Head Request:** Sends an HTTP `HEAD` request to get `Content-Length` (compressed size).
+2. **Estimation:** Applies a multiplier of `7.1` (Estimated Compression Ratio) to predict uncompressed size.
+3. **Drive Check:** Queries `DriveInfo.AvailableFreeSpace` for the target root.
+4. **Action:** Throws `IOException` if predicted size > available space.
+
+#### Progress Throttling
+
+To avoid flooding the UI thread, progress is reported based on a dual trigger:
+
+1. **Game Count:** Every `5000` games processed.
+2. **Time Elapsed:** Every `750ms`.
+This ensures the UI remains responsive without being overwhelmed by millions of event callbacks.
+
+---
+
+## 2. Service: `LichessDownloaderService`
+
+This service manages targeted downloads via the Lichess API. It prioritizes data integrity and correct content negotiation over streaming performance, as user game archives are significantly smaller than the full database.
+
+### 2.1 API Content Negotiation
+
+* **Endpoint:** `https://lichess.org/api/games/user/{username}`
+* **Header Strategy:** Explicitly sets `Accept: application/x-chess-pgn`.
+* **Reason:** By default, Lichess might return NDJSON (newline-delimited JSON). Forcing PGN format shifts the conversion load to the Lichess server, allowing `PgnTools` to simply save the byte stream directly to disk without complex parsing logic.
+
+
+
+### 2.2 Atomic File Operations
+
+The service implements a "Safe Save" pattern to prevent data corruption during network failures:
+
+1. **Temp File Creation:**
+* Uses `FileReplacementHelper.CreateTempFilePath` to generate a filename like `games.pgn.tmp`.
+
+
+2. **Stream Copy:**
+* The `ResponseStream` is copied to this temporary `FileStream` asynchronously.
+
+
+3. **Atomic Swap:**
+* Only upon successful completion (no exceptions), `FileReplacementHelper.ReplaceFile` is called.
+* This deletes the old target file (if it exists) and moves the temp file to the final location in a single operation.
+
+
+4. **Cleanup:**
+* If an exception occurs (e.g., timeout, network drop), the `catch` block explicitly deletes the `.tmp` file to avoid leaving garbage on the user's disk.
+
+
+
+### 2.3 Configuration
+
+* **Timeout:** Hardcoded to `60 seconds`. This is distinct from the 2-hour timeout used in the DB downloader, reflecting the expectation that API requests should be relatively quick.
+* **User-Agent:** `PgnTools/1.0 (GitHub; PgnTools)`. This is required by Lichess API terms of service to prevent blocking.
+===== END: Docs\LichessIntegration.md =====
+
+===== BEGIN: PgnTools\Services\LichessDownloaderService.cs =====
+using PgnTools.Helpers;
+
+namespace PgnTools.Services;
+
+public interface ILichessDownloaderService
+{
+    Task DownloadUserGamesAsync(string username, string outputFile, int? max, CancellationToken ct = default);
+}
+
+public class LichessDownloaderService : ILichessDownloaderService
+{
+    private const int BufferSize = 65536;
+    private static readonly HttpClient HttpClient = CreateClient();
+
+    public async Task DownloadUserGamesAsync(string username, string outputFile, int? max, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            throw new ArgumentException("Username is required.", nameof(username));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFile))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFile));
+        }
+
+        if (max.HasValue && max.Value <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(max), "Max games must be positive.");
+        }
+
+        var outputFullPath = Path.GetFullPath(outputFile);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (Path.GetDirectoryName(outputFullPath) is { } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var url = $"https://lichess.org/api/games/user/{username}";
+        if (max.HasValue)
+        {
+            url += $"?max={max.Value}";
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Accept.ParseAdd("application/x-chess-pgn");
+
+            using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
+            await using var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous);
+
+            await responseStream.CopyToAsync(outputStream, ct);
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+            throw;
+        }
+
+        FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
+    }
+}
+===== END: PgnTools\Services\LichessDownloaderService.cs =====
+
+===== BEGIN: PgnTools\Services\LichessDbDownloaderService.cs =====
+using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Text;
+using ZstdSharp;
+
+namespace PgnTools.Services;
+
+public interface ILichessDbDownloaderService
+{
+    Task DownloadAndFilterAsync(
+        string url,
+        string outputPath,
+        int minElo,
+        bool excludeBullet,
+        bool excludeNonStandard,
+        bool onlyCheckmates,
+        IProgress<LichessDbProgress>? progress = null,
+        CancellationToken ct = default);
+}
+
+public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
+{
+    private const int BufferSize = 65536;
+    private const double EstimatedCompressionRatio = 7.1;
+    private const int ProgressGameInterval = 5000;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(750);
+    private static readonly HttpClient HttpClient = CreateClient();
+
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    public LichessDbDownloaderService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    public async Task DownloadAndFilterAsync(
+        string url,
+        string outputPath,
+        int minElo,
+        bool excludeBullet,
+        bool excludeNonStandard,
+        bool onlyCheckmates,
+        IProgress<LichessDbProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new ArgumentException("Archive URL is required.", nameof(url));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputPath));
+        }
+
+        if (minElo < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minElo), "Minimum Elo must be non-negative.");
+        }
+
+        var outputFullPath = Path.GetFullPath(outputPath);
+        if (Path.GetDirectoryName(outputFullPath) is { } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        await EnsureDiskSpaceAsync(url, outputFullPath, ct);
+
+        using var response = await HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+
+        await using var networkStream = await response.Content.ReadAsStreamAsync(ct);
+        using var countingStream = new CountingStream(networkStream);
+        using var decompressor = new DecompressionStream(countingStream);
+
+        await using var outputStream = new FileStream(
+            outputFullPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            BufferSize,
+            FileOptions.SequentialScan | FileOptions.Asynchronous);
+
+        using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+        var firstGame = true;
+        var gamesSeen = 0L;
+        var gamesKept = 0L;
+        var lastProgressReport = DateTime.MinValue;
+        var totalBytes = response.Content.Headers.ContentLength;
+        var progressStopwatch = progress != null ? System.Diagnostics.Stopwatch.StartNew() : null;
+
+        progress?.Report(new LichessDbProgress(
+            LichessDbProgressStage.Downloading,
+            countingStream.BytesRead,
+            totalBytes,
+            gamesSeen,
+            gamesKept,
+            progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+
+        await foreach (var game in _pgnReader.ReadGamesAsync(decompressor, ct).ConfigureAwait(false))
+        {
+            ct.ThrowIfCancellationRequested();
+            gamesSeen++;
+
+            if (ShouldKeepGame(game, minElo, excludeBullet, excludeNonStandard, onlyCheckmates))
+            {
+                if (!firstGame)
+                {
+                    await writer.WriteLineAsync().ConfigureAwait(false);
+                }
+
+                await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
+                firstGame = false;
+                gamesKept++;
+            }
+
+            if (progress != null && ShouldReportProgress(gamesSeen, ref lastProgressReport))
+            {
+                var stage = totalBytes.HasValue && countingStream.BytesRead < totalBytes.Value
+                    ? LichessDbProgressStage.Downloading
+                    : LichessDbProgressStage.Filtering;
+
+                progress.Report(new LichessDbProgress(
+                    stage,
+                    countingStream.BytesRead,
+                    totalBytes,
+                    gamesSeen,
+                    gamesKept,
+                    progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+            }
+        }
+
+        await writer.FlushAsync().ConfigureAwait(false);
+
+        progress?.Report(new LichessDbProgress(
+            LichessDbProgressStage.Completed,
+            countingStream.BytesRead,
+            totalBytes,
+            gamesSeen,
+            gamesKept,
+            progressStopwatch?.Elapsed ?? TimeSpan.Zero));
+    }
+
+    private async Task EnsureDiskSpaceAsync(string url, string outputPath, CancellationToken ct)
+    {
+        long? compressedSize = null;
+
+        try
+        {
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+            using var headResponse = await HttpClient.SendAsync(headRequest, ct);
+            if (headResponse.IsSuccessStatusCode)
+            {
+                compressedSize = headResponse.Content.Headers.ContentLength;
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        if (!compressedSize.HasValue || compressedSize.Value <= 0)
+        {
+            return;
+        }
+
+        var root = Path.GetPathRoot(outputPath);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return;
+        }
+
+        try
+        {
+            var drive = new DriveInfo(root);
+            if (!drive.IsReady)
+            {
+                return;
+            }
+
+            var estimatedUncompressed = (long)(compressedSize.Value * EstimatedCompressionRatio);
+            if (drive.AvailableFreeSpace < estimatedUncompressed)
+            {
+                var neededGiB = estimatedUncompressed / 1024 / 1024 / 1024;
+                var availableGiB = drive.AvailableFreeSpace / 1024 / 1024 / 1024;
+                throw new IOException(
+                    $"Insufficient disk space. Need ~{neededGiB} GB, but only {availableGiB} GB available.");
+            }
+        }
+        catch
+        {
+            return;
+        }
+    }
+
+    private static bool ShouldKeepGame(
+        PgnGame game,
+        int minElo,
+        bool excludeBullet,
+        bool excludeNonStandard,
+        bool onlyCheckmates)
+    {
+        if (minElo > 0)
+        {
+            if (!TryParseElo(game.Headers, out var whiteElo, out var blackElo) ||
+                (whiteElo < minElo && blackElo < minElo))
+            {
+                return false;
+            }
+        }
+
+        if (excludeNonStandard && !IsStandardVariant(game.Headers))
+        {
+            return false;
+        }
+
+        if (excludeBullet && IsBulletTimeControl(game.Headers))
+        {
+            return false;
+        }
+
+        if (onlyCheckmates && !IsCheckmateGame(game))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseElo(
+        IReadOnlyDictionary<string, string> headers,
+        out int whiteElo,
+        out int blackElo)
+    {
+        var hasWhite = TryParsePositiveElo(headers, "WhiteElo", out whiteElo);
+        var hasBlack = TryParsePositiveElo(headers, "BlackElo", out blackElo);
+        return hasWhite || hasBlack;
+    }
+
+    private static bool TryParsePositiveElo(
+        IReadOnlyDictionary<string, string> headers,
+        string key,
+        out int value)
+    {
+        value = 0;
+        if (headers.TryGetHeaderValue(key, out var raw) &&
+            int.TryParse(raw, out var parsed) &&
+            parsed > 0)
+        {
+            value = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
+    }
+
+    private static bool IsStandardVariant(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!headers.TryGetHeaderValue("Variant", out var variant) || string.IsNullOrWhiteSpace(variant))
+        {
+            return true;
+        }
+
+        var normalized = variant.Trim();
+        return normalized.Equals("Standard", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("Chess", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("From Position", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBulletTimeControl(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!headers.TryGetHeaderValue("TimeControl", out var timeControl) ||
+            string.IsNullOrWhiteSpace(timeControl))
+        {
+            return false;
+        }
+
+        if (!TryParseLeadingInt(timeControl.AsSpan(), out var seconds))
+        {
+            return false;
+        }
+
+        return seconds < 180;
+    }
+
+    private static bool TryParseLeadingInt(ReadOnlySpan<char> text, out int value)
+    {
+        value = 0;
+        var length = 0;
+        while (length < text.Length && char.IsDigit(text[length]))
+        {
+            length++;
+        }
+
+        if (length == 0)
+        {
+            return false;
+        }
+
+        return int.TryParse(text[..length], out value);
+    }
+
+    private static bool IsCheckmateGame(PgnGame game)
+    {
+        if (game.Headers.TryGetHeaderValue("Termination", out var termination) &&
+            termination.Contains("checkmate", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(game.MoveText) && game.MoveText.Contains('#');
+    }
+
+    private static bool ShouldReportProgress(long gamesSeen, ref DateTime lastReportUtc)
+    {
+        if (gamesSeen <= 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc < ProgressTimeInterval &&
+            gamesSeen % ProgressGameInterval != 0)
+        {
+            return false;
+        }
+
+        lastReportUtc = now;
+        return true;
+    }
+
+    private sealed class CountingStream(Stream inner) : Stream
+    {
+        private readonly Stream _inner = inner;
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => _inner.CanWrite;
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+
+        public override void Flush() => _inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = _inner.Read(buffer, offset, count);
+            BytesRead += read;
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            var read = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            BytesRead += read;
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+
+        public override void SetLength(long value) => _inner.SetLength(value);
+
+        public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+    }
+}
+
+public enum LichessDbProgressStage
+{
+    Downloading,
+    Filtering,
+    Completed
+}
+
+public sealed record LichessDbProgress(
+    LichessDbProgressStage Stage,
+    long BytesRead,
+    long? TotalBytes,
+    long GamesSeen,
+    long GamesKept,
+    TimeSpan Elapsed);
+===== END: PgnTools\Services\LichessDbDownloaderService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\LichessDownloaderViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Lichess Downloader tool.
+/// </summary>
+public partial class LichessDownloaderViewModel(
+    ILichessDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly ILichessDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(LichessDownloaderViewModel);
+
+    [ObservableProperty]
+    private string _username = string.Empty;
+
+    [ObservableProperty]
+    private string _maxGames = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Enter a Lichess username";
+    public void Initialize()
+    {
+        Title = "Lichess Downloader";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(Username)
+                ? "lichess_games.pgn"
+                : $"{Username}_lichess.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task DownloadAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Username))
+        {
+            return;
+    }
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            await SelectOutputFileAsync();
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                return;
+    }
+        }
+
+        int? max = null;
+        if (int.TryParse(MaxGames, out var parsed) && parsed > 0)
+        {
+            max = parsed;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Downloading games...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail();
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            await _service.DownloadUserGamesAsync(
+                Username,
+                OutputFilePath,
+                max,
+                _cancellationTokenSource.Token);
+
+            StatusMessage = "Download complete.";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Download cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail();
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning && !string.IsNullOrWhiteSpace(Username);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail();
+    }
+    partial void OnUsernameChanged(string value)
+    {
+        DownloadCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        DownloadCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+        MaxGames = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\LichessDownloaderViewModel.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\LichessDbDownloaderViewModel.cs =====
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Lichess DB Downloader tool.
+/// </summary>
+public partial class LichessDbDownloaderViewModel(
+    ILichessDbDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly ILichessDbDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private bool _outputPathSuggested;
+    private LichessDbProgress? _lastProgress;
+    private string _lastOutputFolder = string.Empty;
+    private static readonly DateOnly EarliestArchiveMonth = new(2013, 1, 1);
+    private static readonly System.Text.RegularExpressions.Regex SuggestedNameRegex =
+        new(@"^lichess-\d+-(\d{4}-\d{2}|0000-00)\.pgn$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex ArchiveMonthRegex =
+        new(@"\d{4}-\d{2}",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private const string SettingsPrefix = nameof(LichessDbDownloaderViewModel);
+
+    [ObservableProperty]
+    private List<string> _availableArchives = new();
+
+    [ObservableProperty]
+    private string? _selectedArchive;
+
+    [ObservableProperty]
+    private int _minElo = 2500;
+
+    [ObservableProperty]
+    private bool _excludeBullet;
+
+    [ObservableProperty]
+    private bool _excludeNonStandard;
+
+    [ObservableProperty]
+    private bool _onlyCheckmates;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private double _progressValue;
+
+    [ObservableProperty]
+    private double _progressMaximum = 100;
+
+    [ObservableProperty]
+    private bool _isIndeterminate = true;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select archive and output file";
+    public void Initialize()
+    {
+        Title = "Lichess DB Filter";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+        LoadArchiveList();
+    }
+    [RelayCommand]
+    private async Task BrowseOutputAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                GetSuggestedFileName(),
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                _outputPathSuggested = false;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task StartAsync()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedArchive))
+        {
+            StatusMessage = "Select a Lichess archive.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+    }
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            ApplySuggestedOutputPath();
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                await BrowseOutputAsync();
+    }
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                return;
+    }
+        }
+
+        var outputDirectory = Path.GetDirectoryName(OutputFilePath) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            var validation = await FileValidationHelper.ValidateWritableFolderAsync(outputDirectory);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+        }
+
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Processing stream...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail();
+            ProgressValue = 0;
+            ProgressMaximum = 100;
+            IsIndeterminate = true;
+            _lastProgress = null;
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            var progress = new Progress<LichessDbProgress>(UpdateProgress);
+            await _service.DownloadAndFilterAsync(
+                SelectedArchive,
+                OutputFilePath,
+                MinElo,
+                ExcludeBullet,
+                ExcludeNonStandard,
+                OnlyCheckmates,
+                progress,
+                _cancellationTokenSource.Token);
+
+            StatusSeverity = InfoBarSeverity.Success;
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Download cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = _lastProgress != null
+                ? BuildLichessProgressDetail(_lastProgress)
+                : BuildProgressDetail();
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = _lastProgress != null
+                ? BuildLichessProgressDetail(_lastProgress)
+                : BuildProgressDetail();
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(SelectedArchive);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail();
+    }
+    partial void OnSelectedArchiveChanged(string? value)
+    {
+        if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            ApplySuggestedOutputPath();
+    }
+        StartCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnMinEloChanged(int value)
+    {
+        if (_outputPathSuggested || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            ApplySuggestedOutputPath();
+    }
+    }
+
+    partial void OnOutputFilePathChanged(string value)
+    {
+        OutputFileName = string.IsNullOrWhiteSpace(value) ? string.Empty : Path.GetFileName(value);
+
+        var directory = Path.GetDirectoryName(value);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            _lastOutputFolder = directory;
+    }
+    }
+
+    partial void OnIsRunningChanged(bool value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        MinElo = _settings.GetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        ExcludeBullet = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        ExcludeNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        OnlyCheckmates = _settings.GetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _lastOutputFolder = _settings.GetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+
+        var selected = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive);
+        if (!string.IsNullOrWhiteSpace(selected))
+        {
+            SelectedArchive = selected;
+    }
+        _outputPathSuggested = string.IsNullOrWhiteSpace(OutputFilePath) || IsSuggestedFileName(OutputFileName);
+        if (_outputPathSuggested && !string.IsNullOrWhiteSpace(SelectedArchive))
+        {
+            ApplySuggestedOutputPath();
+    }
+    }
+
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.LastOutputFolder", _lastOutputFolder);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedArchive)}", SelectedArchive ?? string.Empty);
+    }
+    private void LoadArchiveList()
+    {
+        var latestArchiveMonth = GetLatestArchiveMonth();
+        if (latestArchiveMonth < EarliestArchiveMonth)
+        {
+            AvailableArchives = new List<string>();
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+    }
+        var urls = BuildArchiveUrls(latestArchiveMonth, EarliestArchiveMonth);
+        AvailableArchives = urls;
+
+        if (urls.Count == 0)
+        {
+            StatusMessage = "No monthly archives are currently available.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+    }
+        if (string.IsNullOrWhiteSpace(SelectedArchive) ||
+            !urls.Any(url => string.Equals(url, SelectedArchive, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedArchive = urls[0];
+    }
+    }
+
+    private static DateOnly GetLatestArchiveMonth()
+    {
+        var utcNow = DateTime.UtcNow;
+        var firstOfCurrentMonth = new DateOnly(utcNow.Year, utcNow.Month, 1);
+        return firstOfCurrentMonth.AddMonths(-1);
+    }
+    private static List<string> BuildArchiveUrls(DateOnly newestMonth, DateOnly oldestMonth)
+    {
+        var urls = new List<string>();
+        for (var month = newestMonth; month >= oldestMonth; month = month.AddMonths(-1))
+        {
+            urls.Add(BuildArchiveUrl(month));
+    }
+        return urls;
+    }
+    private static string BuildArchiveUrl(DateOnly month) =>
+        $"https://database.lichess.org/standard/lichess_db_standard_rated_{month:yyyy-MM}.pgn.zst";
+
+    private void ApplySuggestedOutputPath()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedArchive))
+        {
+            return;
+    }
+        var suggestedName = GetSuggestedFileName();
+        if (string.IsNullOrWhiteSpace(suggestedName))
+        {
+            return;
+    }
+        var directory = GetPreferredOutputFolder();
+        OutputFilePath = Path.Combine(directory, suggestedName);
+        _outputPathSuggested = true;
+    }
+    private string GetPreferredOutputFolder()
+    {
+        var directory = Path.GetDirectoryName(OutputFilePath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            return directory;
+    }
+        if (!string.IsNullOrWhiteSpace(_lastOutputFolder))
+        {
+            return _lastOutputFolder;
+    }
+        return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    }
+    private string GetSuggestedFileName()
+    {
+        var monthToken = ExtractArchiveMonth(SelectedArchive);
+        if (string.IsNullOrWhiteSpace(monthToken))
+        {
+            monthToken = "0000-00";
+    }
+        return $"lichess-{MinElo}-{monthToken}.pgn";
+    }
+    private static string ExtractArchiveMonth(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return string.Empty;
+    }
+        var match = ArchiveMonthRegex.Match(url);
+        return match.Success ? match.Value : string.Empty;
+    }
+    private bool IsSuggestedFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+    }
+        return SuggestedNameRegex.IsMatch(fileName);
+    }
+    private void UpdateProgress(LichessDbProgress progress)
+    {
+        _lastProgress = progress;
+
+        if (progress.TotalBytes.HasValue && progress.TotalBytes.Value > 0)
+        {
+            IsIndeterminate = false;
+            ProgressMaximum = progress.TotalBytes.Value;
+            ProgressValue = progress.BytesRead;
+    }
+        else
+        {
+            IsIndeterminate = true;
+            ProgressMaximum = 100;
+            ProgressValue = 0;
+    }
+        StatusMessage = progress.Stage switch
+        {
+            LichessDbProgressStage.Completed => "Finished successfully.",
+            LichessDbProgressStage.Filtering => "Filtering games...",
+            _ => "Downloading archive..."
+        };
+
+        StatusDetail = BuildLichessProgressDetail(progress);
+    }
+    private string BuildLichessProgressDetail(LichessDbProgress progress)
+    {
+        var parts = new List<string>
+        {
+            $"Kept {progress.GamesKept:N0} / Seen {progress.GamesSeen:N0}"
+        };
+
+        if (progress.BytesRead > 0)
+        {
+            var bytes = FormatBytes(progress.BytesRead);
+            if (progress.TotalBytes.HasValue && progress.TotalBytes.Value > 0)
+            {
+                var total = FormatBytes(progress.TotalBytes.Value);
+                parts.Add($"{bytes} / {total}");
+    }
+            else
+            {
+                parts.Add($"{bytes} downloaded");
+    }
+        }
+
+        var elapsed = BuildProgressDetail();
+        if (!string.IsNullOrWhiteSpace(elapsed))
+        {
+            parts.Add(elapsed);
+    }
+        return string.Join(" • ", parts);
+    }
+    private static string FormatBytes(long bytes)
+    {
+        const double scale = 1024;
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var unitIndex = 0;
+        while (value >= scale && unitIndex < units.Length - 1)
+        {
+            value /= scale;
+            unitIndex++;
+    }
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+}
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\LichessDbDownloaderViewModel.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\LichessToolsViewModel.cs =====
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel hosting Lichess-related tools on a single page.
+/// </summary>
+public sealed partial class LichessToolsViewModel(
+    LichessDownloaderViewModel userDownloader,
+    LichessDbDownloaderViewModel databaseDownloader) : BaseViewModel, IInitializable, IDisposable
+{
+    private bool _disposed;
+
+    public LichessDownloaderViewModel UserDownloader { get; } = userDownloader;
+    public LichessDbDownloaderViewModel DatabaseDownloader { get; } = databaseDownloader;
+
+    public void Initialize()
+    {
+        Title = "Lichess";
+        StatusSeverity = InfoBarSeverity.Informational;
+        UserDownloader.Initialize();
+        DatabaseDownloader.Initialize();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        UserDownloader.Dispose();
+        DatabaseDownloader.Dispose();
+    }
+}
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\LichessToolsViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessDownloaderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.LichessDownloaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Lichess Downloader" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Download a user's games from the Lichess public API."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Username"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBox PlaceholderText="e.g. lichessUser"
+                     Text="{x:Bind ViewModel.Username, Mode=TwoWay}"/>
+
+            <TextBlock Text="Max Games (optional)"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBox PlaceholderText="Leave blank for all"
+                     Text="{x:Bind ViewModel.MaxGames, Mode=TwoWay}"/>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Download"
+                        Command="{x:Bind ViewModel.DownloadCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="True"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\LichessDownloaderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessDownloaderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Lichess Downloader tool.
+/// </summary>
+public sealed partial class LichessDownloaderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public LichessDownloaderViewModel ViewModel { get; }
+
+    public LichessDownloaderPage() : this(App.GetService<LichessDownloaderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public LichessDownloaderPage(LichessDownloaderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            ViewModel.Dispose();
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\LichessDownloaderPage.xaml.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessDbDownloaderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.LichessDbDownloaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Lichess DB Filter" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Stream a monthly Lichess archive and filter by minimum Elo without unpacking to disk."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Monthly Archive"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableArchives}"
+                      SelectedItem="{x:Bind ViewModel.SelectedArchive, Mode=TwoWay}"
+                      HorizontalAlignment="Stretch"/>
+
+        <TextBlock Text="Minimum Elo (white or black)"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <NumberBox Width="200"
+                   Minimum="0"
+                   SmallChange="50"
+                   SpinButtonPlacementMode="Inline"
+                   Value="{x:Bind ViewModel.MinElo, Mode=TwoWay}"/>
+
+        <TextBlock Text="Filters"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <CheckBox Content="Exclude bullet games"
+                  IsChecked="{x:Bind ViewModel.ExcludeBullet, Mode=TwoWay}"/>
+        <CheckBox Content="Exclude non-standard variants"
+                  IsChecked="{x:Bind ViewModel.ExcludeNonStandard, Mode=TwoWay}"/>
+        <CheckBox Content="Only checkmates"
+                  IsChecked="{x:Bind ViewModel.OnlyCheckmates, Mode=TwoWay}"/>
+
+        <TextBlock Text="Output File"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.BrowseOutputCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Start Extraction"
+                        Command="{x:Bind ViewModel.StartCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}"
+                                ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"
+                                ProgressMaximum="{x:Bind ViewModel.ProgressMaximum, Mode=OneWay}"/>
+    </ScrollViewer>
+    </Grid>
+</Page>
+===== END: PgnTools\Views\Tools\LichessDbDownloaderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessDbDownloaderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Lichess DB Downloader tool.
+/// </summary>
+public sealed partial class LichessDbDownloaderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public LichessDbDownloaderViewModel ViewModel { get; }
+
+    public LichessDbDownloaderPage() : this(App.GetService<LichessDbDownloaderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public LichessDbDownloaderPage(LichessDbDownloaderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            ViewModel.Dispose();
+        }
+    }
+}
+===== END: PgnTools\Views\Tools\LichessDbDownloaderPage.xaml.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessToolsPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.LichessToolsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
+            <TextBlock Text="Lichess" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Lichess tools for user game downloads and monthly database filtering."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Pivot Grid.Row="1">
+            <PivotItem Header="User Games">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="12" Padding="0,8,0,0">
+                        <TextBlock Text="Download a user's games from the Lichess public API."
+                                   Style="{StaticResource BodyTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
+
+                        <TextBlock Text="Username"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBox PlaceholderText="e.g. lichessUser"
+                                 Text="{x:Bind ViewModel.UserDownloader.Username, Mode=TwoWay}"/>
+
+                        <TextBlock Text="Max Games (optional)"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBox PlaceholderText="Leave blank for all"
+                                 Text="{x:Bind ViewModel.UserDownloader.MaxGames, Mode=TwoWay}"/>
+
+                        <TextBlock Text="Output File"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox Grid.Column="0"
+                                     PlaceholderText="Select output PGN..."
+                                     Text="{x:Bind ViewModel.UserDownloader.OutputFilePath, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     Margin="0,0,12,0"/>
+
+                            <Button Grid.Column="1"
+                                    Content="Browse..."
+                                    Command="{x:Bind ViewModel.UserDownloader.SelectOutputFileCommand}"
+                                    Style="{StaticResource Action}"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Content="Download"
+                                    Command="{x:Bind ViewModel.UserDownloader.DownloadCommand}"
+                                    Style="{StaticResource PrimaryAction}"/>
+
+                            <Button Content="Cancel"
+                                    Command="{x:Bind ViewModel.UserDownloader.CancelCommand}"
+                                    Style="{StaticResource Action}"
+                                    IsEnabled="{x:Bind ViewModel.UserDownloader.IsRunning, Mode=OneWay}"/>
+                        </StackPanel>
+
+                        <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.UserDownloader.StatusMessage, Mode=OneWay}"
+                                                StatusSeverity="{x:Bind ViewModel.UserDownloader.StatusSeverity, Mode=OneWay}"
+                                                StatusDetail="{x:Bind ViewModel.UserDownloader.StatusDetail, Mode=OneWay}"
+                                                IsRunning="{x:Bind ViewModel.UserDownloader.IsRunning, Mode=OneWay}"
+                                                IsIndeterminate="True"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </PivotItem>
+
+            <PivotItem Header="Monthly Database">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="12" Padding="0,8,0,0">
+                        <TextBlock Text="Stream a monthly Lichess archive and filter by minimum Elo without unpacking to disk."
+                                   Style="{StaticResource BodyTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
+
+                        <TextBlock Text="Monthly Archive"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <ComboBox ItemsSource="{x:Bind ViewModel.DatabaseDownloader.AvailableArchives}"
+                                  SelectedItem="{x:Bind ViewModel.DatabaseDownloader.SelectedArchive, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch"/>
+
+                        <TextBlock Text="Minimum Elo (white or black)"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <NumberBox Width="200"
+                                   Minimum="0"
+                                   SmallChange="50"
+                                   SpinButtonPlacementMode="Inline"
+                                   Value="{x:Bind ViewModel.DatabaseDownloader.MinElo, Mode=TwoWay}"/>
+
+                        <TextBlock Text="Filters"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <CheckBox Content="Exclude bullet games"
+                                  IsChecked="{x:Bind ViewModel.DatabaseDownloader.ExcludeBullet, Mode=TwoWay}"/>
+                        <CheckBox Content="Exclude non-standard variants"
+                                  IsChecked="{x:Bind ViewModel.DatabaseDownloader.ExcludeNonStandard, Mode=TwoWay}"/>
+                        <CheckBox Content="Only checkmates"
+                                  IsChecked="{x:Bind ViewModel.DatabaseDownloader.OnlyCheckmates, Mode=TwoWay}"/>
+
+                        <TextBlock Text="Output File"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox Grid.Column="0"
+                                     PlaceholderText="Select output PGN..."
+                                     Text="{x:Bind ViewModel.DatabaseDownloader.OutputFilePath, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     Margin="0,0,12,0"/>
+
+                            <Button Grid.Column="1"
+                                    Content="Browse..."
+                                    Command="{x:Bind ViewModel.DatabaseDownloader.BrowseOutputCommand}"
+                                    Style="{StaticResource Action}"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Content="Start Extraction"
+                                    Command="{x:Bind ViewModel.DatabaseDownloader.StartCommand}"
+                                    Style="{StaticResource PrimaryAction}"/>
+
+                            <Button Content="Cancel"
+                                    Command="{x:Bind ViewModel.DatabaseDownloader.CancelCommand}"
+                                    Style="{StaticResource Action}"
+                                    IsEnabled="{x:Bind ViewModel.DatabaseDownloader.IsRunning, Mode=OneWay}"/>
+                        </StackPanel>
+
+                        <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.DatabaseDownloader.StatusMessage, Mode=OneWay}"
+                                                StatusSeverity="{x:Bind ViewModel.DatabaseDownloader.StatusSeverity, Mode=OneWay}"
+                                                StatusDetail="{x:Bind ViewModel.DatabaseDownloader.StatusDetail, Mode=OneWay}"
+                                                IsRunning="{x:Bind ViewModel.DatabaseDownloader.IsRunning, Mode=OneWay}"
+                                                IsIndeterminate="{x:Bind ViewModel.DatabaseDownloader.IsIndeterminate, Mode=OneWay}"
+                                                ProgressValue="{x:Bind ViewModel.DatabaseDownloader.ProgressValue, Mode=OneWay}"
+                                                ProgressMaximum="{x:Bind ViewModel.DatabaseDownloader.ProgressMaximum, Mode=OneWay}"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </PivotItem>
+        </Pivot>
+    </Grid>
+</Page>
+===== END: PgnTools\Views\Tools\LichessToolsPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\LichessToolsPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page hosting all Lichess-related tools.
+/// </summary>
+public sealed partial class LichessToolsPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public LichessToolsViewModel ViewModel { get; }
+
+    public LichessToolsPage() : this(App.GetService<LichessToolsViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public LichessToolsPage(LichessToolsViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            ViewModel.Dispose();
+        }
+    }
+}
+===== END: PgnTools\Views\Tools\LichessToolsPage.xaml.cs =====
+

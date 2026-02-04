@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="PgnTools.Views.Tools.LichessDbDownloaderView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="12" Padding="0,8,0,0">
+            <TextBlock Text="Stream a monthly Lichess archive and filter by minimum Elo without unpacking to disk."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+
+            <TextBlock Text="Monthly Archive"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableArchives}"
+                      SelectedItem="{x:Bind ViewModel.SelectedArchive, Mode=TwoWay}"
+                      HorizontalAlignment="Stretch"/>
+
+            <TextBlock Text="Minimum Elo (white or black)"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <NumberBox Width="200"
+                       Minimum="0"
+                       SmallChange="50"
+                       SpinButtonPlacementMode="Inline"
+                       Value="{x:Bind ViewModel.MinElo, Mode=TwoWay}"/>
+
+            <TextBlock Text="Filters"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Exclude bullet games"
+                      IsChecked="{x:Bind ViewModel.ExcludeBullet, Mode=TwoWay}"/>
+            <CheckBox Content="Exclude non-standard variants"
+                      IsChecked="{x:Bind ViewModel.ExcludeNonStandard, Mode=TwoWay}"/>
+            <CheckBox Content="Only checkmates"
+                      IsChecked="{x:Bind ViewModel.OnlyCheckmates, Mode=TwoWay}"/>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.BrowseOutputCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Start Extraction"
+                        Command="{x:Bind ViewModel.StartCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"
+                                    ProgressMaximum="{x:Bind ViewModel.ProgressMaximum, Mode=OneWay}"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

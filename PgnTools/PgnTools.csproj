@@ -85,6 +85,8 @@
         <None Remove="Views\Tools\ChesscomDownloaderPage.xaml" />
         <None Remove="Views\Tools\LichessDownloaderPage.xaml" />
         <None Remove="Views\Tools\LichessDbDownloaderPage.xaml" />
+        <None Remove="Views\Tools\LichessDownloaderView.xaml" />
+        <None Remove="Views\Tools\LichessDbDownloaderView.xaml" />
         <None Remove="Views\Tools\LichessToolsPage.xaml" />
         <None Remove="Views\Tools\Lc0DownloaderPage.xaml" />
         <None Remove="Views\Controls\ToolStatusBar.xaml" />
@@ -184,6 +186,12 @@
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\LichessDbDownloaderPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\LichessDownloaderView.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\LichessDbDownloaderView.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\LichessToolsPage.xaml">
