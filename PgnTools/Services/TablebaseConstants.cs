@@ -1,4 +1,6 @@
 using System.Collections.Frozen;
+using System.Diagnostics;
+using Windows.ApplicationModel;
 
 namespace PgnTools.Services;
 
@@ -27,7 +29,7 @@ public static class TablebaseConstants
         TablebaseCategory.Syzygy345 => "3-4-5",
         TablebaseCategory.Syzygy6 => "6",
         TablebaseCategory.Syzygy7 => "7",
-        _ => "misc"
+        _ => throw new ArgumentOutOfRangeException(nameof(category), category, "Unknown tablebase category.")
     };
 
     public static long GetEstimatedSizeBytes(TablebaseCategory category) => category switch
@@ -35,7 +37,7 @@ public static class TablebaseConstants
         TablebaseCategory.Syzygy345 => Size345,
         TablebaseCategory.Syzygy6 => Size6,
         TablebaseCategory.Syzygy7 => Size7,
-        _ => 0
+        _ => throw new ArgumentOutOfRangeException(nameof(category), category, "Unknown tablebase category.")
     };
 
     public static TablebaseCategory GetCategoryFromUrl(string url) => url switch
@@ -49,7 +51,27 @@ public static class TablebaseConstants
     public static string GetDownloadListPath()
     {
         var relativePath = DownloadListRelativePath.Replace('/', Path.DirectorySeparatorChar);
-        return Path.Combine(AppContext.BaseDirectory, relativePath);
+        var basePath = AppContext.BaseDirectory;
+        var candidate = Path.Combine(basePath, relativePath);
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+
+        try
+        {
+            var installedPath = Package.Current.InstalledLocation.Path;
+            var packagedCandidate = Path.Combine(installedPath, relativePath);
+            if (File.Exists(packagedCandidate))
+            {
+                return packagedCandidate;
+            }
+        }
+        catch
+        {
+        }
+
+        return candidate;
     }
 
     private static FrozenDictionary<TablebaseCategory, string[]> LoadFileLists()
@@ -75,8 +97,15 @@ public static class TablebaseConstants
                 continue;
             }
 
-            var category = GetCategoryFromUrl(line);
-            map[category].Add(line);
+            try
+            {
+                var category = GetCategoryFromUrl(line);
+                map[category].Add(line);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                Debug.WriteLine($"Skipping unrecognized tablebase URL: {line}");
+            }
         }
 
         return map.ToFrozenDictionary(pair => pair.Key, pair => pair.Value.ToArray());

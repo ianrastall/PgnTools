@@ -4,6 +4,16 @@ using System.Net.Http;
 
 namespace PgnTools.Services;
 
+public enum TablebaseProgressStage
+{
+    Starting,
+    AlreadyPresent,
+    SkippedLocked,
+    Downloading,
+    Completed,
+    Failed
+}
+
 public record TablebaseProgress(
     TablebaseCategory Category,
     string CurrentFileName,
@@ -11,7 +21,9 @@ public record TablebaseProgress(
     int TotalFiles,
     long BytesRead,
     long? TotalBytes,
-    double SpeedMbPerSecond);
+    double SpeedMbPerSecond,
+    int FilesSkipped = 0,
+    TablebaseProgressStage Stage = TablebaseProgressStage.Downloading);
 
 public interface ITablebaseDownloaderService
 {
@@ -48,9 +60,16 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                 "No tablebase URLs found. Ensure Assets/Tablebases/download.txt is present.");
         }
 
-        EnsureDiskSpace(targetPath, TablebaseConstants.GetEstimatedSizeBytes(category));
+        var estimatedBytes = TablebaseConstants.GetEstimatedSizeBytes(category);
+        var existingBytes = EstimateExistingBytes(targetPath, urls);
+        var requiredBytes = Math.Max(0, estimatedBytes - existingBytes);
+        if (requiredBytes > 0)
+        {
+            await Task.Run(() => EnsureDiskSpace(targetPath, requiredBytes), ct).ConfigureAwait(false);
+        }
 
         var completed = 0;
+        var skipped = 0;
         foreach (var url in urls)
         {
             ct.ThrowIfCancellationRequested();
@@ -68,21 +87,9 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                 urls.Length,
                 0,
                 null,
-                0));
-
-            if (File.Exists(filePath) && IsFileInUse(filePath))
-            {
-                completed++;
-                progress?.Report(new TablebaseProgress(
-                    category,
-                    fileName,
-                    completed,
-                    urls.Length,
-                    0,
-                    null,
-                    0));
-                continue;
-            }
+                0,
+                skipped,
+                TablebaseProgressStage.Starting));
 
             if (await IsExistingFileCompleteAsync(filePath, url, ct).ConfigureAwait(false))
             {
@@ -94,7 +101,25 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                     urls.Length,
                     0,
                     null,
-                    0));
+                    0,
+                    skipped,
+                    TablebaseProgressStage.AlreadyPresent));
+                continue;
+            }
+
+            if (File.Exists(filePath) && IsFileInUse(filePath))
+            {
+                skipped++;
+                progress?.Report(new TablebaseProgress(
+                    category,
+                    fileName,
+                    completed,
+                    urls.Length,
+                    0,
+                    null,
+                    0,
+                    skipped,
+                    TablebaseProgressStage.SkippedLocked));
                 continue;
             }
 
@@ -117,7 +142,9 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                     urls.Length,
                     0,
                     totalBytes,
-                    0));
+                    0,
+                    skipped,
+                    TablebaseProgressStage.Downloading));
 
                 {
                     await using var contentStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -160,7 +187,9 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                                     urls.Length,
                                     bytesRead,
                                     totalBytes,
-                                    speed));
+                                    speed,
+                                    skipped,
+                                    TablebaseProgressStage.Downloading));
 
                                 lastReport.Restart();
                             }
@@ -179,7 +208,9 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                             urls.Length,
                             bytesRead,
                             totalBytes,
-                            computedSpeed));
+                            computedSpeed,
+                            skipped,
+                            TablebaseProgressStage.Downloading));
                     }
                     finally
                     {
@@ -187,10 +218,16 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                     }
                 }
 
-                if (!TryReplaceFile(tempPath, filePath))
+                ValidateDownloadedFile(tempPath, fileName, finalBytesRead, finalTotalBytes);
+
+                try
+                {
+                    await FileReplacementHelper.ReplaceFileAsync(tempPath, filePath, ct).ConfigureAwait(false);
+                }
+                catch (IOException) when (IsFileInUse(filePath) || IsFileInUse(tempPath))
                 {
                     TryDeleteFile(tempPath);
-                    completed++;
+                    skipped++;
                     progress?.Report(new TablebaseProgress(
                         category,
                         fileName,
@@ -198,7 +235,25 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                         urls.Length,
                         finalBytesRead,
                         finalTotalBytes,
-                        finalSpeed));
+                        finalSpeed,
+                        skipped,
+                        TablebaseProgressStage.SkippedLocked));
+                    continue;
+                }
+                catch (UnauthorizedAccessException) when (IsFileInUse(filePath) || IsFileInUse(tempPath))
+                {
+                    TryDeleteFile(tempPath);
+                    skipped++;
+                    progress?.Report(new TablebaseProgress(
+                        category,
+                        fileName,
+                        completed,
+                        urls.Length,
+                        finalBytesRead,
+                        finalTotalBytes,
+                        finalSpeed,
+                        skipped,
+                        TablebaseProgressStage.SkippedLocked));
                     continue;
                 }
             }
@@ -216,7 +271,9 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
                 urls.Length,
                 finalBytesRead,
                 finalTotalBytes,
-                finalSpeed));
+                finalSpeed,
+                skipped,
+                TablebaseProgressStage.Completed));
         }
     }
 
@@ -285,29 +342,6 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         }
     }
 
-    private static bool TryReplaceFile(string tempPath, string destinationPath)
-    {
-        const int maxAttempts = 3;
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                FileReplacementHelper.ReplaceFile(tempPath, destinationPath);
-                return true;
-            }
-            catch (IOException) when (IsFileInUse(destinationPath) || IsFileInUse(tempPath))
-            {
-                Thread.Sleep(200 * (attempt + 1));
-            }
-            catch (UnauthorizedAccessException) when (IsFileInUse(destinationPath) || IsFileInUse(tempPath))
-            {
-                Thread.Sleep(200 * (attempt + 1));
-            }
-        }
-
-        return false;
-    }
-
     private static void EnsureDiskSpace(string path, long requiredBytes)
     {
         if (requiredBytes <= 0)
@@ -315,18 +349,17 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
             return;
         }
 
-        var root = Path.GetPathRoot(Path.GetFullPath(path));
-        if (string.IsNullOrWhiteSpace(root))
+        if (!TryGetAvailableFreeSpace(path, out var availableBytes))
         {
-            throw new ArgumentException("Invalid path.", nameof(path));
+            Debug.WriteLine($"Unable to determine free space for '{path}'. Skipping disk space check.");
+            return;
         }
 
-        var drive = new DriveInfo(root);
-        if (drive.AvailableFreeSpace < requiredBytes)
+        if (availableBytes < requiredBytes)
         {
             throw new IOException(
-                $"Insufficient disk space on {root}. Required: {FormatBytes(requiredBytes)}, " +
-                $"Available: {FormatBytes(drive.AvailableFreeSpace)}.");
+                $"Insufficient disk space on {path}. Required: {FormatBytes(requiredBytes)}, " +
+                $"Available: {FormatBytes(availableBytes)}.");
         }
     }
 
@@ -343,5 +376,74 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         }
 
         return $"{value:0.##} {units[unitIndex]}";
+    }
+
+    private static long EstimateExistingBytes(string targetPath, string[] urls)
+    {
+        if (urls.Length == 0)
+        {
+            return 0;
+        }
+
+        long existingBytes = 0;
+        foreach (var url in urls)
+        {
+            var fileName = Path.GetFileName(url);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                continue;
+            }
+
+            var filePath = Path.Combine(targetPath, fileName);
+            var fileInfo = new FileInfo(filePath);
+            if (fileInfo.Exists)
+            {
+                existingBytes += fileInfo.Length;
+            }
+        }
+
+        return existingBytes;
+    }
+
+    private static bool TryGetAvailableFreeSpace(string path, out long availableBytes)
+    {
+        availableBytes = 0;
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(path));
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                return false;
+            }
+
+            var drive = new DriveInfo(root);
+            availableBytes = drive.AvailableFreeSpace;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private static void ValidateDownloadedFile(string tempPath, string fileName, long bytesRead, long? expectedBytes)
+    {
+        var fileInfo = new FileInfo(tempPath);
+        if (!fileInfo.Exists)
+        {
+            throw new IOException($"Download failed for '{fileName}'. Temp file missing.");
+        }
+
+        if (bytesRead > 0 && fileInfo.Length != bytesRead)
+        {
+            throw new IOException(
+                $"Download incomplete for '{fileName}'. Bytes read: {bytesRead:N0}, temp length: {fileInfo.Length:N0}.");
+        }
+
+        if (expectedBytes.HasValue && expectedBytes.Value > 0 && fileInfo.Length != expectedBytes.Value)
+        {
+            throw new IOException(
+                $"Download incomplete for '{fileName}'. Expected {expectedBytes.Value:N0} bytes, got {fileInfo.Length:N0}.");
+        }
     }
 }

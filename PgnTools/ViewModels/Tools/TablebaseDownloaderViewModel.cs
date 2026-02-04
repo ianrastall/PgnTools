@@ -16,6 +16,7 @@ public partial class TablebaseDownloaderViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _hadSkips;
     private TablebaseProgress? _lastProgress;
     private const string SettingsPrefix = nameof(TablebaseDownloaderViewModel);
 
@@ -116,44 +117,57 @@ public partial class TablebaseDownloaderViewModel(
             ProgressMaximum = 100;
             IsIndeterminate = true;
             _lastProgress = null;
+            _hadSkips = false;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail(0);
 
             _cancellationTokenSource = new CancellationTokenSource();
             var progress = new Progress<TablebaseProgress>(UpdateProgress);
+            var hadFailures = false;
 
             if (Download345)
             {
                 StatusMessage = "Starting 3-4-5 tablebase download...";
-                await _downloaderService.DownloadCategoryAsync(
-                    TablebaseCategory.Syzygy345,
-                    TargetFolder,
-                    progress,
-                    _cancellationTokenSource.Token);
+                if (!await TryDownloadCategoryAsync(TablebaseCategory.Syzygy345, progress))
+                {
+                    hadFailures = true;
+                }
             }
 
             if (Download6)
             {
                 StatusMessage = "Starting 6-piece tablebase download...";
-                await _downloaderService.DownloadCategoryAsync(
-                    TablebaseCategory.Syzygy6,
-                    TargetFolder,
-                    progress,
-                    _cancellationTokenSource.Token);
+                if (!await TryDownloadCategoryAsync(TablebaseCategory.Syzygy6, progress))
+                {
+                    hadFailures = true;
+                }
             }
 
             if (Download7)
             {
                 StatusMessage = "Starting 7-piece tablebase download...";
-                await _downloaderService.DownloadCategoryAsync(
-                    TablebaseCategory.Syzygy7,
-                    TargetFolder,
-                    progress,
-                    _cancellationTokenSource.Token);
+                if (!await TryDownloadCategoryAsync(TablebaseCategory.Syzygy7, progress))
+                {
+                    hadFailures = true;
+                }
             }
 
-            StatusMessage = "Tablebase downloads complete.";
-            StatusSeverity = InfoBarSeverity.Success;
+            if (hadFailures)
+            {
+                StatusMessage = "Tablebase downloads completed with errors.";
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else if (_hadSkips)
+            {
+                StatusMessage = "Tablebase downloads complete (some files skipped because they were in use).";
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else
+            {
+                StatusMessage = "Tablebase downloads complete.";
+                StatusSeverity = InfoBarSeverity.Success;
+            }
+
             ProgressValue = 100;
             StatusDetail = BuildProgressDetail(100);
         }
@@ -191,7 +205,7 @@ public partial class TablebaseDownloaderViewModel(
     [RelayCommand]
     private void Cancel()
     {
-        var cts = _cancellationTokenSource;
+        var cts = Volatile.Read(ref _cancellationTokenSource);
         if (cts == null || cts.IsCancellationRequested)
         {
             return;
@@ -275,22 +289,27 @@ public partial class TablebaseDownloaderViewModel(
     private void UpdateProgress(TablebaseProgress progress)
     {
         _lastProgress = progress;
+        if (progress.Stage == TablebaseProgressStage.SkippedLocked)
+        {
+            _hadSkips = true;
+        }
 
         var totalFiles = progress.TotalFiles;
+        var processedFiles = progress.FilesCompleted + progress.FilesSkipped;
         var hasTotal = progress.TotalBytes is > 0;
         var fileFraction = 0d;
         if (hasTotal)
         {
             fileFraction = progress.BytesRead >= progress.TotalBytes!.Value
-                ? 0
+                ? 1
                 : Math.Clamp(progress.BytesRead / (double)progress.TotalBytes.Value, 0, 1);
         }
 
         var percent = totalFiles > 0
-            ? ((progress.FilesCompleted + fileFraction) / totalFiles) * 100
+            ? ((processedFiles + fileFraction) / totalFiles) * 100
             : 0;
 
-        if (hasTotal)
+        if (totalFiles > 0)
         {
             ProgressValue = percent;
             ProgressMaximum = 100;
@@ -303,14 +322,18 @@ public partial class TablebaseDownloaderViewModel(
             IsIndeterminate = true;
         }
 
-        var inProgress = hasTotal && progress.BytesRead > 0 && progress.BytesRead < progress.TotalBytes!.Value;
-        var displayIndex = inProgress
-            ? Math.Min(progress.FilesCompleted + 1, totalFiles)
-            : progress.FilesCompleted;
+        var displayIndex = GetDisplayIndex(progress);
+        var messagePrefix = progress.Stage switch
+        {
+            TablebaseProgressStage.AlreadyPresent => "Already present",
+            TablebaseProgressStage.SkippedLocked => "Skipped (in use)",
+            TablebaseProgressStage.Completed => "Downloaded",
+            _ => "Downloading"
+        };
 
         StatusMessage = totalFiles > 0
-            ? $"Downloading {progress.CurrentFileName} ({displayIndex}/{totalFiles})"
-            : $"Downloading {progress.CurrentFileName}";
+            ? $"{messagePrefix} {progress.CurrentFileName} ({displayIndex}/{totalFiles})"
+            : $"{messagePrefix} {progress.CurrentFileName}";
 
         StatusDetail = BuildStatusDetail(progress, percent, displayIndex);
     }
@@ -320,15 +343,15 @@ public partial class TablebaseDownloaderViewModel(
         var totalFiles = progress.TotalFiles;
         if (totalFiles <= 0)
         {
-            return progress.FilesCompleted;
+            return progress.FilesCompleted + progress.FilesSkipped;
         }
 
-        if (progress.TotalBytes is > 0 && progress.BytesRead > 0 && progress.BytesRead < progress.TotalBytes.Value)
+        if (progress.Stage is TablebaseProgressStage.Downloading or TablebaseProgressStage.Starting)
         {
-            return Math.Min(progress.FilesCompleted + 1, totalFiles);
+            return Math.Min(progress.FilesCompleted + progress.FilesSkipped + 1, totalFiles);
         }
 
-        return Math.Min(progress.FilesCompleted, totalFiles);
+        return Math.Min(progress.FilesCompleted + progress.FilesSkipped, totalFiles);
     }
 
     private string BuildStatusDetail(TablebaseProgress progress, double? percent, int displayIndex)
@@ -339,6 +362,11 @@ public partial class TablebaseDownloaderViewModel(
         if (!string.IsNullOrWhiteSpace(detail))
         {
             parts.Add(detail);
+        }
+
+        if (progress.FilesSkipped > 0)
+        {
+            parts.Add($"{progress.FilesSkipped:N0} skipped");
         }
 
         if (progress.TotalBytes.HasValue && progress.TotalBytes.Value > 0)
@@ -356,6 +384,31 @@ public partial class TablebaseDownloaderViewModel(
         }
 
         return string.Join(" • ", parts);
+    }
+
+    private async Task<bool> TryDownloadCategoryAsync(
+        TablebaseCategory category,
+        IProgress<TablebaseProgress> progress)
+    {
+        try
+        {
+            await _downloaderService.DownloadCategoryAsync(
+                category,
+                TargetFolder,
+                progress,
+                _cancellationTokenSource?.Token ?? CancellationToken.None);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error downloading {TablebaseConstants.GetCategoryFolderName(category)} tablebases: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            return false;
+        }
     }
 
     private static string FormatBytes(long bytes)

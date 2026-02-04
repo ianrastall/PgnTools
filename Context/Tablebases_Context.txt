@@ -1,0 +1,1116 @@
+# Context Dump: Tablebases
+# Date: 2026-02-04 14:41:05
+# File Count: 6
+
+===== BEGIN: Docs\TablebaseDownloaderService.md =====
+### `Docs/TablebaseDownloaderService.md`
+
+```markdown
+# TablebaseDownloaderService.md
+
+## Service Specification: TablebaseDownloaderService
+**Version:** 1.0 (Actual Implementation)
+**Layer:** Service Layer (Infrastructure/Network)
+**Dependencies:** `HttpClient`, `TablebaseConstants`
+**Thread Safety:** Stateless; safe for concurrent execution across different categories.
+
+## 1. Objective
+Reliably download and organize Syzygy endgame tablebase files (WDL and DTZ) via HTTP. The service manages the retrieval of massive datasets (split into 3-4-5, 6, and 7-piece categories) by processing a predefined manifest of URLs. It ensures data integrity via file-size validation, prevents disk exhaustion through pre-flight checks, and ensures file consistency using a temporary-file-and-swap strategy.
+
+## 2. Input Contract
+
+The service exposes a single primary entry point designed to handle an entire category of tablebases at once.
+
+```csharp
+public interface ITablebaseDownloaderService
+{
+    /// <summary>
+    /// Downloads all files associated with a specific tablebase category.
+    /// </summary>
+    /// <param name="category">The subset of tablebases to download (Syzygy345, Syzygy6, or Syzygy7).</param>
+    /// <param name="rootOutputPath">The root directory where category subfolders will be created.</param>
+    /// <param name="progress">Optional reporter for download progress (speed, bytes, file count).</param>
+    /// <param name="ct">Token to cancel the operation gracefully.</param>
+    Task DownloadCategoryAsync(
+        TablebaseCategory category,
+        string rootOutputPath,
+        IProgress<TablebaseProgress>? progress = null,
+        CancellationToken ct = default);
+}
+
+```
+
+### 2.1 Progress Reporting
+
+Progress is reported via the `TablebaseProgress` record, providing granular feedback for UI updates:
+
+* **Category:** The set currently being processed.
+* **CurrentFileName:** Name of the file currently downloading.
+* **Counts:** `FilesCompleted` vs. `TotalFiles`.
+* **Data Transfer:** `BytesRead` vs. `TotalBytes` (for the current file).
+* **Throughput:** `SpeedMbPerSecond` (calculated over 250ms intervals).
+
+## 3. Architecture & Data Source
+
+### 3.1 The Manifest System
+
+Unlike dynamic scrapers, this service relies on a static "Source of Truth" located in `Assets/Tablebases/download.txt`.
+
+* **Format:** A flat text file containing direct HTTP URLs to `.rtbw` (WDL) and `.rtbz` (DTZ) files.
+* **Parsing Logic:** URLs are categorized at runtime by inspecting the string content (see `TablebaseConstants.cs`):
+* **Syzygy345:** URLs containing `/3-4-5-`
+* **Syzygy6:** URLs containing `/6-`
+* **Syzygy7:** URLs containing `/7/`
+
+
+
+### 3.2 File Organization
+
+The service enforces a strict directory structure within the user-selected `rootOutputPath`. Subfolders are automatically created based on the category:
+
+| Enum Value | Subfolder Name | Estimated Size |
+| --- | --- | --- |
+| `TablebaseCategory.Syzygy345` | `3-4-5` | ~1.5 GB |
+| `TablebaseCategory.Syzygy6` | `6` | ~160 GB |
+| `TablebaseCategory.Syzygy7` | `7` | ~18 TB |
+
+## 4. Algorithm Specification
+
+### 4.1 Pre-Flight Validation
+
+Before initiating network traffic, the service performs a safety check to prevent storage overfill:
+
+1. **Requirement Calculation:** Retrieves the hardcoded estimated size for the requested category (`TablebaseConstants`).
+2. **Space Check:** Queries `DriveInfo` for the destination root.
+3. **Gatekeeping:** If `AvailableFreeSpace < RequiredBytes`, an `IOException` is thrown immediately, aborting the process before any partial files are created.
+
+### 4.2 The Download Loop
+
+For every URL in the category's list, the service executes the following state machine:
+
+1. **Existence Check:**
+* Target path: `root/{category}/{filename}`.
+* If the file exists **AND** is currently locked (in use), it is skipped.
+* If the file exists **AND** matches the remote size (Head Request check), it is marked as "Complete" and skipped.
+
+
+2. **Staging (Temp File Strategy):**
+* Downloads are never written directly to the final filename to prevent corruption during interruptions.
+* Data is streamed to `path.tmp` (using `FileReplacementHelper.CreateTempFilePath`).
+* **Buffer Management:** Uses an 80KB buffer (`81920` bytes) pooled via `ArrayPool<byte>` to minimize garbage collection (GC) pressure.
+
+
+3. **Streaming & Throttling:**
+* Uses `HttpCompletionOption.ResponseHeadersRead` to start processing immediately.
+* Updates the `IProgress` reporter every 250ms (`ProgressInterval`) to ensure UI responsiveness without flooding the event queue.
+
+
+4. **Commit (Atomic Swap):**
+* Once the download stream closes successfully, the service attempts to replace the destination file with the temp file.
+* **Resilience:** If the destination is locked, it enters a retry loop (up to 3 attempts, 200ms delay) before giving up or throwing.
+
+
+
+### 4.3 Validation Logic (Head Check)
+
+Instead of expensive SHA checksums, the service uses `Content-Length` validation to verify integrity for existing files:
+
+```csharp
+// Pseudo-logic for IsExistingFileCompleteAsync
+var remoteSize = await httpClient.SendAsync(HeadRequest).Content.Length;
+var localSize = new FileInfo(localPath).Length;
+return localSize == remoteSize;
+
+```
+
+*Note: If the remote server does not return a Content-Length header, the file is assumed incomplete and re-downloaded.*
+
+## 5. Edge Cases & Error Handling
+
+| Scenario | Handling Strategy |
+| --- | --- |
+| **Disk Full (Pre-download)** | Throws `IOException` explicitly stating required vs. available space. |
+| **Disk Full (Mid-stream)** | Standard I/O exception bubbles up; temp file remains (user cleanup required). |
+| **Network Failure** | `HttpRequestException` bubbles up. Partial temp file is deleted in the `catch` block to prevent junk buildup. |
+| **File Locked (Destination)** | Retries swap 3 times. If still locked, skips replacement and proceeds (logs/reports completion). |
+| **Manifest Missing** | Throws `InvalidOperationException` if `download.txt` is not found or empty for the category. |
+| **Cancellation** | `CancellationToken` is checked at every buffer read. Upon cancellation, the `catch` block ensures the temp file is deleted. |
+
+## 6. Performance Characteristics
+
+### 6.1 Throughput
+
+* **Sequential Processing:** Files within a category are downloaded one by one (`foreach` loop). This limits throughput to the speed of a single TCP connection but ensures maximum stability and friendliness to the mirror server.
+* **Memory Footprint:** Extremely low. Uses streaming I/O with a shared buffer pool. Does not load whole files into RAM.
+
+### 6.2 Benchmarks (Estimates)
+
+* **3-4-5 Piece Set:** ~40-60 seconds on Gigabit fiber.
+* **6 Piece Set:** ~20-30 minutes on Gigabit fiber.
+* **Resumption:** If the process is restarted, the "Head Check" ensures previously completed files are skipped instantly, allowing the download to "resume" at the file level (though individual partial files start over).
+
+## 7. Configuration & Extensibility
+
+### 7.1 Adding New Tables
+
+To add mirrors or new tablebases, modify `PgnTools/Assets/Tablebases/download.txt`.
+
+* Lines starting with `#` are ignored (comments).
+* Any valid URL can be added.
+* The system automatically routes the URL to the 3-4-5, 6, or 7 folder based on the substring pattern matching defined in `TablebaseConstants`.
+
+### 7.2 Future Improvements (Not Implemented)
+
+* **Resume Support:** Use HTTP Range headers to resume partial temp files.
+* **Parallelism:** Use `Parallel.ForEachAsync` to saturate bandwidth (currently sequential).
+* **Mirror Rotation:** Logic to switch domains if one fails (currently hardcoded to the specific URL in the text file).
+
+===== END: Docs\TablebaseDownloaderService.md =====
+
+===== BEGIN: PgnTools\Services\TablebaseConstants.cs =====
+using System.Collections.Frozen;
+
+namespace PgnTools.Services;
+
+public enum TablebaseCategory
+{
+    Syzygy345,
+    Syzygy6,
+    Syzygy7
+}
+
+public record TablebaseFile(string Url, string FileName, TablebaseCategory Category, long EstimatedSizeBytes);
+
+public static class TablebaseConstants
+{
+    public const long Size345 = 1_500_000_000L; // ~1.5 GB
+    public const long Size6 = 160_000_000_000L; // ~160 GB
+    public const long Size7 = 18_000_000_000_000L; // ~18 TB
+
+    private const string DownloadListRelativePath = "Assets/Tablebases/download.txt";
+    private static readonly Lazy<FrozenDictionary<TablebaseCategory, string[]>> FileListsLazy = new(LoadFileLists);
+
+    public static FrozenDictionary<TablebaseCategory, string[]> FileLists => FileListsLazy.Value;
+
+    public static string GetCategoryFolderName(TablebaseCategory category) => category switch
+    {
+        TablebaseCategory.Syzygy345 => "3-4-5",
+        TablebaseCategory.Syzygy6 => "6",
+        TablebaseCategory.Syzygy7 => "7",
+        _ => "misc"
+    };
+
+    public static long GetEstimatedSizeBytes(TablebaseCategory category) => category switch
+    {
+        TablebaseCategory.Syzygy345 => Size345,
+        TablebaseCategory.Syzygy6 => Size6,
+        TablebaseCategory.Syzygy7 => Size7,
+        _ => 0
+    };
+
+    public static TablebaseCategory GetCategoryFromUrl(string url) => url switch
+    {
+        _ when url.Contains("/3-4-5-", StringComparison.OrdinalIgnoreCase) => TablebaseCategory.Syzygy345,
+        _ when url.Contains("/6-", StringComparison.OrdinalIgnoreCase) => TablebaseCategory.Syzygy6,
+        _ when url.Contains("/7/", StringComparison.OrdinalIgnoreCase) => TablebaseCategory.Syzygy7,
+        _ => throw new ArgumentOutOfRangeException(nameof(url), "Unknown tablebase category")
+    };
+
+    public static string GetDownloadListPath()
+    {
+        var relativePath = DownloadListRelativePath.Replace('/', Path.DirectorySeparatorChar);
+        return Path.Combine(AppContext.BaseDirectory, relativePath);
+    }
+
+    private static FrozenDictionary<TablebaseCategory, string[]> LoadFileLists()
+    {
+        var map = new Dictionary<TablebaseCategory, List<string>>
+        {
+            [TablebaseCategory.Syzygy345] = new List<string>(),
+            [TablebaseCategory.Syzygy6] = new List<string>(),
+            [TablebaseCategory.Syzygy7] = new List<string>()
+        };
+
+        var path = GetDownloadListPath();
+        if (!File.Exists(path))
+        {
+            return map.ToFrozenDictionary(pair => pair.Key, pair => pair.Value.ToArray());
+        }
+
+        foreach (var rawLine in File.ReadLines(path))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
+                continue;
+            }
+
+            var category = GetCategoryFromUrl(line);
+            map[category].Add(line);
+        }
+
+        return map.ToFrozenDictionary(pair => pair.Key, pair => pair.Value.ToArray());
+    }
+}
+===== END: PgnTools\Services\TablebaseConstants.cs =====
+
+===== BEGIN: PgnTools\Services\TablebaseDownloaderService.cs =====
+using System.Buffers;
+using System.Diagnostics;
+using System.Net.Http;
+
+namespace PgnTools.Services;
+
+public record TablebaseProgress(
+    TablebaseCategory Category,
+    string CurrentFileName,
+    int FilesCompleted,
+    int TotalFiles,
+    long BytesRead,
+    long? TotalBytes,
+    double SpeedMbPerSecond);
+
+public interface ITablebaseDownloaderService
+{
+    Task DownloadCategoryAsync(
+        TablebaseCategory category,
+        string rootOutputPath,
+        IProgress<TablebaseProgress>? progress = null,
+        CancellationToken ct = default);
+}
+
+public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITablebaseDownloaderService
+{
+    private const int BufferSize = 81920;
+    private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(250);
+
+    public async Task DownloadCategoryAsync(
+        TablebaseCategory category,
+        string rootOutputPath,
+        IProgress<TablebaseProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(rootOutputPath))
+        {
+            throw new ArgumentException("Output folder is required.", nameof(rootOutputPath));
+        }
+
+        var targetDirName = TablebaseConstants.GetCategoryFolderName(category);
+        var targetPath = Path.Combine(rootOutputPath, targetDirName);
+        Directory.CreateDirectory(targetPath);
+
+        if (!TablebaseConstants.FileLists.TryGetValue(category, out var urls) || urls.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "No tablebase URLs found. Ensure Assets/Tablebases/download.txt is present.");
+        }
+
+        EnsureDiskSpace(targetPath, TablebaseConstants.GetEstimatedSizeBytes(category));
+
+        var completed = 0;
+        foreach (var url in urls)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var fileName = Path.GetFileName(url);
+            var filePath = Path.Combine(targetPath, fileName);
+            var finalBytesRead = 0L;
+            long? finalTotalBytes = null;
+            var finalSpeed = 0d;
+
+            progress?.Report(new TablebaseProgress(
+                category,
+                fileName,
+                completed,
+                urls.Length,
+                0,
+                null,
+                0));
+
+            if (File.Exists(filePath) && IsFileInUse(filePath))
+            {
+                completed++;
+                progress?.Report(new TablebaseProgress(
+                    category,
+                    fileName,
+                    completed,
+                    urls.Length,
+                    0,
+                    null,
+                    0));
+                continue;
+            }
+
+            if (await IsExistingFileCompleteAsync(filePath, url, ct).ConfigureAwait(false))
+            {
+                completed++;
+                progress?.Report(new TablebaseProgress(
+                    category,
+                    fileName,
+                    completed,
+                    urls.Length,
+                    0,
+                    null,
+                    0));
+                continue;
+            }
+
+            var tempPath = FileReplacementHelper.CreateTempFilePath(filePath);
+            try
+            {
+                using var response = await httpClient.GetAsync(
+                    url,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    ct).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength;
+                finalTotalBytes = totalBytes;
+
+                progress?.Report(new TablebaseProgress(
+                    category,
+                    fileName,
+                    completed,
+                    urls.Length,
+                    0,
+                    totalBytes,
+                    0));
+
+                {
+                    await using var contentStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                    await using var fileStream = new FileStream(
+                        tempPath,
+                        FileMode.Create,
+                        FileAccess.Write,
+                        FileShare.None,
+                        BufferSize,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+                    var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+                    try
+                    {
+                        var fileStopwatch = Stopwatch.StartNew();
+                        var lastReport = Stopwatch.StartNew();
+                        long bytesRead = 0;
+
+                        while (true)
+                        {
+                            var read = await contentStream.ReadAsync(buffer, ct).ConfigureAwait(false);
+                            if (read <= 0)
+                            {
+                                break;
+                            }
+
+                            await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                            bytesRead += read;
+
+                            if (lastReport.Elapsed >= ProgressInterval)
+                            {
+                                var speed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
+                                    ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
+                                    : 0;
+
+                                progress?.Report(new TablebaseProgress(
+                                    category,
+                                    fileName,
+                                    completed,
+                                    urls.Length,
+                                    bytesRead,
+                                    totalBytes,
+                                    speed));
+
+                                lastReport.Restart();
+                            }
+                        }
+
+                        var computedSpeed = bytesRead > 0 && fileStopwatch.Elapsed.TotalSeconds > 0
+                            ? bytesRead / fileStopwatch.Elapsed.TotalSeconds / 1024d / 1024d
+                            : 0;
+                        finalBytesRead = bytesRead;
+                        finalSpeed = computedSpeed;
+
+                        progress?.Report(new TablebaseProgress(
+                            category,
+                            fileName,
+                            completed,
+                            urls.Length,
+                            bytesRead,
+                            totalBytes,
+                            computedSpeed));
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(buffer);
+                    }
+                }
+
+                if (!TryReplaceFile(tempPath, filePath))
+                {
+                    TryDeleteFile(tempPath);
+                    completed++;
+                    progress?.Report(new TablebaseProgress(
+                        category,
+                        fileName,
+                        completed,
+                        urls.Length,
+                        finalBytesRead,
+                        finalTotalBytes,
+                        finalSpeed));
+                    continue;
+                }
+            }
+            catch
+            {
+                TryDeleteFile(tempPath);
+                throw;
+            }
+
+            completed++;
+            progress?.Report(new TablebaseProgress(
+                category,
+                fileName,
+                completed,
+                urls.Length,
+                finalBytesRead,
+                finalTotalBytes,
+                finalSpeed));
+        }
+    }
+
+    private async Task<bool> IsExistingFileCompleteAsync(string filePath, string url, CancellationToken ct)
+    {
+        if (!File.Exists(filePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+            using var headResponse = await httpClient.SendAsync(headRequest, ct).ConfigureAwait(false);
+            if (!headResponse.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var expected = headResponse.Content.Headers.ContentLength;
+            if (!expected.HasValue || expected.Value <= 0)
+            {
+                return false;
+            }
+
+            var actual = new FileInfo(filePath).Length;
+            return actual == expected.Value;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsFileInUse(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.None);
+            return false;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+    }
+
+    private static void TryDeleteFile(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(filePath);
+        }
+        catch
+        {
+        }
+    }
+
+    private static bool TryReplaceFile(string tempPath, string destinationPath)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                FileReplacementHelper.ReplaceFile(tempPath, destinationPath);
+                return true;
+            }
+            catch (IOException) when (IsFileInUse(destinationPath) || IsFileInUse(tempPath))
+            {
+                Thread.Sleep(200 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException) when (IsFileInUse(destinationPath) || IsFileInUse(tempPath))
+            {
+                Thread.Sleep(200 * (attempt + 1));
+            }
+        }
+
+        return false;
+    }
+
+    private static void EnsureDiskSpace(string path, long requiredBytes)
+    {
+        if (requiredBytes <= 0)
+        {
+            return;
+        }
+
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            throw new ArgumentException("Invalid path.", nameof(path));
+        }
+
+        var drive = new DriveInfo(root);
+        if (drive.AvailableFreeSpace < requiredBytes)
+        {
+            throw new IOException(
+                $"Insufficient disk space on {root}. Required: {FormatBytes(requiredBytes)}, " +
+                $"Available: {FormatBytes(drive.AvailableFreeSpace)}.");
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double scale = 1024;
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var unitIndex = 0;
+        while (value >= scale && unitIndex < units.Length - 1)
+        {
+            value /= scale;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+}
+===== END: PgnTools\Services\TablebaseDownloaderService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\TablebaseDownloaderViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Tablebase Downloader tool.
+/// </summary>
+public partial class TablebaseDownloaderViewModel(
+    ITablebaseDownloaderService downloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly ITablebaseDownloaderService _downloaderService = downloaderService;
+    private readonly IWindowService _windowService = windowService;
+    private readonly IAppSettingsService _settings = settings;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private TablebaseProgress? _lastProgress;
+    private const string SettingsPrefix = nameof(TablebaseDownloaderViewModel);
+
+    [ObservableProperty]
+    private string _targetFolder = string.Empty;
+
+    [ObservableProperty]
+    private bool _download345 = true;
+
+    [ObservableProperty]
+    private bool _download6;
+
+    [ObservableProperty]
+    private bool _download7;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private double _progressValue;
+
+    [ObservableProperty]
+    private double _progressMaximum = 100;
+
+    [ObservableProperty]
+    private bool _isIndeterminate = true;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select a destination folder and tablebase sets";
+
+    public void Initialize()
+    {
+        Title = "Tablebases";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+
+    [RelayCommand]
+    private async Task SelectTargetFolderAsync()
+    {
+        try
+        {
+            var folder = await FilePickerHelper.PickFolderAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Output");
+            if (folder == null)
+            {
+                return;
+            }
+
+            TargetFolder = folder.Path;
+            StatusMessage = $"Selected folder: {folder.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting folder: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanStart))]
+    private async Task StartAsync()
+    {
+        if (string.IsNullOrWhiteSpace(TargetFolder))
+        {
+            StatusMessage = "Please select a destination folder.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (!Download345 && !Download6 && !Download7)
+        {
+            StatusMessage = "Please select at least one tablebase set.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        var validation = await FileValidationHelper.ValidateWritableFolderAsync(TargetFolder);
+        if (!validation.Success)
+        {
+            StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+        }
+
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+        }
+
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Preparing tablebase download...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            ProgressValue = 0;
+            ProgressMaximum = 100;
+            IsIndeterminate = true;
+            _lastProgress = null;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            var progress = new Progress<TablebaseProgress>(UpdateProgress);
+
+            if (Download345)
+            {
+                StatusMessage = "Starting 3-4-5 tablebase download...";
+                await _downloaderService.DownloadCategoryAsync(
+                    TablebaseCategory.Syzygy345,
+                    TargetFolder,
+                    progress,
+                    _cancellationTokenSource.Token);
+            }
+
+            if (Download6)
+            {
+                StatusMessage = "Starting 6-piece tablebase download...";
+                await _downloaderService.DownloadCategoryAsync(
+                    TablebaseCategory.Syzygy6,
+                    TargetFolder,
+                    progress,
+                    _cancellationTokenSource.Token);
+            }
+
+            if (Download7)
+            {
+                StatusMessage = "Starting 7-piece tablebase download...";
+                await _downloaderService.DownloadCategoryAsync(
+                    TablebaseCategory.Syzygy7,
+                    TargetFolder,
+                    progress,
+                    _cancellationTokenSource.Token);
+            }
+
+            StatusMessage = "Tablebase downloads complete.";
+            StatusSeverity = InfoBarSeverity.Success;
+            ProgressValue = 100;
+            StatusDetail = BuildProgressDetail(100);
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Download cancelled.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = _lastProgress != null
+                ? BuildStatusDetail(_lastProgress, ProgressValue, GetDisplayIndex(_lastProgress))
+                : BuildProgressDetail(ProgressValue);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = _lastProgress != null
+                ? BuildStatusDetail(_lastProgress, ProgressValue, GetDisplayIndex(_lastProgress))
+                : BuildProgressDetail(ProgressValue);
+        }
+        finally
+        {
+            IsRunning = false;
+            var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+            cts?.Dispose();
+            _executionLock.Release();
+            StopProgressTimer();
+        }
+    }
+
+    private bool CanStart() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(TargetFolder) &&
+        (Download345 || Download6 || Download7);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        var cts = _cancellationTokenSource;
+        if (cts == null || cts.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+            StatusMessage = "Cancelling...";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    partial void OnTargetFolderChanged(string value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnDownload345Changed(bool value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnDownload6Changed(bool value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnDownload7Changed(bool value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsRunningChanged(bool value)
+    {
+        StartCommand.NotifyCanExecuteChanged();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        SaveState();
+        var cts = Interlocked.Exchange(ref _cancellationTokenSource, null);
+        if (cts != null)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+        _executionLock.Dispose();
+    }
+
+    private void LoadState()
+    {
+        TargetFolder = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetFolder)}", TargetFolder);
+        if (!string.IsNullOrWhiteSpace(TargetFolder) && !Directory.Exists(TargetFolder))
+        {
+            TargetFolder = string.Empty;
+        }
+        Download345 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download345)}", Download345);
+        Download6 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download6)}", Download6);
+        Download7 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download7)}", Download7);
+    }
+
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(TargetFolder)}", TargetFolder);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Download345)}", Download345);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Download6)}", Download6);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Download7)}", Download7);
+    }
+
+    private void UpdateProgress(TablebaseProgress progress)
+    {
+        _lastProgress = progress;
+
+        var totalFiles = progress.TotalFiles;
+        var hasTotal = progress.TotalBytes is > 0;
+        var fileFraction = 0d;
+        if (hasTotal)
+        {
+            fileFraction = progress.BytesRead >= progress.TotalBytes!.Value
+                ? 0
+                : Math.Clamp(progress.BytesRead / (double)progress.TotalBytes.Value, 0, 1);
+        }
+
+        var percent = totalFiles > 0
+            ? ((progress.FilesCompleted + fileFraction) / totalFiles) * 100
+            : 0;
+
+        if (hasTotal)
+        {
+            ProgressValue = percent;
+            ProgressMaximum = 100;
+            IsIndeterminate = false;
+        }
+        else
+        {
+            ProgressValue = 0;
+            ProgressMaximum = 100;
+            IsIndeterminate = true;
+        }
+
+        var inProgress = hasTotal && progress.BytesRead > 0 && progress.BytesRead < progress.TotalBytes!.Value;
+        var displayIndex = inProgress
+            ? Math.Min(progress.FilesCompleted + 1, totalFiles)
+            : progress.FilesCompleted;
+
+        StatusMessage = totalFiles > 0
+            ? $"Downloading {progress.CurrentFileName} ({displayIndex}/{totalFiles})"
+            : $"Downloading {progress.CurrentFileName}";
+
+        StatusDetail = BuildStatusDetail(progress, percent, displayIndex);
+    }
+
+    private static int GetDisplayIndex(TablebaseProgress progress)
+    {
+        var totalFiles = progress.TotalFiles;
+        if (totalFiles <= 0)
+        {
+            return progress.FilesCompleted;
+        }
+
+        if (progress.TotalBytes is > 0 && progress.BytesRead > 0 && progress.BytesRead < progress.TotalBytes.Value)
+        {
+            return Math.Min(progress.FilesCompleted + 1, totalFiles);
+        }
+
+        return Math.Min(progress.FilesCompleted, totalFiles);
+    }
+
+    private string BuildStatusDetail(TablebaseProgress progress, double? percent, int displayIndex)
+    {
+        var parts = new List<string>();
+
+        var detail = BuildProgressDetail(percent, displayIndex, progress.TotalFiles, "files");
+        if (!string.IsNullOrWhiteSpace(detail))
+        {
+            parts.Add(detail);
+        }
+
+        if (progress.TotalBytes.HasValue && progress.TotalBytes.Value > 0)
+        {
+            parts.Add($"{FormatBytes(progress.BytesRead)} / {FormatBytes(progress.TotalBytes.Value)}");
+        }
+        else if (progress.BytesRead > 0)
+        {
+            parts.Add($"{FormatBytes(progress.BytesRead)} downloaded");
+        }
+
+        if (progress.SpeedMbPerSecond > 0)
+        {
+            parts.Add($"{progress.SpeedMbPerSecond:0.0} MB/s");
+        }
+
+        return string.Join(" • ", parts);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double scale = 1024;
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var unitIndex = 0;
+        while (value >= scale && unitIndex < units.Length - 1)
+        {
+            value /= scale;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+}
+===== END: PgnTools\ViewModels\Tools\TablebaseDownloaderViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\TablebaseDownloaderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.TablebaseDownloaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Tablebases" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Download standard Syzygy tablebases for engine use."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Destination Folder"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select where to store the tablebases..."
+                         Text="{x:Bind ViewModel.TargetFolder, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectTargetFolderCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Select Tablebases"
+                       Style="{StaticResource SubtitleTextBlockStyle}"/>
+
+            <CheckBox Content="3-4-5 Pieces (Syzygy 3-4-5)"
+                      IsChecked="{x:Bind ViewModel.Download345, Mode=TwoWay}"/>
+            <TextBlock Text="~1.5 GB. Essential for basic endgame analysis."
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Margin="32,-8,0,0"/>
+
+            <CheckBox Content="6 Pieces (Syzygy 6)"
+                      IsChecked="{x:Bind ViewModel.Download6, Mode=TwoWay}"/>
+            <TextBlock Text="~160 GB. Recommended for serious engine performance."
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Margin="32,-8,0,0"/>
+
+            <CheckBox Content="7 Pieces (Syzygy 7)"
+                      IsChecked="{x:Bind ViewModel.Download7, Mode=TwoWay}"/>
+            <TextBlock Text="Warning: ~18 TB. Requires massive storage."
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Margin="32,-8,0,0"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Download"
+                        Command="{x:Bind ViewModel.StartCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"
+                                    ProgressMaximum="{x:Bind ViewModel.ProgressMaximum, Mode=OneWay}"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+===== END: PgnTools\Views\Tools\TablebaseDownloaderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\TablebaseDownloaderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Tablebase Downloader tool.
+/// </summary>
+public sealed partial class TablebaseDownloaderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public TablebaseDownloaderViewModel ViewModel { get; }
+
+    public TablebaseDownloaderPage() : this(App.GetService<TablebaseDownloaderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public TablebaseDownloaderPage(TablebaseDownloaderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            ViewModel.Dispose();
+        }
+    }
+}
+===== END: PgnTools\Views\Tools\TablebaseDownloaderPage.xaml.cs =====
+
