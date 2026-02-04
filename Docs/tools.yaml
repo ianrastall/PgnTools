@@ -1,0 +1,9 @@
+# PgnTools V5 - External Tool Definitions
+schemaVersion: '1.0'
+
+tools:
+  - id: 'pgn-splitter'
+    name: 'PGN Splitter'
+    category: 'File Operations'
+    icon: 'DocumentSplit24'
+    mode: 'Background'
