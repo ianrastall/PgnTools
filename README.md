@@ -1,115 +1,64 @@
 # PgnTools
 
-A high-performance WinUI 3 desktop application for managing Portable Game Notation (PGN) files. This comprehensive toolkit provides various utilities for downloading, filtering, tagging, sorting, merging, and analyzing chess games.
+PgnTools is a high-performance WinUI 3 desktop application for large PGN workflows on Windows. It emphasizes streaming I/O and a tool-based UI for downloading, filtering, tagging, and analyzing chess games.
 
-## AI-Generated Project
+**Highlights**
+- Streaming PGN reader/writer that processes games without loading entire files into memory.
+- Tool-based UI with dedicated pages for each workflow.
+- Self-contained Windows x64 builds via GitHub Actions.
+- Modern stack: .NET 10, C# 14, WinUI 3, CommunityToolkit.Mvvm, Microsoft.Extensions.DependencyInjection.
 
-**This application is completely written by artificial intelligence.** The project owner contributed the ideas and direction, while AI handled all of the implementation, including code, architecture, and documentation.
+**Tool Suite**
+- Downloaders: Chess.com, Lichess (user + monthly DB), Lc0 matches, PGN Mentor, TWIC, Tablebases.
+- Processing: Filter (Elo/ply/checkmate/annotations), Deduplicator, Splitter, Merger, Sorter, Tour Breaker.
+- Tagging: Category Tagger, ECO Tagger, Elo Adder, Ply Count Adder.
+- Analysis: Chess Analyzer (UCI/Stockfish), PGN Info, Stockfish Normalizer.
+- Experimental/Hidden: Chess Unannotator, Checkmate Filter, Elegance scoring.
 
----
+**Assets**
+The app expects the following files under `PgnTools/Assets` (they are copied on publish). These enable specific tools:
+- `Assets/eco.pgn` for ECO tagging.
+- `Assets/ratings.bin.zst` for Elo Adder.
+- `Assets/elegance-distributions.json` and `Assets/elegance-goldens.json` for Elegance scoring/validation.
+- `Assets/Tablebases/download.txt` for tablebase URL lists.
 
-## Getting the Application
+Optional:
+- Any UCI engine (Stockfish recommended). The app can download the latest Stockfish build.
+- Syzygy tablebases for analysis (choose a folder at runtime).
 
-### Downloading the Latest Build
+**Build And Run**
+Requirements:
+- Windows 10 1809+ (x64).
+- .NET 10 SDK (preview).
+- Windows App SDK 1.8 (restored via NuGet).
+- Visual Studio 2022 17.10+ recommended for WinUI development.
 
-The easiest way to get PgnTools is through the GitHub Actions workflow artifacts:
-
-1. Go to the **[Actions](../../actions)** tab of this repository
-2. Click on the most recent successful **"Build PgnTools"** workflow run
-3. Scroll down to the **Artifacts** section
-4. Download the **`PgnTools-Build`** artifact
-5. Extract the ZIP file to your desired location
-6. Run `PgnTools.exe` to start the application
-
-> **Note:** The artifact is a self-contained single-file executable for Windows x64. No additional runtime installation is required.
-
----
-
-## Required Assets
-
-PgnTools requires certain asset files to function properly. These must be placed in the `Assets` folder next to the executable.
-
-### Asset Files
-
-| File | Description | Required For |
-|------|-------------|--------------|
-| `eco.pgn` | ECO (Encyclopedia of Chess Openings) database | ECO Tagger tool |
-| `ratings.bin.zst` | Historical player ratings database (Zstandard compressed) | Elo Adder tool |
-| `lc0/` | Lc0 engine folder | Chess Analyzer tool (optional) |
-
-### Placing Assets
-
-After extracting the application:
-
-1. Locate the `Assets` folder in your extracted directory
-2. If it doesn't exist, create a folder named `Assets` next to `PgnTools.exe`
-3. Place the required asset files in the `Assets` folder
-
-```
-PgnTools/
-├── PgnTools.exe
-└── Assets/
-    ├── eco.pgn
-    ├── ratings.bin.zst
-    └── lc0/
-        └── (Lc0 engine files)
+Build and run:
+```powershell
+dotnet restore PgnTools/PgnTools.csproj
+dotnet build PgnTools/PgnTools.csproj -c Release
+dotnet run --project PgnTools/PgnTools.csproj
 ```
 
----
+Publish (matches CI):
+```powershell
+dotnet publish PgnTools/PgnTools.csproj -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true `
+  -p:EnableCompressionInSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true `
+  -o .\publish_output
+```
 
-## Tools
+**Prebuilt Builds**
+- GitHub Actions workflow `Build PgnTools` publishes a self-contained single-file executable as an artifact.
 
-PgnTools includes the following utilities:
+**Repo Layout**
+- `PgnTools/` WinUI 3 app source.
+- `Docs/` tool documentation and design notes.
+- `generate_codebase_dump.ps1` codebase snapshot generator for LLM handoff.
 
-### Downloaders
+**Project Note**
+- This repository was built with significant AI assistance; the owner provided direction and requirements.
 
-| Tool | Description |
-|------|-------------|
-| **Chess.com** | Download games via the Chess.com Public API |
-| **Lichess** | Download user games and access monthly database tools |
-| **Lc0** | Download and collate Lc0 match PGNs |
-| **PGN Mentor** | Download games from PGN Mentor |
-| **TWIC Downloader** | Download games from The Week in Chess |
-
-### Processing & Filtering
-
-| Tool | Description |
-|------|-------------|
-| **Filter** | Filter games by Elo, ply count, checkmate endings, and annotations |
-| **Deduplicator** | Remove duplicate games from PGN files |
-| **Splitter** | Split PGN files into smaller chunks or filter games |
-| **Merger** | Merge multiple PGN files into one |
-| **Sorter** | Sort games by Elo, Date, or other criteria |
-| **Tour Breaker** | Extract valid tournaments from PGN files |
-
-### Tagging & Metadata
-
-| Tool | Description |
-|------|-------------|
-| **ECO Tagger** | Tag games with ECO codes, Opening names, and Variation names |
-| **Category Tagger** | Tag games by tournament category |
-| **Elo Adder** | Add historical Elo ratings to games |
-| **Ply Count Adder** | Add PlyCount tags to games |
-
-### Analysis & Utilities
-
-| Tool | Description |
-|------|-------------|
-| **Chess Analyzer** | Perform engine analysis of games |
-| **PGN Info** | Display summary statistics for PGN files |
-| **Stockfish Normalizer** | Fix and normalize engine names in PGN headers |
-
----
-
-## Tech Stack
-
-- **.NET 10** (Preview/Latest)
-- **WinUI 3** (Windows App SDK)
-- **C# 14**
-- **CommunityToolkit.Mvvm** for MVVM architecture
-
----
-
-## License
-
-See the [LICENSE](LICENSE) file for details.
+**License**
+See `LICENSE`.
