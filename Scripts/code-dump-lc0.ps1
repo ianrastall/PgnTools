@@ -9,6 +9,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Strip inline base64 data-image blobs from output to keep dumps text-only.
+function Remove-Base64ImageLines {
+    param(
+        [string[]]$Lines
+    )
+
+    $output = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $Lines) {
+        if ($line -match 'data:image\/[a-zA-Z0-9.+-]+;base64,') {
+            $output.Add('[image omitted: data URI removed]') | Out-Null
+            continue
+        }
+        $output.Add($line) | Out-Null
+    }
+    return $output.ToArray()
+}
+
 # 1. Setup Root Context
 # Assuming this script is inside a subfolder (e.g., /Scripts/), we go up one level to the Repo Root.
 # If you place this in the root, change ".." to "."
@@ -126,15 +143,14 @@ try {
 
                 if ($captured.Count -gt 0) {
                     $writer.WriteLine("----- TAGGED SECTIONS: $($Tags -join ", ") -----")
-                    $writer.WriteLine($captured -join "`n")
+                    $filtered = Remove-Base64ImageLines -Lines $captured
+                    $writer.WriteLine($filtered -join "`n")
                 }
                 elseif ($IncludeUntagged) {
-                    $content = [System.IO.File]::ReadAllText($fullPath, $utf8)
-                    $writer.Write($content)
-
-                    if (-not $content.EndsWith("`n")) {
-                        $writer.WriteLine()
-                    }
+                    $contentLines = [System.IO.File]::ReadAllLines($fullPath, $utf8)
+                    $filtered = Remove-Base64ImageLines -Lines $contentLines
+                    $writer.Write($filtered -join "`n")
+                    $writer.WriteLine()
                 }
                 else {
                     Write-Warning "No tagged sections found in: $relativePath"
@@ -142,13 +158,10 @@ try {
             }
             else {
                 # Read and Write Content
-                $content = [System.IO.File]::ReadAllText($fullPath, $utf8)
-                $writer.Write($content)
-
-                # Ensure newline at end of file
-                if (-not $content.EndsWith("`n")) {
-                    $writer.WriteLine()
-                }
+                $contentLines = [System.IO.File]::ReadAllLines($fullPath, $utf8)
+                $filtered = Remove-Base64ImageLines -Lines $contentLines
+                $writer.Write($filtered -join "`n")
+                $writer.WriteLine()
             }
 
             $writer.WriteLine("===== END: $relativePath =====")

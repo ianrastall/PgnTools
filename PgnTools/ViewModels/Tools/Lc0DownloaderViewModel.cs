@@ -17,6 +17,7 @@ public partial class Lc0DownloaderViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeRequested;
     private bool _outputPathSuggested;
     private string _lastOutputFolder = string.Empty;
     private static readonly DateOnly EarliestArchiveMonth = new(2018, 1, 1);
@@ -217,6 +218,11 @@ public partial class Lc0DownloaderViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+
+            if (_disposeRequested)
+            {
+                Dispose();
+            }
     }
     }
 
@@ -267,6 +273,23 @@ public partial class Lc0DownloaderViewModel(
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
         _executionLock.Dispose();
+    }
+
+    public void RequestDispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (IsRunning)
+        {
+            _disposeRequested = true;
+            Cancel();
+            return;
+        }
+
+        Dispose();
     }
     private void LoadState()
     {

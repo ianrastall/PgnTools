@@ -25,14 +25,7 @@ public sealed partial class Lc0DownloaderPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            if (ViewModel.IsRunning)
-            {
-                ViewModel.CancelCommand.Execute(null);
-            }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.RequestDispose();
         }
     }
 }
