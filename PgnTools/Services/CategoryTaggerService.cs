@@ -26,6 +26,38 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
 
+    private readonly record struct TournamentKey(
+        string Event,
+        string Site,
+        string EventDate,
+        string Section,
+        string Stage);
+
+    private sealed class TournamentKeyComparer : IEqualityComparer<TournamentKey>
+    {
+        public static TournamentKeyComparer Instance { get; } = new();
+
+        public bool Equals(TournamentKey x, TournamentKey y)
+        {
+            return StringComparer.OrdinalIgnoreCase.Equals(x.Event, y.Event) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Site, y.Site) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.EventDate, y.EventDate) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Section, y.Section) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Stage, y.Stage);
+        }
+
+        public int GetHashCode(TournamentKey obj)
+        {
+            var hash = new HashCode();
+            hash.Add(obj.Event, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Site, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.EventDate, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Section, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Stage, StringComparer.OrdinalIgnoreCase);
+            return hash.ToHashCode();
+        }
+    }
+
     private sealed class TournamentData
     {
         public HashSet<string> Players { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -52,6 +84,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
     public CategoryTaggerService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
+        ArgumentNullException.ThrowIfNull(pgnReader);
+        ArgumentNullException.ThrowIfNull(pgnWriter);
         _pgnReader = pgnReader;
         _pgnWriter = pgnWriter;
     }
@@ -94,10 +128,15 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
         var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken).ConfigureAwait(false);
 
-        var categories = stats
-            .Select(kv => (Event: kv.Key, Category: kv.Value.CalculateCategory()))
-            .Where(x => x.Category.HasValue)
-            .ToDictionary(x => x.Event, x => x.Category!.Value, StringComparer.OrdinalIgnoreCase);
+        var categories = new Dictionary<TournamentKey, int>(TournamentKeyComparer.Instance);
+        foreach (var entry in stats)
+        {
+            var category = entry.Value.CalculateCategory();
+            if (category.HasValue)
+            {
+                categories[entry.Key] = category.Value;
+            }
+        }
 
         try
         {
@@ -120,11 +159,12 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
                     cancellationToken.ThrowIfCancellationRequested();
                     processedGames++;
 
-                    var tournamentKey = BuildTournamentKey(game.Headers);
-                    if (!string.IsNullOrWhiteSpace(tournamentKey) &&
+                    if (TryBuildTournamentKey(game.Headers, out var tournamentKey) &&
                         categories.TryGetValue(tournamentKey, out var category))
                     {
-                        game.Headers["EventCategory"] = category.ToString();
+                        const string categoryKey = "EventCategory";
+                        game.Headers[categoryKey] = category.ToString();
+                        EnsureHeaderOrder(game.HeaderOrder, categoryKey, insertAfterKey: "Event");
                     }
 
                     if (!firstOutput)
@@ -145,7 +185,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
                 await writer.FlushAsync().ConfigureAwait(false);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                .ConfigureAwait(false);
             progress?.Report(100);
         }
         catch
@@ -165,11 +206,11 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
         }
     }
 
-    private async Task<(Dictionary<string, TournamentData> Stats, long TotalGames)> AnalyzeStatsAsync(
+    private async Task<(Dictionary<TournamentKey, TournamentData> Stats, long TotalGames)> AnalyzeStatsAsync(
         string inputFilePath,
         CancellationToken cancellationToken)
     {
-        var stats = new Dictionary<string, TournamentData>(StringComparer.OrdinalIgnoreCase);
+        var stats = new Dictionary<TournamentKey, TournamentData>(TournamentKeyComparer.Instance);
         var totalGames = 0L;
 
         await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, readMoveText: false, cancellationToken)
@@ -178,8 +219,7 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             cancellationToken.ThrowIfCancellationRequested();
             totalGames++;
 
-            var tournamentKey = BuildTournamentKey(game.Headers);
-            if (string.IsNullOrWhiteSpace(tournamentKey))
+            if (!TryBuildTournamentKey(game.Headers, out var tournamentKey))
             {
                 continue;
             }
@@ -194,19 +234,27 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
             if (game.Headers.TryGetHeaderValue("White", out var white) && !string.IsNullOrWhiteSpace(white))
             {
-                data.Players.Add(white);
-                if (TryParseElo(game.Headers, "WhiteElo", out var rating))
+                var whiteName = white.Trim();
+                if (!string.IsNullOrEmpty(whiteName))
                 {
-                    TryAddRating(data, white, rating);
+                    data.Players.Add(whiteName);
+                    if (TryParseElo(game.Headers, "WhiteElo", out var rating))
+                    {
+                        TryAddRating(data, whiteName, rating);
+                    }
                 }
             }
 
             if (game.Headers.TryGetHeaderValue("Black", out var black) && !string.IsNullOrWhiteSpace(black))
             {
-                data.Players.Add(black);
-                if (TryParseElo(game.Headers, "BlackElo", out var rating))
+                var blackName = black.Trim();
+                if (!string.IsNullOrEmpty(blackName))
                 {
-                    TryAddRating(data, black, rating);
+                    data.Players.Add(blackName);
+                    if (TryParseElo(game.Headers, "BlackElo", out var rating))
+                    {
+                        TryAddRating(data, blackName, rating);
+                    }
                 }
             }
         }
@@ -239,18 +287,25 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
     private static void TryAddRating(TournamentData data, string player, int rating)
     {
-        if (!data.PlayerRatings.ContainsKey(player))
+        if (data.PlayerRatings.TryGetValue(player, out var existing))
         {
-            data.PlayerRatings[player] = rating;
+            if (rating > existing)
+            {
+                data.PlayerRatings[player] = rating;
+            }
+            return;
         }
+
+        data.PlayerRatings[player] = rating;
     }
 
-    private static string BuildTournamentKey(IReadOnlyDictionary<string, string> headers)
+    private static bool TryBuildTournamentKey(IReadOnlyDictionary<string, string> headers, out TournamentKey key)
     {
         var eventName = headers.GetHeaderValueOrDefault("Event", string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(eventName))
         {
-            return string.Empty;
+            key = default;
+            return false;
         }
 
         var site = headers.GetHeaderValueOrDefault("Site", string.Empty).Trim();
@@ -264,12 +319,33 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             eventDate = date;
         }
 
-        return string.Join(" | ",
-            eventName,
-            site,
-            eventDate,
-            section,
-            stage);
+        key = new TournamentKey(eventName, site, eventDate, section, stage);
+        return true;
+    }
+
+    private static void EnsureHeaderOrder(List<string> order, string key, string? insertAfterKey = null)
+    {
+        for (var i = 0; i < order.Count; i++)
+        {
+            if (string.Equals(order[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(insertAfterKey))
+        {
+            for (var i = 0; i < order.Count; i++)
+            {
+                if (string.Equals(order[i], insertAfterKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    order.Insert(i + 1, key);
+                    return;
+                }
+            }
+        }
+
+        order.Add(key);
     }
 
     private static bool ShouldReportProgress(long processedGames, ref DateTime lastReportUtc)

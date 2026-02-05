@@ -44,11 +44,11 @@ The category is computed per event from player ratings and game counts:
 
 ### 4.1 Inputs Collected per Tournament
 Tournament identity uses a composite key:
-`Event | Site | EventDate (fallback Date) | Section | Stage`.
+`Event`, `Site`, `EventDate` (fallback `Date`), `Section`, `Stage` (case-insensitive).
 
 - `GameCount`: total games for the tournament.
 - `Players`: distinct player names from `White` and `Black`.
-- `PlayerRatings`: first observed Elo per player from `WhiteElo` / `BlackElo` (leading digits only).
+- `PlayerRatings`: highest observed Elo per player from `WhiteElo` / `BlackElo` (leading digits only).
 
 ### 4.2 Thresholds
 Category is **not** assigned if any of the following are true:

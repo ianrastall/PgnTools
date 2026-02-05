@@ -248,6 +248,16 @@ public partial class PgnReader
             return false;
         }
 
+        if (trimmedSpan[0] == '%')
+        {
+            if (inMoveSection && readMoveText && moveText != null)
+            {
+                moveText.AppendLine();
+            }
+
+            return false;
+        }
+
         // Only treat as tag line when we're not deep in comments/variations.
         var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
@@ -315,51 +325,41 @@ public partial class PgnReader
         }
 
         var length = 0;
-        var escaping = false;
-
-        foreach (var c in value)
+        for (var i = 0; i < value.Length; i++)
         {
-            if (!escaping && c == '\\')
+            var c = value[i];
+            if (c == '\\' && i + 1 < value.Length)
             {
-                escaping = true;
-                continue;
+                var next = value[i + 1];
+                if (next == '\\' || next == '"' || next == '\'')
+                {
+                    length++;
+                    i++;
+                    continue;
+                }
             }
 
-            length++;
-            escaping = false;
-        }
-
-        if (escaping)
-        {
             length++;
         }
 
         return string.Create(length, value, (span, state) =>
         {
             var idx = 0;
-            var isEscaping = false;
-
-            foreach (var c in state)
+            for (var i = 0; i < state.Length; i++)
             {
-                if (isEscaping)
+                var c = state[i];
+                if (c == '\\' && i + 1 < state.Length)
                 {
-                    span[idx++] = c;
-                    isEscaping = false;
-                    continue;
-                }
-
-                if (c == '\\')
-                {
-                    isEscaping = true;
-                    continue;
+                    var next = state[i + 1];
+                    if (next == '\\' || next == '"' || next == '\'')
+                    {
+                        span[idx++] = next;
+                        i++;
+                        continue;
+                    }
                 }
 
                 span[idx++] = c;
-            }
-
-            if (isEscaping && idx < span.Length)
-            {
-                span[idx] = '\\';
             }
         });
     }

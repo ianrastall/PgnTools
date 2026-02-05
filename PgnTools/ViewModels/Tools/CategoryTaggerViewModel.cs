@@ -38,6 +38,9 @@ public partial class CategoryTaggerViewModel(
     private double _progressValue;
 
     [ObservableProperty]
+    private bool _isIndeterminate = true;
+
+    [ObservableProperty]
     private string _statusMessage = "Select input and output PGN files";
     public void Initialize()
     {
@@ -142,6 +145,7 @@ public partial class CategoryTaggerViewModel(
         {
             IsRunning = true;
             ProgressValue = 0;
+            IsIndeterminate = true;
             StatusMessage = "Analyzing tournaments...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
@@ -152,6 +156,7 @@ public partial class CategoryTaggerViewModel(
             var progress = new Progress<double>(p =>
             {
                 ProgressValue = p;
+                IsIndeterminate = false;
                 StatusMessage = $"Tagging categories... {p:0}%";
                 StatusDetail = BuildProgressDetail(p);
             });
@@ -163,6 +168,7 @@ public partial class CategoryTaggerViewModel(
                 _cancellationTokenSource.Token);
 
             ProgressValue = 100;
+            IsIndeterminate = false;
             StatusMessage = "Category tagging complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
@@ -172,6 +178,7 @@ public partial class CategoryTaggerViewModel(
             StatusMessage = "Category tagging cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
+            IsIndeterminate = false;
             StatusDetail = BuildProgressDetail(ProgressValue);
     }
         catch (Exception ex)
@@ -183,6 +190,7 @@ public partial class CategoryTaggerViewModel(
         finally
         {
             IsRunning = false;
+            IsIndeterminate = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
             _executionLock.Release();
@@ -200,7 +208,13 @@ public partial class CategoryTaggerViewModel(
     [RelayCommand]
     private void Cancel()
     {
-        _cancellationTokenSource?.Cancel();
+        try
+        {
+            _cancellationTokenSource?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
