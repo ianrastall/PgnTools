@@ -20,6 +20,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private const int BufferSize = 65536;
     private const int MinGamesThreshold = 6;
     private const double MinGamesPerPlayer = 0.6;
+    private const int ProgressGameInterval = 500;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(200);
 
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
@@ -90,7 +92,7 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             Directory.CreateDirectory(outputDirectory);
         }
 
-        var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken);
+        var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken).ConfigureAwait(false);
 
         var categories = stats
             .Select(kv => (Event: kv.Key, Category: kv.Value.CalculateCategory()))
@@ -99,46 +101,49 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
         try
         {
-            await using var outputStream = new FileStream(
+            var processedGames = 0L;
+            var firstOutput = true;
+            var lastProgressReport = DateTime.UtcNow;
+
+            await using (var outputStream = new FileStream(
                 tempOutputPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-
-            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-
-            var processedGames = 0L;
-            var firstOutput = true;
-
-            await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: false))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                processedGames++;
-
-                if (game.Headers.TryGetHeaderValue("Event", out var eventName) &&
-                    categories.TryGetValue(eventName, out var category))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken)
+                                   .ConfigureAwait(false))
                 {
-                    game.Headers["EventCategory"] = category.ToString();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    processedGames++;
+
+                    var tournamentKey = BuildTournamentKey(game.Headers);
+                    if (!string.IsNullOrWhiteSpace(tournamentKey) &&
+                        categories.TryGetValue(tournamentKey, out var category))
+                    {
+                        game.Headers["EventCategory"] = category.ToString();
+                    }
+
+                    if (!firstOutput)
+                    {
+                        await writer.WriteLineAsync().ConfigureAwait(false);
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
+                    firstOutput = false;
+
+                    if (totalGames > 0 && ShouldReportProgress(processedGames, ref lastProgressReport))
+                    {
+                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        progress?.Report(percent);
+                    }
                 }
 
-                if (!firstOutput)
-                {
-                    await writer.WriteLineAsync();
-                }
-
-                await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
-                firstOutput = false;
-
-                if (totalGames > 0)
-                {
-                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
-                    progress?.Report(percent);
-                }
+                await writer.FlushAsync().ConfigureAwait(false);
             }
-
-            await writer.FlushAsync();
 
             FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
@@ -167,20 +172,22 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
         var stats = new Dictionary<string, TournamentData>(StringComparer.OrdinalIgnoreCase);
         var totalGames = 0L;
 
-        await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, cancellationToken))
+        await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, readMoveText: false, cancellationToken)
+                           .ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
             totalGames++;
 
-            if (!game.Headers.TryGetHeaderValue("Event", out var eventName) || string.IsNullOrWhiteSpace(eventName))
+            var tournamentKey = BuildTournamentKey(game.Headers);
+            if (string.IsNullOrWhiteSpace(tournamentKey))
             {
                 continue;
             }
 
-            if (!stats.TryGetValue(eventName, out var data))
+            if (!stats.TryGetValue(tournamentKey, out var data))
             {
                 data = new TournamentData();
-                stats[eventName] = data;
+                stats[tournamentKey] = data;
             }
 
             data.GameCount++;
@@ -210,16 +217,76 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private static bool TryParseElo(IReadOnlyDictionary<string, string> headers, string key, out int rating)
     {
         rating = 0;
-        return headers.TryGetHeaderValue(key, out var value) &&
-               int.TryParse(value, out rating) &&
-               rating > 0;
+        if (!headers.TryGetHeaderValue(key, out var value) || string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var span = value.AsSpan().Trim();
+        var length = 0;
+        while (length < span.Length && char.IsDigit(span[length]))
+        {
+            length++;
+        }
+
+        if (length == 0)
+        {
+            return false;
+        }
+
+        return int.TryParse(span[..length], out rating) && rating > 0;
     }
 
     private static void TryAddRating(TournamentData data, string player, int rating)
     {
-        if (!data.PlayerRatings.TryGetValue(player, out var current) || rating > current)
+        if (!data.PlayerRatings.ContainsKey(player))
         {
             data.PlayerRatings[player] = rating;
         }
+    }
+
+    private static string BuildTournamentKey(IReadOnlyDictionary<string, string> headers)
+    {
+        var eventName = headers.GetHeaderValueOrDefault("Event", string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(eventName))
+        {
+            return string.Empty;
+        }
+
+        var site = headers.GetHeaderValueOrDefault("Site", string.Empty).Trim();
+        var eventDate = headers.GetHeaderValueOrDefault("EventDate", string.Empty).Trim();
+        var date = headers.GetHeaderValueOrDefault("Date", string.Empty).Trim();
+        var section = headers.GetHeaderValueOrDefault("Section", string.Empty).Trim();
+        var stage = headers.GetHeaderValueOrDefault("Stage", string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(eventDate))
+        {
+            eventDate = date;
+        }
+
+        return string.Join(" | ",
+            eventName,
+            site,
+            eventDate,
+            section,
+            stage);
+    }
+
+    private static bool ShouldReportProgress(long processedGames, ref DateTime lastReportUtc)
+    {
+        if (processedGames % ProgressGameInterval == 0)
+        {
+            lastReportUtc = DateTime.UtcNow;
+            return true;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc >= ProgressTimeInterval)
+        {
+            lastReportUtc = now;
+            return true;
+        }
+
+        return false;
     }
 }

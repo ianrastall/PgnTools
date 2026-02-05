@@ -21,6 +21,18 @@ public partial class PgnReader
         string filePath,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        await foreach (var game in ReadGamesAsync(filePath, readMoveText: true, cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            yield return game;
+        }
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        string filePath,
+        bool readMoveText,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
         await using var stream = new FileStream(
             filePath,
             FileMode.Open,
@@ -29,7 +41,7 @@ public partial class PgnReader
             BufferSize,
             FileOptions.SequentialScan | FileOptions.Asynchronous);
 
-        await foreach (var game in ReadGamesAsync(stream, cancellationToken).ConfigureAwait(false))
+        await foreach (var game in ReadGamesAsync(stream, readMoveText, cancellationToken).ConfigureAwait(false))
         {
             yield return game;
         }
@@ -37,6 +49,18 @@ public partial class PgnReader
 
     public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
         Stream stream,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var game in ReadGamesAsync(stream, readMoveText: true, cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            yield return game;
+        }
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        Stream stream,
+        bool readMoveText,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var reader = new StreamReader(
@@ -47,7 +71,7 @@ public partial class PgnReader
             leaveOpen: true);
 
         var currentGame = (PgnGame?)null;
-        var moveText = new StringBuilder(2048);
+        var moveText = readMoveText ? new StringBuilder(2048) : null;
         var inMoveSection = false;
         var inBraceComment = false;
         var inLineComment = false;
@@ -89,6 +113,7 @@ public partial class PgnReader
                             lineBuffer.AsSpan(0, lineLength),
                             ref currentGame,
                             moveText,
+                            readMoveText,
                             ref inMoveSection,
                             ref inBraceComment,
                             ref inLineComment,
@@ -112,6 +137,7 @@ public partial class PgnReader
                             lineBuffer.AsSpan(0, lineLength),
                             ref currentGame,
                             moveText,
+                            readMoveText,
                             ref inMoveSection,
                             ref inBraceComment,
                             ref inLineComment,
@@ -152,6 +178,7 @@ public partial class PgnReader
                     lineBuffer.AsSpan(0, lineLength),
                     ref currentGame,
                     moveText,
+                    readMoveText,
                     ref inMoveSection,
                     ref inBraceComment,
                     ref inLineComment,
@@ -165,9 +192,13 @@ public partial class PgnReader
                 }
             }
 
-            if (currentGame != null && (currentGame.Headers.Count > 0 || moveText.Length > 0))
+            if (currentGame != null &&
+                (currentGame.Headers.Count > 0 || (moveText?.Length ?? 0) > 0))
             {
-                currentGame.MoveText = moveText.ToString().Trim();
+                if (moveText != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                }
                 yield return currentGame;
             }
         }
@@ -180,7 +211,8 @@ public partial class PgnReader
     private static bool TryReadLine(
         ReadOnlySpan<char> lineSpan,
         ref PgnGame? currentGame,
-        StringBuilder moveText,
+        StringBuilder? moveText,
+        bool readMoveText,
         ref bool inMoveSection,
         ref bool inBraceComment,
         ref bool inLineComment,
@@ -192,16 +224,9 @@ public partial class PgnReader
         {
             if (inMoveSection)
             {
-                if (inBraceComment || variationDepth > 0)
+                if (readMoveText && moveText != null)
                 {
                     moveText.AppendLine();
-                }
-                else if (currentGame != null)
-                {
-                    currentGame.MoveText = moveText.ToString().Trim();
-                    completedGame = currentGame;
-                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
-                    return true;
                 }
             }
 
@@ -214,16 +239,9 @@ public partial class PgnReader
         {
             if (inMoveSection)
             {
-                if (inBraceComment || variationDepth > 0)
+                if (readMoveText && moveText != null)
                 {
                     moveText.AppendLine();
-                }
-                else if (currentGame != null)
-                {
-                    currentGame.MoveText = moveText.ToString().Trim();
-                    completedGame = currentGame;
-                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
-                    return true;
                 }
             }
 
@@ -238,10 +256,16 @@ public partial class PgnReader
             {
                 if (inMoveSection && currentGame != null)
                 {
-                    currentGame.MoveText = moveText.ToString().Trim();
+                    if (readMoveText && moveText != null)
+                    {
+                        currentGame.MoveText = moveText.ToString().Trim();
+                    }
                     completedGame = currentGame;
                     currentGame = new PgnGame();
-                    moveText.Clear();
+                    if (readMoveText && moveText != null)
+                    {
+                        moveText.Clear();
+                    }
                     inMoveSection = false;
                     inBraceComment = false;
                     inLineComment = false;
@@ -253,6 +277,10 @@ public partial class PgnReader
                 }
 
                 currentGame.Headers[tagKey] = UnescapePgnString(rawValue);
+                if (!ContainsHeaderKey(currentGame.HeaderOrder, tagKey))
+                {
+                    currentGame.HeaderOrder.Add(tagKey);
+                }
                 return completedGame != null;
             }
         }
@@ -260,12 +288,15 @@ public partial class PgnReader
         inMoveSection = true;
         currentGame ??= new PgnGame();
 
-        if (moveText.Length > 0)
+        if (readMoveText && moveText != null && moveText.Length > 0)
         {
             moveText.AppendLine();
         }
 
-        moveText.Append(TrimEndSpan(lineSpan));
+        if (readMoveText && moveText != null)
+        {
+            moveText.Append(TrimEndSpan(lineSpan));
+        }
         UpdateMoveState(lineSpan, ref inBraceComment, ref inLineComment, ref variationDepth);
         UpdateMoveState(LineBreak, ref inBraceComment, ref inLineComment, ref variationDepth);
         return false;
@@ -388,18 +419,35 @@ public partial class PgnReader
 
     private static void ResetState(
         ref PgnGame? currentGame,
-        StringBuilder moveText,
+        StringBuilder? moveText,
+        bool readMoveText,
         ref bool inMoveSection,
         ref bool inBraceComment,
         ref bool inLineComment,
         ref int variationDepth)
     {
         currentGame = null;
-        moveText.Clear();
+        if (readMoveText && moveText != null)
+        {
+            moveText.Clear();
+        }
         inMoveSection = false;
         inBraceComment = false;
         inLineComment = false;
         variationDepth = 0;
+    }
+
+    private static bool ContainsHeaderKey(List<string> order, string key)
+    {
+        for (var i = 0; i < order.Count; i++)
+        {
+            if (string.Equals(order[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static ReadOnlySpan<char> TrimSpan(ReadOnlySpan<char> span)

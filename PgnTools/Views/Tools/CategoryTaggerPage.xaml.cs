@@ -27,6 +27,7 @@ public sealed partial class CategoryTaggerPage : Page
             if (ViewModel.IsRunning)
             {
                 ViewModel.CancelCommand.Execute(null);
+                ViewModel.DisposeWhenIdle();
             }
             else
             {

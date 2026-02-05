@@ -1,0 +1,1858 @@
+# Context Dump: Category Tagger
+# Date: 2026-02-05 04:35:43
+# File Count: 11
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var filter in fileTypeFilters)
+        {
+            picker.FileTypeFilter.Add(filter);
+        }
+
+        if (fileTypeFilters.Length == 0)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var filter in fileTypeFilters)
+        {
+            picker.FileTypeFilter.Add(filter);
+        }
+
+        if (fileTypeFilters.Length == 0)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var choice in fileTypeChoices)
+        {
+            picker.FileTypeChoices.Add(choice.Key, choice.Value);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var extensions in fileTypeChoices.Values)
+            {
+                if (extensions.Count == 0)
+                {
+                    continue;
+                }
+
+                var extension = extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Models\PgnGame.cs =====
+namespace PgnTools.Models;
+
+/// <summary>
+/// Represents a single PGN game with headers and move text.
+/// </summary>
+public sealed class PgnGame(Dictionary<string, string>? headers = null, string? moveText = null)
+{
+    public Dictionary<string, string> Headers { get; } = headers ??
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    public string MoveText { get; set; } = moveText ?? string.Empty;
+}
+===== END: PgnTools\Models\PgnGame.cs =====
+
+===== BEGIN: PgnTools\Services\CategoryTaggerService.cs =====
+using System.Text;
+using PgnTools.Helpers;
+
+namespace PgnTools.Services;
+
+public interface ICategoryTaggerService
+{
+    Task TagCategoriesAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Tags tournaments with a computed FIDE event category based on average Elo.
+/// </summary>
+public sealed class CategoryTaggerService : ICategoryTaggerService
+{
+    private const int BufferSize = 65536;
+    private const int MinGamesThreshold = 6;
+    private const double MinGamesPerPlayer = 0.6;
+
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    private sealed class TournamentData
+    {
+        public HashSet<string> Players { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> PlayerRatings { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int GameCount { get; set; }
+
+        public int? CalculateCategory()
+        {
+            if (GameCount < MinGamesThreshold) return null;
+            if (Players.Count < 2) return null;
+
+            var avgGamesPerPlayer = (2.0 * GameCount) / Players.Count;
+            if (avgGamesPerPlayer < MinGamesPerPlayer) return null;
+
+            var validRatings = PlayerRatings.Values.Where(r => r > 0).ToList();
+            if (validRatings.Count == 0) return null;
+
+            var avgRating = validRatings.Average();
+            if (avgRating < 2251) return null;
+
+            return 1 + (int)Math.Floor((avgRating - 2251) / 25.0);
+        }
+    }
+
+    public CategoryTaggerService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    public async Task TagCategoriesAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
+        var inputFullPath = Path.GetFullPath(inputFilePath);
+        var outputFullPath = Path.GetFullPath(outputFilePath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (!File.Exists(inputFullPath))
+        {
+            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+        }
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Input and output files must be different.");
+        }
+
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken);
+
+        var categories = stats
+            .Select(kv => (Event: kv.Key, Category: kv.Value.CalculateCategory()))
+            .Where(x => x.Category.HasValue)
+            .ToDictionary(x => x.Event, x => x.Category!.Value, StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            await using var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous);
+
+            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+
+            var processedGames = 0L;
+            var firstOutput = true;
+
+            await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                processedGames++;
+
+                if (game.Headers.TryGetHeaderValue("Event", out var eventName) &&
+                    categories.TryGetValue(eventName, out var category))
+                {
+                    game.Headers["EventCategory"] = category.ToString();
+                }
+
+                if (!firstOutput)
+                {
+                    await writer.WriteLineAsync();
+                }
+
+                await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                firstOutput = false;
+
+                if (totalGames > 0)
+                {
+                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                    progress?.Report(percent);
+                }
+            }
+
+            await writer.FlushAsync();
+
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            progress?.Report(100);
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<(Dictionary<string, TournamentData> Stats, long TotalGames)> AnalyzeStatsAsync(
+        string inputFilePath,
+        CancellationToken cancellationToken)
+    {
+        var stats = new Dictionary<string, TournamentData>(StringComparer.OrdinalIgnoreCase);
+        var totalGames = 0L;
+
+        await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            totalGames++;
+
+            if (!game.Headers.TryGetHeaderValue("Event", out var eventName) || string.IsNullOrWhiteSpace(eventName))
+            {
+                continue;
+            }
+
+            if (!stats.TryGetValue(eventName, out var data))
+            {
+                data = new TournamentData();
+                stats[eventName] = data;
+            }
+
+            data.GameCount++;
+
+            if (game.Headers.TryGetHeaderValue("White", out var white) && !string.IsNullOrWhiteSpace(white))
+            {
+                data.Players.Add(white);
+                if (TryParseElo(game.Headers, "WhiteElo", out var rating))
+                {
+                    TryAddRating(data, white, rating);
+                }
+            }
+
+            if (game.Headers.TryGetHeaderValue("Black", out var black) && !string.IsNullOrWhiteSpace(black))
+            {
+                data.Players.Add(black);
+                if (TryParseElo(game.Headers, "BlackElo", out var rating))
+                {
+                    TryAddRating(data, black, rating);
+                }
+            }
+        }
+
+        return (stats, totalGames);
+    }
+
+    private static bool TryParseElo(IReadOnlyDictionary<string, string> headers, string key, out int rating)
+    {
+        rating = 0;
+        return headers.TryGetHeaderValue(key, out var value) &&
+               int.TryParse(value, out rating) &&
+               rating > 0;
+    }
+
+    private static void TryAddRating(TournamentData data, string player, int rating)
+    {
+        if (!data.PlayerRatings.TryGetValue(player, out var current) || rating > current)
+        {
+            data.PlayerRatings[player] = rating;
+        }
+    }
+}
+===== END: PgnTools\Services\CategoryTaggerService.cs =====
+
+===== BEGIN: PgnTools\Services\PgnReader.cs =====
+using System.Buffers;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace PgnTools.Services;
+
+/// <summary>
+/// Streamed PGN reader that yields games one at a time.
+/// </summary>
+public partial class PgnReader
+{
+    private const int BufferSize = 262144;
+    private const int MaxLineLength = 262144;
+
+    public PgnReader()
+    {
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        string filePath,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            FileOptions.SequentialScan | FileOptions.Asynchronous);
+
+        await foreach (var game in ReadGamesAsync(stream, cancellationToken).ConfigureAwait(false))
+        {
+            yield return game;
+        }
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        Stream stream,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var reader = new StreamReader(
+            stream,
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: true,
+            bufferSize: BufferSize,
+            leaveOpen: true);
+
+        var currentGame = (PgnGame?)null;
+        var moveText = new StringBuilder(2048);
+        var inMoveSection = false;
+        var inBraceComment = false;
+        var inLineComment = false;
+        var variationDepth = 0;
+        var lineBuffer = ArrayPool<char>.Shared.Rent(256);
+        var lineLength = 0;
+        var pendingCarriageReturn = false;
+        var buffer = new char[BufferSize];
+
+        try
+        {
+            while (true)
+            {
+                var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (var i = 0; i < read; i++)
+                {
+                    var c = buffer[i];
+
+                    if (pendingCarriageReturn)
+                    {
+                        pendingCarriageReturn = false;
+                        if (c == '\n')
+                        {
+                            continue;
+                        }
+                    }
+
+                    if (c == '\r')
+                    {
+                        if (TryReadLine(
+                            lineBuffer.AsSpan(0, lineLength),
+                            ref currentGame,
+                            moveText,
+                            ref inMoveSection,
+                            ref inBraceComment,
+                            ref inLineComment,
+                            ref variationDepth,
+                            out var completed))
+                        {
+                            if (completed != null)
+                            {
+                                yield return completed;
+                            }
+                        }
+
+                        lineLength = 0;
+                        pendingCarriageReturn = true;
+                        continue;
+                    }
+
+                    if (c == '\n')
+                    {
+                        if (TryReadLine(
+                            lineBuffer.AsSpan(0, lineLength),
+                            ref currentGame,
+                            moveText,
+                            ref inMoveSection,
+                            ref inBraceComment,
+                            ref inLineComment,
+                            ref variationDepth,
+                            out var completed))
+                        {
+                            if (completed != null)
+                            {
+                                yield return completed;
+                            }
+                        }
+
+                        lineLength = 0;
+                        continue;
+                    }
+
+                    if (lineLength >= MaxLineLength)
+                    {
+                        throw new InvalidDataException($"PGN line exceeds {MaxLineLength} characters.");
+                    }
+
+                    if (lineLength == lineBuffer.Length)
+                    {
+                        var nextSize = Math.Max(lineBuffer.Length * 2, lineLength + 1);
+                        var nextBuffer = ArrayPool<char>.Shared.Rent(nextSize);
+                        lineBuffer.AsSpan(0, lineLength).CopyTo(nextBuffer);
+                        ArrayPool<char>.Shared.Return(lineBuffer);
+                        lineBuffer = nextBuffer;
+                    }
+
+                    lineBuffer[lineLength++] = c;
+                }
+            }
+
+            if (lineLength > 0)
+            {
+                if (TryReadLine(
+                    lineBuffer.AsSpan(0, lineLength),
+                    ref currentGame,
+                    moveText,
+                    ref inMoveSection,
+                    ref inBraceComment,
+                    ref inLineComment,
+                    ref variationDepth,
+                    out var completed))
+                {
+                    if (completed != null)
+                    {
+                        yield return completed;
+                    }
+                }
+            }
+
+            if (currentGame != null && (currentGame.Headers.Count > 0 || moveText.Length > 0))
+            {
+                currentGame.MoveText = moveText.ToString().Trim();
+                yield return currentGame;
+            }
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(lineBuffer);
+        }
+    }
+
+    private static bool TryReadLine(
+        ReadOnlySpan<char> lineSpan,
+        ref PgnGame? currentGame,
+        StringBuilder moveText,
+        ref bool inMoveSection,
+        ref bool inBraceComment,
+        ref bool inLineComment,
+        ref int variationDepth,
+        out PgnGame? completedGame)
+    {
+        completedGame = null;
+        if (lineSpan.Length == 0)
+        {
+            if (inMoveSection)
+            {
+                if (inBraceComment || variationDepth > 0)
+                {
+                    moveText.AppendLine();
+                }
+                else if (currentGame != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                    completedGame = currentGame;
+                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        var trimmedSpan = TrimSpan(lineSpan);
+
+        if (trimmedSpan.Length == 0)
+        {
+            if (inMoveSection)
+            {
+                if (inBraceComment || variationDepth > 0)
+                {
+                    moveText.AppendLine();
+                }
+                else if (currentGame != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                    completedGame = currentGame;
+                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Only treat as tag line when we're not deep in comments/variations.
+        var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
+        if (isTagLine)
+        {
+            if (TryParseHeaderLine(trimmedSpan, out var tagKey, out var rawValue))
+            {
+                if (inMoveSection && currentGame != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                    completedGame = currentGame;
+                    currentGame = new PgnGame();
+                    moveText.Clear();
+                    inMoveSection = false;
+                    inBraceComment = false;
+                    inLineComment = false;
+                    variationDepth = 0;
+                }
+                else
+                {
+                    currentGame ??= new PgnGame();
+                }
+
+                currentGame.Headers[tagKey] = UnescapePgnString(rawValue);
+                return completedGame != null;
+            }
+        }
+
+        inMoveSection = true;
+        currentGame ??= new PgnGame();
+
+        if (moveText.Length > 0)
+        {
+            moveText.AppendLine();
+        }
+
+        moveText.Append(TrimEndSpan(lineSpan));
+        UpdateMoveState(lineSpan, ref inBraceComment, ref inLineComment, ref variationDepth);
+        UpdateMoveState(LineBreak, ref inBraceComment, ref inLineComment, ref variationDepth);
+        return false;
+    }
+
+    private static string UnescapePgnString(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        if (value.IndexOf('\\') < 0)
+        {
+            return value;
+        }
+
+        var length = 0;
+        var escaping = false;
+
+        foreach (var c in value)
+        {
+            if (!escaping && c == '\\')
+            {
+                escaping = true;
+                continue;
+            }
+
+            length++;
+            escaping = false;
+        }
+
+        if (escaping)
+        {
+            length++;
+        }
+
+        return string.Create(length, value, (span, state) =>
+        {
+            var idx = 0;
+            var isEscaping = false;
+
+            foreach (var c in state)
+            {
+                if (isEscaping)
+                {
+                    span[idx++] = c;
+                    isEscaping = false;
+                    continue;
+                }
+
+                if (c == '\\')
+                {
+                    isEscaping = true;
+                    continue;
+                }
+
+                span[idx++] = c;
+            }
+
+            if (isEscaping && idx < span.Length)
+            {
+                span[idx] = '\\';
+            }
+        });
+    }
+
+    private static void UpdateMoveState(
+        ReadOnlySpan<char> text,
+        ref bool inBraceComment,
+        ref bool inLineComment,
+        ref int variationDepth)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (inLineComment)
+            {
+                if (c == '\n' || c == '\r')
+                {
+                    inLineComment = false;
+                    continue;
+                }
+
+                continue;
+            }
+
+            if (inBraceComment)
+            {
+                if (c == '}')
+                {
+                    inBraceComment = false;
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '{':
+                    inBraceComment = true;
+                    break;
+                case ';':
+                    inLineComment = true;
+                    break;
+                case '(':
+                    variationDepth++;
+                    break;
+                case ')':
+                    if (variationDepth > 0)
+                    {
+                        variationDepth--;
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    private static void ResetState(
+        ref PgnGame? currentGame,
+        StringBuilder moveText,
+        ref bool inMoveSection,
+        ref bool inBraceComment,
+        ref bool inLineComment,
+        ref int variationDepth)
+    {
+        currentGame = null;
+        moveText.Clear();
+        inMoveSection = false;
+        inBraceComment = false;
+        inLineComment = false;
+        variationDepth = 0;
+    }
+
+    private static ReadOnlySpan<char> TrimSpan(ReadOnlySpan<char> span)
+    {
+        var start = 0;
+        while (start < span.Length && char.IsWhiteSpace(span[start]))
+        {
+            start++;
+        }
+
+        var end = span.Length - 1;
+        while (end >= start && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return start > end ? ReadOnlySpan<char>.Empty : span.Slice(start, end - start + 1);
+    }
+
+    private static ReadOnlySpan<char> TrimEndSpan(ReadOnlySpan<char> span)
+    {
+        var end = span.Length - 1;
+        while (end >= 0 && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
+    }
+
+    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
+    {
+        return TryParseHeaderFallback(line, out key, out rawValue);
+    }
+
+    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
+    {
+        key = string.Empty;
+        rawValue = string.Empty;
+
+        var span = line.Trim();
+        if (span.Length < 2 || span[0] != '[')
+        {
+            return false;
+        }
+
+        span = span[1..].TrimStart();
+        if (span.Length == 0)
+        {
+            return false;
+        }
+
+        var nameLength = 0;
+        while (nameLength < span.Length && !char.IsWhiteSpace(span[nameLength]) && span[nameLength] != ']')
+        {
+            nameLength++;
+        }
+
+        if (nameLength == 0)
+        {
+            return false;
+        }
+
+        var nameSpan = span[..nameLength];
+        span = span[nameLength..].TrimStart();
+        if (span.Length == 0)
+        {
+            key = nameSpan.ToString();
+            rawValue = string.Empty;
+            return true;
+        }
+
+        if (span[0] == '"' || span[0] == '\'')
+        {
+            var quote = span[0];
+            var builder = new StringBuilder();
+            var escaping = false;
+
+            for (var i = 1; i < span.Length; i++)
+            {
+                var c = span[i];
+
+                if (escaping)
+                {
+                    builder.Append(c);
+                    escaping = false;
+                    continue;
+                }
+
+                if (c == '\\')
+                {
+                    builder.Append(c);
+                    escaping = true;
+                    continue;
+                }
+
+                if (c == quote)
+                {
+                    key = nameSpan.ToString();
+                    rawValue = builder.ToString();
+                    return true;
+                }
+
+                builder.Append(c);
+            }
+
+            key = nameSpan.ToString();
+            rawValue = builder.ToString();
+            return true;
+        }
+
+        var closingIndex = span.IndexOf(']');
+        if (closingIndex < 0)
+        {
+            closingIndex = span.Length;
+        }
+
+        key = nameSpan.ToString();
+        rawValue = span[..closingIndex].ToString().TrimEnd();
+        return true;
+    }
+
+    private static readonly char[] LineBreak = ['\n'];
+}
+===== END: PgnTools\Services\PgnReader.cs =====
+
+===== BEGIN: PgnTools\Services\PgnWriter.cs =====
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace PgnTools.Services;
+
+/// <summary>
+/// Streamed PGN writer that serializes games to a stream.
+/// </summary>
+public class PgnWriter
+{
+    private const int BufferSize = 65536;
+
+    public async Task WriteGamesAsync(
+        string filePath,
+        IAsyncEnumerable<PgnGame> games,
+        CancellationToken cancellationToken = default)
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            BufferSize,
+            FileOptions.SequentialScan | FileOptions.Asynchronous);
+
+        await WriteGamesAsync(stream, games, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task WriteGamesAsync(
+        Stream stream,
+        IAsyncEnumerable<PgnGame> games,
+        CancellationToken cancellationToken = default)
+    {
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+        var firstGame = true;
+
+        await foreach (var game in games.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!firstGame)
+            {
+                await writer.WriteLineAsync().ConfigureAwait(false);
+            }
+
+            await WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
+            firstGame = false;
+        }
+
+        await writer.FlushAsync().ConfigureAwait(false);
+    }
+
+    public async Task WriteGameAsync(
+        StreamWriter writer,
+        PgnGame game,
+        CancellationToken cancellationToken = default)
+    {
+        foreach (var header in game.Headers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // PGN requires escaping backslashes and quotes within tag values.
+            var escapedValue = header.Value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            await writer.WriteLineAsync($"[{header.Key} \"{escapedValue}\"]").ConfigureAwait(false);
+        }
+
+        if (game.Headers.Count > 0)
+        {
+            await writer.WriteLineAsync().ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(game.MoveText))
+        {
+            var normalized = NormalizeLineEndings(game.MoveText);
+            foreach (var line in WordWrap(normalized, 80))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.WriteLineAsync(line).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static string NormalizeLineEndings(string text)
+    {
+        return text.Replace("\r\n", "\n").Replace('\r', '\n');
+    }
+
+    private static IEnumerable<string> WordWrap(string text, int maxLineLength)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return Array.Empty<string>();
+        }
+
+        var results = new List<string>();
+        var span = text.AsSpan();
+        var lineStart = 0;
+
+        for (var i = 0; i <= span.Length; i++)
+        {
+            if (i < span.Length && span[i] != '\n')
+            {
+                continue;
+            }
+
+            var line = span.Slice(lineStart, i - lineStart);
+            line = TrimEndSpan(line);
+
+            if (line.Length == 0)
+            {
+                results.Add(string.Empty);
+            }
+            else
+            {
+                var remaining = line;
+                while (remaining.Length > maxLineLength)
+                {
+                    var window = remaining[..maxLineLength];
+                    var breakIndex = window.LastIndexOf(' ');
+                    if (breakIndex <= 0)
+                    {
+                        results.Add(window.ToString());
+                        remaining = TrimStartSpan(remaining[maxLineLength..]);
+                        continue;
+                    }
+
+                    results.Add(remaining[..breakIndex].ToString());
+                    remaining = TrimStartSpan(remaining[(breakIndex + 1)..]);
+                }
+
+                if (remaining.Length > 0)
+                {
+                    results.Add(remaining.ToString());
+                }
+            }
+
+            lineStart = i + 1;
+        }
+
+        return results;
+    }
+
+    private static ReadOnlySpan<char> TrimStartSpan(ReadOnlySpan<char> span)
+    {
+        var start = 0;
+        while (start < span.Length && char.IsWhiteSpace(span[start]))
+        {
+            start++;
+        }
+
+        return start == 0 ? span : span[start..];
+    }
+
+    private static ReadOnlySpan<char> TrimEndSpan(ReadOnlySpan<char> span)
+    {
+        var end = span.Length - 1;
+        while (end >= 0 && char.IsWhiteSpace(span[end]))
+        {
+            end--;
+        }
+
+        return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
+    }
+}
+===== END: PgnTools\Services\PgnWriter.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\CategoryTaggerViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Category Tagger tool.
+/// </summary>
+public partial class CategoryTaggerViewModel(
+    ICategoryTaggerService categoryTaggerService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly ICategoryTaggerService _categoryTaggerService = categoryTaggerService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(CategoryTaggerViewModel);
+
+    [ObservableProperty]
+    private string _inputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _inputFileName = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private double _progressValue;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select input and output PGN files";
+    public void Initialize()
+    {
+        Title = "Category Tagger";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectInputFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            InputFilePath = file.Path;
+            InputFileName = file.Name;
+            StatusMessage = $"Selected input: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
+                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_categorized.pgn";
+                OutputFilePath = Path.Combine(directory, suggestedName);
+                OutputFileName = Path.GetFileName(OutputFilePath);
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting input file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
+                ? "categorized.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_categorized.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file == null)
+            {
+                return;
+    }
+            OutputFilePath = file.Path;
+            OutputFileName = file.Name;
+            StatusMessage = $"Selected output: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var inputFullPath = Path.GetFullPath(InputFilePath);
+        var outputFullPath = Path.GetFullPath(OutputFilePath);
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "Input and output files must be different.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressValue = 0;
+            StatusMessage = "Analyzing tournaments...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<double>(p =>
+            {
+                ProgressValue = p;
+                StatusMessage = $"Tagging categories... {p:0}%";
+                StatusDetail = BuildProgressDetail(p);
+            });
+
+            await _categoryTaggerService.TagCategoriesAsync(
+                InputFilePath,
+                OutputFilePath,
+                progress,
+                _cancellationTokenSource.Token);
+
+            ProgressValue = 100;
+            StatusMessage = "Category tagging complete.";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100);
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Category tagging cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(InputFilePath) &&
+        !string.IsNullOrWhiteSpace(OutputFilePath) &&
+        File.Exists(InputFilePath);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+    partial void OnInputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
+        {
+            InputFileName = Path.GetFileName(InputFilePath);
+    }
+        else
+        {
+            InputFilePath = string.Empty;
+            InputFileName = string.Empty;
+    }
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\CategoryTaggerViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\CategoryTaggerPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.CategoryTaggerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Category Tagger" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Group games by Event, compute FIDE tournament category from average Elo, and add an EventCategory tag."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\CategoryTaggerPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\CategoryTaggerPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Category Tagger tool.
+/// </summary>
+public sealed partial class CategoryTaggerPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public CategoryTaggerViewModel ViewModel { get; }
+
+    public CategoryTaggerPage() : this(App.GetService<CategoryTaggerViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public CategoryTaggerPage(CategoryTaggerViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+
+===== END: PgnTools\Views\Tools\CategoryTaggerPage.xaml.cs =====
+

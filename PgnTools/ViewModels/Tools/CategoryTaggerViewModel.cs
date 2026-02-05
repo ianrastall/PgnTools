@@ -16,6 +16,7 @@ public partial class CategoryTaggerViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeWhenIdle;
     private const string SettingsPrefix = nameof(CategoryTaggerViewModel);
 
     [ObservableProperty]
@@ -186,6 +187,7 @@ public partial class CategoryTaggerViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+            TryDisposeWhenIdle();
     }
     }
 
@@ -227,6 +229,31 @@ public partial class CategoryTaggerViewModel(
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
         _executionLock.Dispose();
+    }
+
+    public void DisposeWhenIdle()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (IsRunning)
+        {
+            _disposeWhenIdle = true;
+            return;
+        }
+
+        Dispose();
+    }
+
+    private void TryDisposeWhenIdle()
+    {
+        if (_disposeWhenIdle && !_disposed && !IsRunning)
+        {
+            _disposeWhenIdle = false;
+            Dispose();
+        }
     }
     private void LoadState()
     {

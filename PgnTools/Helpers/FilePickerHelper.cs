@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 
@@ -34,12 +36,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -71,12 +75,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -110,21 +116,24 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
         foreach (var choice in fileTypeChoices)
         {
-            picker.FileTypeChoices.Add(choice.Key, choice.Value);
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
         }
 
         if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
         {
-            foreach (var extensions in fileTypeChoices.Values)
+            foreach (var choice in normalizedChoices)
             {
-                if (extensions.Count == 0)
-                {
-                    continue;
-                }
-
-                var extension = extensions[0];
+                var extension = choice.Extensions[0];
                 if (!string.IsNullOrWhiteSpace(extension))
                 {
                     picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
@@ -167,6 +176,30 @@ public static class FilePickerHelper
         if (windowHandle == 0)
         {
             throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
         }
     }
 }

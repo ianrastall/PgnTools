@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -55,13 +56,44 @@ public class PgnWriter
         PgnGame game,
         CancellationToken cancellationToken = default)
     {
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (game.HeaderOrder.Count > 0)
+        {
+            foreach (var key in game.HeaderOrder)
+            {
+                if (!game.Headers.TryGetValue(key, out var value))
+                {
+                    continue;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var escapedValue = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                await writer.WriteLineAsync($"[{key} \"{escapedValue}\"]").ConfigureAwait(false);
+                emitted.Add(key);
+            }
+        }
+
+        var remaining = new List<KeyValuePair<string, string>>();
         foreach (var header in game.Headers)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (!emitted.Contains(header.Key))
+            {
+                remaining.Add(header);
+            }
+        }
 
-            // PGN requires escaping backslashes and quotes within tag values.
-            var escapedValue = header.Value.Replace("\\", "\\\\").Replace("\"", "\\\"");
-            await writer.WriteLineAsync($"[{header.Key} \"{escapedValue}\"]").ConfigureAwait(false);
+        if (remaining.Count > 0)
+        {
+            remaining.Sort(static (left, right) =>
+                StringComparer.OrdinalIgnoreCase.Compare(left.Key, right.Key));
+
+            foreach (var header in remaining)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var escapedValue = header.Value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                await writer.WriteLineAsync($"[{header.Key} \"{escapedValue}\"]").ConfigureAwait(false);
+            }
         }
 
         if (game.Headers.Count > 0)
@@ -109,6 +141,10 @@ public class PgnWriter
             if (line.Length == 0)
             {
                 results.Add(string.Empty);
+            }
+            else if (line.IndexOf(';') >= 0)
+            {
+                results.Add(line.ToString());
             }
             else
             {
