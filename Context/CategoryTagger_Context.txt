@@ -1,8 +1,10 @@
 # Context Dump: Category Tagger
-# Date: 2026-02-05 04:35:43
+# Date: 2026-02-05 10:00:19
 # File Count: 11
 
 ===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 
@@ -39,12 +41,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -76,12 +80,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -115,21 +121,24 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
         foreach (var choice in fileTypeChoices)
         {
-            picker.FileTypeChoices.Add(choice.Key, choice.Value);
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
         }
 
         if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
         {
-            foreach (var extensions in fileTypeChoices.Values)
+            foreach (var choice in normalizedChoices)
             {
-                if (extensions.Count == 0)
-                {
-                    continue;
-                }
-
-                var extension = extensions[0];
+                var extension = choice.Extensions[0];
                 if (!string.IsNullOrWhiteSpace(extension))
                 {
                     picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
@@ -172,6 +181,30 @@ public static class FilePickerHelper
         if (windowHandle == 0)
         {
             throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
         }
     }
 }
@@ -514,6 +547,9 @@ public static class PgnHeaderExtensions
 ===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
 
 ===== BEGIN: PgnTools\Models\PgnGame.cs =====
+using System.Collections.Generic;
+using System.Linq;
+
 namespace PgnTools.Models;
 
 /// <summary>
@@ -523,6 +559,9 @@ public sealed class PgnGame(Dictionary<string, string>? headers = null, string? 
 {
     public Dictionary<string, string> Headers { get; } = headers ??
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    public List<string> HeaderOrder { get; } = headers?.Keys.ToList() ??
+        new List<string>();
 
     public string MoveText { get; set; } = moveText ?? string.Empty;
 }
@@ -551,6 +590,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private const int BufferSize = 65536;
     private const int MinGamesThreshold = 6;
     private const double MinGamesPerPlayer = 0.6;
+    private const int ProgressGameInterval = 500;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(200);
 
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
@@ -621,7 +662,7 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             Directory.CreateDirectory(outputDirectory);
         }
 
-        var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken);
+        var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken).ConfigureAwait(false);
 
         var categories = stats
             .Select(kv => (Event: kv.Key, Category: kv.Value.CalculateCategory()))
@@ -630,46 +671,49 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
         try
         {
-            await using var outputStream = new FileStream(
+            var processedGames = 0L;
+            var firstOutput = true;
+            var lastProgressReport = DateTime.UtcNow;
+
+            await using (var outputStream = new FileStream(
                 tempOutputPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-
-            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-
-            var processedGames = 0L;
-            var firstOutput = true;
-
-            await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: false))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                processedGames++;
-
-                if (game.Headers.TryGetHeaderValue("Event", out var eventName) &&
-                    categories.TryGetValue(eventName, out var category))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken)
+                                   .ConfigureAwait(false))
                 {
-                    game.Headers["EventCategory"] = category.ToString();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    processedGames++;
+
+                    var tournamentKey = BuildTournamentKey(game.Headers);
+                    if (!string.IsNullOrWhiteSpace(tournamentKey) &&
+                        categories.TryGetValue(tournamentKey, out var category))
+                    {
+                        game.Headers["EventCategory"] = category.ToString();
+                    }
+
+                    if (!firstOutput)
+                    {
+                        await writer.WriteLineAsync().ConfigureAwait(false);
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
+                    firstOutput = false;
+
+                    if (totalGames > 0 && ShouldReportProgress(processedGames, ref lastProgressReport))
+                    {
+                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        progress?.Report(percent);
+                    }
                 }
 
-                if (!firstOutput)
-                {
-                    await writer.WriteLineAsync();
-                }
-
-                await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
-                firstOutput = false;
-
-                if (totalGames > 0)
-                {
-                    var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
-                    progress?.Report(percent);
-                }
+                await writer.FlushAsync().ConfigureAwait(false);
             }
-
-            await writer.FlushAsync();
 
             FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
             progress?.Report(100);
@@ -698,20 +742,22 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
         var stats = new Dictionary<string, TournamentData>(StringComparer.OrdinalIgnoreCase);
         var totalGames = 0L;
 
-        await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, cancellationToken))
+        await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, readMoveText: false, cancellationToken)
+                           .ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
             totalGames++;
 
-            if (!game.Headers.TryGetHeaderValue("Event", out var eventName) || string.IsNullOrWhiteSpace(eventName))
+            var tournamentKey = BuildTournamentKey(game.Headers);
+            if (string.IsNullOrWhiteSpace(tournamentKey))
             {
                 continue;
             }
 
-            if (!stats.TryGetValue(eventName, out var data))
+            if (!stats.TryGetValue(tournamentKey, out var data))
             {
                 data = new TournamentData();
-                stats[eventName] = data;
+                stats[tournamentKey] = data;
             }
 
             data.GameCount++;
@@ -741,17 +787,77 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private static bool TryParseElo(IReadOnlyDictionary<string, string> headers, string key, out int rating)
     {
         rating = 0;
-        return headers.TryGetHeaderValue(key, out var value) &&
-               int.TryParse(value, out rating) &&
-               rating > 0;
+        if (!headers.TryGetHeaderValue(key, out var value) || string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var span = value.AsSpan().Trim();
+        var length = 0;
+        while (length < span.Length && char.IsDigit(span[length]))
+        {
+            length++;
+        }
+
+        if (length == 0)
+        {
+            return false;
+        }
+
+        return int.TryParse(span[..length], out rating) && rating > 0;
     }
 
     private static void TryAddRating(TournamentData data, string player, int rating)
     {
-        if (!data.PlayerRatings.TryGetValue(player, out var current) || rating > current)
+        if (!data.PlayerRatings.ContainsKey(player))
         {
             data.PlayerRatings[player] = rating;
         }
+    }
+
+    private static string BuildTournamentKey(IReadOnlyDictionary<string, string> headers)
+    {
+        var eventName = headers.GetHeaderValueOrDefault("Event", string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(eventName))
+        {
+            return string.Empty;
+        }
+
+        var site = headers.GetHeaderValueOrDefault("Site", string.Empty).Trim();
+        var eventDate = headers.GetHeaderValueOrDefault("EventDate", string.Empty).Trim();
+        var date = headers.GetHeaderValueOrDefault("Date", string.Empty).Trim();
+        var section = headers.GetHeaderValueOrDefault("Section", string.Empty).Trim();
+        var stage = headers.GetHeaderValueOrDefault("Stage", string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(eventDate))
+        {
+            eventDate = date;
+        }
+
+        return string.Join(" | ",
+            eventName,
+            site,
+            eventDate,
+            section,
+            stage);
+    }
+
+    private static bool ShouldReportProgress(long processedGames, ref DateTime lastReportUtc)
+    {
+        if (processedGames % ProgressGameInterval == 0)
+        {
+            lastReportUtc = DateTime.UtcNow;
+            return true;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc >= ProgressTimeInterval)
+        {
+            lastReportUtc = now;
+            return true;
+        }
+
+        return false;
     }
 }
 ===== END: PgnTools\Services\CategoryTaggerService.cs =====
@@ -780,6 +886,18 @@ public partial class PgnReader
         string filePath,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        await foreach (var game in ReadGamesAsync(filePath, readMoveText: true, cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            yield return game;
+        }
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        string filePath,
+        bool readMoveText,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
         await using var stream = new FileStream(
             filePath,
             FileMode.Open,
@@ -788,7 +906,7 @@ public partial class PgnReader
             BufferSize,
             FileOptions.SequentialScan | FileOptions.Asynchronous);
 
-        await foreach (var game in ReadGamesAsync(stream, cancellationToken).ConfigureAwait(false))
+        await foreach (var game in ReadGamesAsync(stream, readMoveText, cancellationToken).ConfigureAwait(false))
         {
             yield return game;
         }
@@ -796,6 +914,18 @@ public partial class PgnReader
 
     public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
         Stream stream,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var game in ReadGamesAsync(stream, readMoveText: true, cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            yield return game;
+        }
+    }
+
+    public async IAsyncEnumerable<PgnGame> ReadGamesAsync(
+        Stream stream,
+        bool readMoveText,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         using var reader = new StreamReader(
@@ -806,7 +936,7 @@ public partial class PgnReader
             leaveOpen: true);
 
         var currentGame = (PgnGame?)null;
-        var moveText = new StringBuilder(2048);
+        var moveText = readMoveText ? new StringBuilder(2048) : null;
         var inMoveSection = false;
         var inBraceComment = false;
         var inLineComment = false;
@@ -848,6 +978,7 @@ public partial class PgnReader
                             lineBuffer.AsSpan(0, lineLength),
                             ref currentGame,
                             moveText,
+                            readMoveText,
                             ref inMoveSection,
                             ref inBraceComment,
                             ref inLineComment,
@@ -871,6 +1002,7 @@ public partial class PgnReader
                             lineBuffer.AsSpan(0, lineLength),
                             ref currentGame,
                             moveText,
+                            readMoveText,
                             ref inMoveSection,
                             ref inBraceComment,
                             ref inLineComment,
@@ -911,6 +1043,7 @@ public partial class PgnReader
                     lineBuffer.AsSpan(0, lineLength),
                     ref currentGame,
                     moveText,
+                    readMoveText,
                     ref inMoveSection,
                     ref inBraceComment,
                     ref inLineComment,
@@ -924,9 +1057,13 @@ public partial class PgnReader
                 }
             }
 
-            if (currentGame != null && (currentGame.Headers.Count > 0 || moveText.Length > 0))
+            if (currentGame != null &&
+                (currentGame.Headers.Count > 0 || (moveText?.Length ?? 0) > 0))
             {
-                currentGame.MoveText = moveText.ToString().Trim();
+                if (moveText != null)
+                {
+                    currentGame.MoveText = moveText.ToString().Trim();
+                }
                 yield return currentGame;
             }
         }
@@ -939,7 +1076,8 @@ public partial class PgnReader
     private static bool TryReadLine(
         ReadOnlySpan<char> lineSpan,
         ref PgnGame? currentGame,
-        StringBuilder moveText,
+        StringBuilder? moveText,
+        bool readMoveText,
         ref bool inMoveSection,
         ref bool inBraceComment,
         ref bool inLineComment,
@@ -951,16 +1089,9 @@ public partial class PgnReader
         {
             if (inMoveSection)
             {
-                if (inBraceComment || variationDepth > 0)
+                if (readMoveText && moveText != null)
                 {
                     moveText.AppendLine();
-                }
-                else if (currentGame != null)
-                {
-                    currentGame.MoveText = moveText.ToString().Trim();
-                    completedGame = currentGame;
-                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
-                    return true;
                 }
             }
 
@@ -973,16 +1104,9 @@ public partial class PgnReader
         {
             if (inMoveSection)
             {
-                if (inBraceComment || variationDepth > 0)
+                if (readMoveText && moveText != null)
                 {
                     moveText.AppendLine();
-                }
-                else if (currentGame != null)
-                {
-                    currentGame.MoveText = moveText.ToString().Trim();
-                    completedGame = currentGame;
-                    ResetState(ref currentGame, moveText, ref inMoveSection, ref inBraceComment, ref inLineComment, ref variationDepth);
-                    return true;
                 }
             }
 
@@ -997,10 +1121,16 @@ public partial class PgnReader
             {
                 if (inMoveSection && currentGame != null)
                 {
-                    currentGame.MoveText = moveText.ToString().Trim();
+                    if (readMoveText && moveText != null)
+                    {
+                        currentGame.MoveText = moveText.ToString().Trim();
+                    }
                     completedGame = currentGame;
                     currentGame = new PgnGame();
-                    moveText.Clear();
+                    if (readMoveText && moveText != null)
+                    {
+                        moveText.Clear();
+                    }
                     inMoveSection = false;
                     inBraceComment = false;
                     inLineComment = false;
@@ -1012,6 +1142,10 @@ public partial class PgnReader
                 }
 
                 currentGame.Headers[tagKey] = UnescapePgnString(rawValue);
+                if (!ContainsHeaderKey(currentGame.HeaderOrder, tagKey))
+                {
+                    currentGame.HeaderOrder.Add(tagKey);
+                }
                 return completedGame != null;
             }
         }
@@ -1019,12 +1153,15 @@ public partial class PgnReader
         inMoveSection = true;
         currentGame ??= new PgnGame();
 
-        if (moveText.Length > 0)
+        if (readMoveText && moveText != null && moveText.Length > 0)
         {
             moveText.AppendLine();
         }
 
-        moveText.Append(TrimEndSpan(lineSpan));
+        if (readMoveText && moveText != null)
+        {
+            moveText.Append(TrimEndSpan(lineSpan));
+        }
         UpdateMoveState(lineSpan, ref inBraceComment, ref inLineComment, ref variationDepth);
         UpdateMoveState(LineBreak, ref inBraceComment, ref inLineComment, ref variationDepth);
         return false;
@@ -1147,18 +1284,35 @@ public partial class PgnReader
 
     private static void ResetState(
         ref PgnGame? currentGame,
-        StringBuilder moveText,
+        StringBuilder? moveText,
+        bool readMoveText,
         ref bool inMoveSection,
         ref bool inBraceComment,
         ref bool inLineComment,
         ref int variationDepth)
     {
         currentGame = null;
-        moveText.Clear();
+        if (readMoveText && moveText != null)
+        {
+            moveText.Clear();
+        }
         inMoveSection = false;
         inBraceComment = false;
         inLineComment = false;
         variationDepth = 0;
+    }
+
+    private static bool ContainsHeaderKey(List<string> order, string key)
+    {
+        for (var i = 0; i < order.Count; i++)
+        {
+            if (string.Equals(order[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static ReadOnlySpan<char> TrimSpan(ReadOnlySpan<char> span)
@@ -1286,6 +1440,7 @@ public partial class PgnReader
 ===== END: PgnTools\Services\PgnReader.cs =====
 
 ===== BEGIN: PgnTools\Services\PgnWriter.cs =====
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -1343,13 +1498,44 @@ public class PgnWriter
         PgnGame game,
         CancellationToken cancellationToken = default)
     {
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (game.HeaderOrder.Count > 0)
+        {
+            foreach (var key in game.HeaderOrder)
+            {
+                if (!game.Headers.TryGetValue(key, out var value))
+                {
+                    continue;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var escapedValue = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                await writer.WriteLineAsync($"[{key} \"{escapedValue}\"]").ConfigureAwait(false);
+                emitted.Add(key);
+            }
+        }
+
+        var remaining = new List<KeyValuePair<string, string>>();
         foreach (var header in game.Headers)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (!emitted.Contains(header.Key))
+            {
+                remaining.Add(header);
+            }
+        }
 
-            // PGN requires escaping backslashes and quotes within tag values.
-            var escapedValue = header.Value.Replace("\\", "\\\\").Replace("\"", "\\\"");
-            await writer.WriteLineAsync($"[{header.Key} \"{escapedValue}\"]").ConfigureAwait(false);
+        if (remaining.Count > 0)
+        {
+            remaining.Sort(static (left, right) =>
+                StringComparer.OrdinalIgnoreCase.Compare(left.Key, right.Key));
+
+            foreach (var header in remaining)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var escapedValue = header.Value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                await writer.WriteLineAsync($"[{header.Key} \"{escapedValue}\"]").ConfigureAwait(false);
+            }
         }
 
         if (game.Headers.Count > 0)
@@ -1397,6 +1583,10 @@ public class PgnWriter
             if (line.Length == 0)
             {
                 results.Add(string.Empty);
+            }
+            else if (line.IndexOf(';') >= 0)
+            {
+                results.Add(line.ToString());
             }
             else
             {
@@ -1471,6 +1661,7 @@ public partial class CategoryTaggerViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeWhenIdle;
     private const string SettingsPrefix = nameof(CategoryTaggerViewModel);
 
     [ObservableProperty]
@@ -1641,6 +1832,7 @@ public partial class CategoryTaggerViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+            TryDisposeWhenIdle();
     }
     }
 
@@ -1682,6 +1874,31 @@ public partial class CategoryTaggerViewModel(
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
         _executionLock.Dispose();
+    }
+
+    public void DisposeWhenIdle()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (IsRunning)
+        {
+            _disposeWhenIdle = true;
+            return;
+        }
+
+        Dispose();
+    }
+
+    private void TryDisposeWhenIdle()
+    {
+        if (_disposeWhenIdle && !_disposed && !IsRunning)
+        {
+            _disposeWhenIdle = false;
+            Dispose();
+        }
     }
     private void LoadState()
     {
@@ -1844,6 +2061,7 @@ public sealed partial class CategoryTaggerPage : Page
             if (ViewModel.IsRunning)
             {
                 ViewModel.CancelCommand.Execute(null);
+                ViewModel.DisposeWhenIdle();
             }
             else
             {

@@ -108,8 +108,8 @@
       </div>
 
       <div class="tabs" role="tablist" aria-label="Views">
-        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="true" type="button">Combiner</button>
-        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="false" type="button">Prompt Builder</button>
+        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="true" type="button">Prompt Builder</button>
+        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="false" type="button">Combiner</button>
       </div>
 
       <span class="pill" id="status">Ready</span>
@@ -120,7 +120,7 @@
     <!-- ===================== -->
     <!-- VIEW: COMBINER         -->
     <!-- ===================== -->
-    <section id="viewCombiner" class="view active" aria-labelledby="tabCombiner">
+    <section id="viewCombiner" class="view" aria-labelledby="tabCombiner">
       <section class="card">
         <div class="inline">
           <div>
@@ -142,15 +142,11 @@
         </div>
       </section>
 
-      <section class="row cols2" style="margin-top: 12px;">
+      <section class="row" style="margin-top: 12px;">
         <div class="card">
           <label for="task">Task / Prompt</label>
           <textarea id="task">Please examine this collected codebase and fix the listed problems.</textarea>
           <div class="note">You can edit this per session if needed.</div>
-        </div>
-        <div class="card">
-          <label for="context">Context (optional)</label>
-          <textarea id="context" placeholder="Paste shared code/context (or a short summary)."></textarea>
         </div>
       </section>
 
@@ -179,7 +175,7 @@
     <!-- ===================== -->
     <!-- VIEW: PROMPT BUILDER   -->
     <!-- ===================== -->
-    <section id="viewBuilder" class="view" aria-labelledby="tabBuilder">
+    <section id="viewBuilder" class="view active" aria-labelledby="tabBuilder">
       <section class="card">
         <div style="display:flex; align-items: baseline; justify-content: space-between; gap: 10px;">
           <div>
@@ -196,29 +192,45 @@
           <div class="note">This becomes the top of your single paste-ready prompt.</div>
         </div>
         <div class="card">
-          <label for="pb_options">Options</label>
-          <div class="small muted" style="margin-bottom:8px;">How the codebase text is embedded in the prompt.</div>
-          <div style="display:grid; gap:10px;">
-            <label style="font-weight:800;">
-              <input id="pb_wrap" type="checkbox" checked />
-              Wrap codebase in triple backticks
-            </label>
-            <label style="font-weight:800;">
-              <input id="pb_tag" type="checkbox" checked />
-              Include a "CODEBASE" header line
-            </label>
-            <label style="font-weight:800;">
-              <input id="pb_hint" type="checkbox" />
-              Include "LANGUAGE: " hint line (optional)
-            </label>
-            <input id="pb_lang" type="text" placeholder="Language hint (e.g., csharp, python, js) — used only if enabled above" />
+          <div class="twoLine">
+            <label for="pb_context" style="margin:0;">Context / Reference (optional)</label>
+            <button id="pb_contextOpenBtn" type="button" class="miniBtn">Open</button>
           </div>
+          <textarea id="pb_context" style="min-height:170px" placeholder="Open or paste your MD instructions here..."></textarea>
+          <div class="small muted" id="pb_contextFileName">No file loaded.</div>
+          <input id="pb_contextFile" type="file" accept=".md,.txt" style="display:none" />
         </div>
       </section>
 
       <section class="card" style="margin-top: 12px;">
-        <label for="pb_code">Collected codebase text (paste file contents here)</label>
-        <textarea id="pb_code" style="min-height:240px" placeholder="Paste the contents of your collected codebase text file here..."></textarea>
+        <label for="pb_options">Options</label>
+        <div class="small muted" style="margin-bottom:8px;">How the codebase text is embedded in the prompt.</div>
+        <div style="display:grid; gap:10px;">
+          <label style="font-weight:800;">
+            <input id="pb_wrap" type="checkbox" checked />
+            Wrap codebase in triple backticks
+          </label>
+          <label style="font-weight:800;">
+            <input id="pb_tag" type="checkbox" checked />
+            Include a "CODEBASE" header line
+          </label>
+          <label style="font-weight:800;">
+            <input id="pb_hint" type="checkbox" />
+            Include "LANGUAGE: " hint line (optional)
+          </label>
+          <input id="pb_lang" type="text" placeholder="Language hint (e.g., csharp, python, js) — used only if enabled above" />
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 12px;">
+        <div class="twoLine">
+          <label for="pb_code" style="margin:0;">Collected codebase text</label>
+          <button id="pb_codeOpenBtn" type="button" class="miniBtn">Open</button>
+        </div>
+        <textarea id="pb_code" style="min-height:240px" placeholder="Open or paste the contents of your collected codebase text file here..."></textarea>
+        <div class="small muted" id="pb_codeFileName">No file loaded.</div>
+        <input id="pb_codeFile" type="file" accept=".txt,.md" style="display:none" />
+        <div class="note">Open loads the file directly and avoids clipboard permission prompts.</div>
       </section>
 
       <section class="card out" style="margin-top: 12px;">
@@ -327,6 +339,14 @@
     const t = (s || "").trim();
     return t ? t.split(/\s+/).length : 0;
   }
+  function formatBytes(bytes) {
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    const kb = b / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(1)} MB`;
+  }
 
   // ===== Clipboard helpers =====
   async function clipboardReadText() {
@@ -358,11 +378,36 @@
     if (!ok) throw new Error("Legacy copy failed.");
   }
 
+  function wireFileOpen(buttonId, inputId, targetId, nameId, label) {
+    const btn = el(buttonId);
+    const input = el(inputId);
+    if (!btn || !input) return;
+
+    btn.addEventListener("click", () => input.click());
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const ta = el(targetId);
+        if (ta) ta.value = text;
+        const nameEl = nameId ? el(nameId) : null;
+        if (nameEl) nameEl.textContent = `Loaded: ${file.name} (${formatBytes(file.size)})`;
+        setStatus("Loaded");
+        toast("Loaded", `${file.name} inserted into ${label}.`);
+      } catch (e) {
+        setStatus("Load failed");
+        toast("Load failed", String(e?.message || e), "error");
+      } finally {
+        input.value = "";
+      }
+    });
+  }
+
   // ===== Combiner output builders =====
   function buildMarkdown() {
     const title = el("title").value.trim();
     const task = el("task").value.trim();
-    const context = el("context").value.trim();
 
     const parts = [];
     parts.push(`# LLM Round-up${title ? ` — ${title}` : ""}`);
@@ -374,14 +419,6 @@
       parts.push("## Task / Prompt");
       parts.push("");
       parts.push(task);
-      parts.push("");
-    }
-    if (context) {
-      parts.push("## Context");
-      parts.push("");
-      parts.push("```");
-      parts.push(normalizeNewlines(context));
-      parts.push("```");
       parts.push("");
     }
 
@@ -414,7 +451,6 @@
   function buildPlainText() {
     const title = el("title").value.trim();
     const task = el("task").value.trim();
-    const context = el("context").value.trim();
 
     const parts = [];
     parts.push(`LLM ROUND-UP${title ? ` — ${title}` : ""}`);
@@ -424,11 +460,6 @@
     if (task) {
       parts.push("=== TASK / PROMPT ===");
       parts.push(normalizeNewlines(task));
-      parts.push("");
-    }
-    if (context) {
-      parts.push("=== CONTEXT ===");
-      parts.push(normalizeNewlines(context));
       parts.push("");
     }
 
@@ -510,7 +541,6 @@
       if (c) c.textContent = "0 words • 0 chars";
     }
     // Keep task default; user asked for pre-entered text.
-    el("context").value = "";
     el("title").value = "";
     el("filename").value = "";
     el("output").value = "";
@@ -611,6 +641,7 @@
   // ===== Prompt Builder =====
   function pbBuild() {
     const task = el("pb_task").value.trim();
+    const context = el("pb_context").value.trim();
     const code = el("pb_code").value.trim();
     const wrap = el("pb_wrap").checked;
     const tag = el("pb_tag").checked;
@@ -619,6 +650,11 @@
 
     const parts = [];
     if (task) parts.push(task);
+    if (context) {
+      if (parts.length) parts.push("");
+      parts.push("CONTEXT:");
+      parts.push(normalizeNewlines(context));
+    }
     parts.push("");
 
     if (tag) parts.push("CODEBASE:");
@@ -654,8 +690,13 @@
 
   function pbClear() {
     // Keep default task; clear rest.
+    el("pb_context").value = "";
     el("pb_code").value = "";
     el("pb_output").value = "";
+    const cName = el("pb_contextFileName");
+    if (cName) cName.textContent = "No file loaded.";
+    const codeName = el("pb_codeFileName");
+    if (codeName) codeName.textContent = "No file loaded.";
     setStatus("Cleared");
     toast("Cleared", "Prompt Builder cleared.");
   }
@@ -663,6 +704,8 @@
   el("pb_buildBtn").addEventListener("click", pbBuild);
   el("pb_copyBtn").addEventListener("click", pbCopy);
   el("pb_clearBtn").addEventListener("click", pbClear);
+  wireFileOpen("pb_contextOpenBtn", "pb_contextFile", "pb_context", "pb_contextFileName", "Context");
+  wireFileOpen("pb_codeOpenBtn", "pb_codeFile", "pb_code", "pb_codeFileName", "Codebase");
 
   // Build on Ctrl+Enter in builder view
   document.addEventListener("keydown", (e) => {
