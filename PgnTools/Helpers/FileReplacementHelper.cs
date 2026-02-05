@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 using System.IO;
 
 namespace PgnTools.Helpers;
@@ -151,3 +152,4 @@ public static class FileReplacementHelper
             lastError);
     }
 }
+// PGNTOOLS-TABLEBASES-END

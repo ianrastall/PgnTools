@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 using System.Buffers;
 using System.Diagnostics;
 using System.Net.Http;
@@ -447,3 +448,4 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         }
     }
 }
+// PGNTOOLS-TABLEBASES-END

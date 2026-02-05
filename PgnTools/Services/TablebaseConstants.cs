@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 using System.Collections.Frozen;
 using System.Diagnostics;
 using Windows.ApplicationModel;
@@ -111,3 +112,4 @@ public static class TablebaseConstants
         return map.ToFrozenDictionary(pair => pair.Key, pair => pair.Value.ToArray());
     }
 }
+// PGNTOOLS-TABLEBASES-END

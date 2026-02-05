@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 using System.IO;
 using Windows.Storage;
 
@@ -44,3 +45,4 @@ public static class FileValidationHelper
         }
     }
 }
+// PGNTOOLS-TABLEBASES-END

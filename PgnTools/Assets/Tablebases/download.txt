@@ -1,3 +1,4 @@
+# PGNTOOLS-TABLEBASES-BEGIN
 https://tablebase.lichess.ovh/tables/standard/3-4-5-wdl/KPvK.rtbw
 https://tablebase.lichess.ovh/tables/standard/3-4-5-dtz/KPvK.rtbz
 https://tablebase.lichess.ovh/tables/standard/3-4-5-wdl/KNvK.rtbw
@@ -3020,3 +3021,4 @@ https://tablebase.lichess.ovh/tables/standard/7/6v1_pawnless/KQQQQRvK.rtbw
 https://tablebase.lichess.ovh/tables/standard/7/6v1_pawnless/KQQQQRvK.rtbz
 https://tablebase.lichess.ovh/tables/standard/7/6v1_pawnless/KQQQQQvK.rtbw
 https://tablebase.lichess.ovh/tables/standard/7/6v1_pawnless/KQQQQQvK.rtbz
+# PGNTOOLS-TABLEBASES-END

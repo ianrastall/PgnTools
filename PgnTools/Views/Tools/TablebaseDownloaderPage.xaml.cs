@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 namespace PgnTools.Views.Tools;
 
 /// <summary>
@@ -28,3 +29,4 @@ public sealed partial class TablebaseDownloaderPage : Page
         }
     }
 }
+// PGNTOOLS-TABLEBASES-END

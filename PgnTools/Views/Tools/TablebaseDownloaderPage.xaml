@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- PGNTOOLS-TABLEBASES-BEGIN -->
 <Page
     x:Class="PgnTools.Views.Tools.TablebaseDownloaderPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -94,3 +95,4 @@
         </ScrollViewer>
     </Grid>
 </Page>
+<!-- PGNTOOLS-TABLEBASES-END -->

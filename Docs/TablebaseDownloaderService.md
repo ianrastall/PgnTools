@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-TABLEBASES-BEGIN -->
 ### `Docs/TablebaseDownloaderService.md`
 
 ```markdown
@@ -164,3 +165,4 @@ To add mirrors or new tablebases, modify `PgnTools/Assets/Tablebases/download.tx
 * **Parallelism:** Use `Parallel.ForEachAsync` to saturate bandwidth (currently sequential).
 * **Mirror Rotation:** Logic to switch domains if one fails (currently hardcoded to the specific URL in the text file).
 
+<!-- PGNTOOLS-TABLEBASES-END -->

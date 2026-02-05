@@ -1,3 +1,4 @@
+// PGNTOOLS-TABLEBASES-BEGIN
 using System.IO;
 
 namespace PgnTools.ViewModels.Tools;
@@ -426,3 +427,4 @@ public partial class TablebaseDownloaderViewModel(
         return $"{value:0.##} {units[unitIndex]}";
     }
 }
+// PGNTOOLS-TABLEBASES-END
