@@ -1,5 +1,4 @@
 using System.Net.Http;
-using System.Runtime.CompilerServices;
 using System.Text;
 using PgnTools.Helpers;
 using ZstdSharp;
@@ -22,7 +21,7 @@ public interface ILichessDbDownloaderService
 public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
 {
     private const int BufferSize = 65536;
-    private const double EstimatedCompressionRatio = 7.1;
+    private const long MinimumRequiredDiskSpaceBytes = 5L * 1024 * 1024 * 1024;
     private const int ProgressGameInterval = 5000;
     private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(750);
     private static readonly HttpClient HttpClient = CreateClient();
@@ -67,7 +66,8 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
             Directory.CreateDirectory(directory);
         }
 
-        await EnsureDiskSpaceAsync(url, outputFullPath, ct);
+        ct.ThrowIfCancellationRequested();
+        EnsureDiskSpace(outputFullPath);
 
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
@@ -174,33 +174,8 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
         }
     }
 
-    private async Task EnsureDiskSpaceAsync(string url, string outputPath, CancellationToken ct)
+    private static void EnsureDiskSpace(string outputPath)
     {
-        long? compressedSize = null;
-
-        try
-        {
-            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
-            using var headResponse = await HttpClient.SendAsync(headRequest, ct);
-            if (headResponse.IsSuccessStatusCode)
-            {
-                compressedSize = headResponse.Content.Headers.ContentLength;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            return;
-        }
-
-        if (!compressedSize.HasValue || compressedSize.Value <= 0)
-        {
-            return;
-        }
-
         var root = Path.GetPathRoot(outputPath);
         if (string.IsNullOrWhiteSpace(root))
         {
@@ -216,19 +191,14 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
                 return;
             }
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
         catch
         {
             return;
         }
 
-        var estimatedUncompressed = (long)(compressedSize.Value * EstimatedCompressionRatio);
-        if (drive.AvailableFreeSpace < estimatedUncompressed)
+        if (drive.AvailableFreeSpace < MinimumRequiredDiskSpaceBytes)
         {
-            var neededGiB = estimatedUncompressed / 1024 / 1024 / 1024;
+            var neededGiB = MinimumRequiredDiskSpaceBytes / 1024 / 1024 / 1024;
             var availableGiB = drive.AvailableFreeSpace / 1024 / 1024 / 1024;
             throw new IOException(
                 $"Insufficient disk space. Need ~{neededGiB} GB, but only {availableGiB} GB available.");
@@ -244,10 +214,15 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
     {
         if (minElo > 0)
         {
-            if (!TryParseElo(game.Headers, out var whiteElo, out var blackElo) ||
-                (whiteElo < minElo && blackElo < minElo))
+            TryParseElo(game.Headers, out var whiteElo, out var blackElo);
+            if (whiteElo.HasValue || blackElo.HasValue)
             {
-                return false;
+                var whiteBelow = whiteElo is { } w && w < minElo;
+                var blackBelow = blackElo is { } b && b < minElo;
+                if (whiteBelow && blackBelow)
+                {
+                    return false;
+                }
             }
         }
 
@@ -269,14 +244,17 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
         return true;
     }
 
-    private static bool TryParseElo(
+    private static void TryParseElo(
         IReadOnlyDictionary<string, string> headers,
-        out int whiteElo,
-        out int blackElo)
+        out int? whiteElo,
+        out int? blackElo)
     {
-        var hasWhite = TryParsePositiveElo(headers, "WhiteElo", out whiteElo);
-        var hasBlack = TryParsePositiveElo(headers, "BlackElo", out blackElo);
-        return hasWhite || hasBlack;
+        whiteElo = TryParsePositiveElo(headers, "WhiteElo", out var white)
+            ? white
+            : null;
+        blackElo = TryParsePositiveElo(headers, "BlackElo", out var black)
+            ? black
+            : null;
     }
 
     private static bool TryParsePositiveElo(
@@ -367,9 +345,14 @@ public sealed class LichessDbDownloaderService : ILichessDbDownloaderService
             return false;
         }
 
+        if (gamesSeen % ProgressGameInterval == 0)
+        {
+            lastReportUtc = DateTime.UtcNow;
+            return true;
+        }
+
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval &&
-            gamesSeen % ProgressGameInterval != 0)
+        if (now - lastReportUtc < ProgressTimeInterval)
         {
             return false;
         }

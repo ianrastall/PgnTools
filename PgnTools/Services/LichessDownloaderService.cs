@@ -48,11 +48,13 @@ public class LichessDownloaderService : ILichessDownloaderService
             Directory.CreateDirectory(directory);
         }
 
-        var url = $"https://lichess.org/api/games/user/{username}";
+        var escapedUsername = Uri.EscapeDataString(username.Trim());
+        var uriBuilder = new UriBuilder($"https://lichess.org/api/games/user/{escapedUsername}");
         if (max.HasValue)
         {
-            url += $"?max={max.Value}";
+            uriBuilder.Query = $"max={max.Value}";
         }
+        var url = uriBuilder.Uri;
 
         try
         {

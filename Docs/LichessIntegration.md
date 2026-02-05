@@ -62,7 +62,7 @@ Filtering occurs post-parse but pre-write. This ensures that rejected games cons
 * **Logic:** Determines if a game meets the quality threshold.
 * **Condition:** `if (whiteElo < minElo && blackElo < minElo) return false;`
 * **Nuance:** This is an "OR" retention policy. If *either* player is above the threshold, the game is kept. A game is only rejected if *both* players are below the standard.
-* **Parsing:** Uses `int.TryParse` on headers `WhiteElo` and `BlackElo`. Missing or non-integer ratings treat the value as `0`.
+* **Parsing:** Uses `int.TryParse` on headers `WhiteElo` and `BlackElo`. Missing or non-integer ratings are treated as *missing* and do not force rejection.
 
 #### 2. Bullet Game Detection
 
@@ -87,12 +87,11 @@ Filtering occurs post-parse but pre-write. This ensures that rejected games cons
 
 #### Disk Space Pre-Validation
 
-Before initiating the download, the service performs a heuristic check to prevent disk filling disasters:
+Before initiating the download, the service performs a **permissive** check to avoid obvious disk‑full failures while still allowing highly filtered outputs:
 
-1. **Head Request:** Sends an HTTP `HEAD` request to get `Content-Length` (compressed size).
-2. **Estimation:** Applies a multiplier of `7.1` (Estimated Compression Ratio) to predict uncompressed size.
-3. **Drive Check:** Queries `DriveInfo.AvailableFreeSpace` for the target root.
-4. **Action:** Throws `IOException` if predicted size > available space.
+1. **Drive Check:** Queries `DriveInfo.AvailableFreeSpace` for the target root.
+2. **Minimum Free Space:** Requires at least ~5 GB free.
+3. **Action:** Throws `IOException` only if the minimum free space threshold is not met.
 
 #### Progress Throttling
 
@@ -140,5 +139,5 @@ The service implements a "Safe Save" pattern to prevent data corruption during n
 
 ### 2.3 Configuration
 
-* **Timeout:** Hardcoded to `60 seconds`. This is distinct from the 2-hour timeout used in the DB downloader, reflecting the expectation that API requests should be relatively quick.
+* **Timeout:** Uses `Timeout.InfiniteTimeSpan` and relies on the caller’s cancellation token for user‑initiated cancellation. This is distinct from the 2-hour timeout used in the DB downloader.
 * **User-Agent:** `PgnTools/1.0 (GitHub; PgnTools)`. This is required by Lichess API terms of service to prevent blocking.

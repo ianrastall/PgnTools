@@ -137,8 +137,10 @@ public partial class LichessDbDownloaderViewModel(
 
         if (!await _executionLock.WaitAsync(0))
         {
+            StatusMessage = "A download is already in progress.";
+            StatusSeverity = InfoBarSeverity.Warning;
             return;
-    }
+        }
         try
         {
             IsRunning = true;
@@ -245,7 +247,6 @@ public partial class LichessDbDownloaderViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
-        _executionLock.Dispose();
     }
     private void LoadState()
     {
@@ -395,7 +396,7 @@ public partial class LichessDbDownloaderViewModel(
         StatusMessage = progress.Stage switch
         {
             LichessDbProgressStage.Completed => "Finished successfully.",
-            LichessDbProgressStage.Filtering => "Filtering games...",
+            LichessDbProgressStage.Filtering => "Finalizing output...",
             _ => "Downloading archive..."
         };
 

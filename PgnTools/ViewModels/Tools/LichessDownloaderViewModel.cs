@@ -119,6 +119,8 @@ public partial class LichessDownloaderViewModel(
         }
         if (!await _executionLock.WaitAsync(0))
         {
+            StatusMessage = "A download is already in progress.";
+            StatusSeverity = InfoBarSeverity.Warning;
             return;
         }
         try
@@ -205,7 +207,6 @@ public partial class LichessDownloaderViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
-        _executionLock.Dispose();
     }
     private void LoadState()
     {
