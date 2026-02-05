@@ -168,7 +168,7 @@
       </section>
 
       <section class="small muted" style="margin-top: 12px;">
-        Clipboard note: Some browsers restrict “Paste” button access when opened as a local file. If Paste fails, click the box and use <code class="kbd">Ctrl</code>+<code class="kbd">V</code>.
+        Tip: Click a box and use <code class="kbd">Ctrl</code>+<code class="kbd">V</code> or right-click and Paste.
       </section>
     </section>
 
@@ -349,14 +349,6 @@
   }
 
   // ===== Clipboard helpers =====
-  async function clipboardReadText() {
-    // Some browsers block readText on file://; we’ll catch and fallback.
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      throw new Error("Clipboard readText not available in this browser/context.");
-    }
-    return await navigator.clipboard.readText();
-  }
-
   async function clipboardWriteText(text) {
     if (!navigator.clipboard || !navigator.clipboard.writeText) {
       // fallback
@@ -556,24 +548,6 @@
     c.textContent = `${countWords(v)} words • ${countChars(v)} chars`;
   }
 
-  async function pasteInto(id, label) {
-    try {
-      const text = await clipboardReadText();
-      const ta = el(`box_${id}`);
-      if (!ta) return;
-      ta.value = text;
-      updateCount(id);
-      setStatus("Pasted");
-      toast("Pasted", `Clipboard inserted into ${label}.`);
-      ta.focus();
-    } catch (e) {
-      setStatus("Paste blocked");
-      toast("Paste blocked", `Click the ${label} box and use Ctrl+V.`, "error");
-      const ta = el(`box_${id}`);
-      if (ta) ta.focus();
-    }
-  }
-
   // Build model boxes UI
   function initBoxes() {
     boxes.innerHTML = "";
@@ -591,15 +565,7 @@
       lab.setAttribute("for", `box_${m.id}`);
       lab.textContent = m.label;
 
-      const pasteBtn = document.createElement("button");
-      pasteBtn.type = "button";
-      pasteBtn.className = "miniBtn";
-      pasteBtn.textContent = "Paste";
-      pasteBtn.title = "Paste from clipboard into this box";
-      pasteBtn.addEventListener("click", () => pasteInto(m.id, m.label));
-
       left.appendChild(lab);
-      left.appendChild(pasteBtn);
 
       const cnt = document.createElement("div");
       cnt.className = "count";
