@@ -27,7 +27,7 @@ public sealed partial class TablebaseDownloaderPage : Page
         {
             if (ViewModel.IsRunning)
             {
-                ViewModel.Cancel();
+                ViewModel.CancelCommand.Execute(null);
             }
             else
             {
