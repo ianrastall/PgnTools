@@ -1,3 +1,4 @@
+// PGNTOOLS-LC0-BEGIN
 using System.Globalization;
 
 namespace PgnTools.ViewModels.Tools;
@@ -392,3 +393,4 @@ public partial class Lc0DownloaderViewModel(
 
 
 
+// PGNTOOLS-LC0-END

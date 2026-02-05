@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PGNTOOLS-LC0-BEGIN
 """
 Lc0 Match Downloader
 ====================
@@ -741,3 +742,4 @@ Examples:
 
 if __name__ == "__main__":
     main()
+# PGNTOOLS-LC0-END

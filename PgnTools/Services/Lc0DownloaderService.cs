@@ -1,3 +1,4 @@
+// PGNTOOLS-LC0-BEGIN
 using System.Formats.Tar;
 using System.Globalization;
 using System.IO.Compression;
@@ -756,3 +757,4 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         public bool NeedsSeparator { get; set; }
     }
 }
+// PGNTOOLS-LC0-END

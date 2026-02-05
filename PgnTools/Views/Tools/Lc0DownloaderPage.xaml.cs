@@ -1,3 +1,4 @@
+// PGNTOOLS-LC0-BEGIN
 namespace PgnTools.Views.Tools;
 
 /// <summary>
@@ -35,3 +36,4 @@ public sealed partial class Lc0DownloaderPage : Page
         }
     }
 }
+// PGNTOOLS-LC0-END

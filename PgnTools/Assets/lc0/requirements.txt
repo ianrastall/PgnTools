@@ -1,3 +1,4 @@
+# PGNTOOLS-LC0-BEGIN
 # Lc0 Match Downloader Dependencies
 
 # Async HTTP client
@@ -31,3 +32,4 @@ tqdm>=4.66.0
 
 # Optional: For enhanced date parsing
 python-dateutil>=2.8.0
+# PGNTOOLS-LC0-END

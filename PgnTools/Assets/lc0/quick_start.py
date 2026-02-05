@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PGNTOOLS-LC0-BEGIN
 """
 Quick Start Guide for Lc0 Match Downloader
 ===========================================
@@ -248,3 +249,4 @@ if __name__ == "__main__":
         print("\n\nExiting...\n")
     except Exception as e:
         print(f"\nError: {e}\n")
+# PGNTOOLS-LC0-END

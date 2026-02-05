@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-LC0-BEGIN -->
 # Lc0 Match Downloader - Project Overview
 
 ## What This Is
@@ -237,3 +238,4 @@ Use match_analyzer.py for:
 ---
 
 **Ready to Use**: All files are production-ready and fully functional. Simply install dependencies and run!
+<!-- PGNTOOLS-LC0-END -->

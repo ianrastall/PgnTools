@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-LC0-BEGIN -->
 # Lc0DownloaderService.md
 
 ## Service Specification: Lc0DownloaderService
@@ -452,3 +453,4 @@ Assert.NotEqual(HardwareBackend.CUDA, cudaResult.ActualBackend);
 | Privacy leakage via network telemetry | Lc0 has no telemetry; verify binary with `strings` command during validation |
 | Antivirus false positive (neural networks flagged as "suspicious") | Maintain whitelist of known AV products; provide SHA256 hash for manual verification |
 | Format confusion attacks (malicious .pb.gz) | Validate gzip structure + protobuf header before engine loading |
+<!-- PGNTOOLS-LC0-END -->

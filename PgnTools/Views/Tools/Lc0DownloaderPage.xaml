@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- PGNTOOLS-LC0-BEGIN -->
 <Page
     x:Class="PgnTools.Views.Tools.Lc0DownloaderPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -82,3 +83,4 @@
         </ScrollViewer>
     </Grid>
 </Page>
+<!-- PGNTOOLS-LC0-END -->

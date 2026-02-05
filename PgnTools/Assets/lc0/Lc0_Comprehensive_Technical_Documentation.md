@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-LC0-BEGIN -->
 # Leela Chess Zero: Comprehensive Technical Documentation
 # A Complete Analysis of Architecture, Data Pipelines, and Distributed Training Infrastructure
 
@@ -4466,3 +4467,4 @@ The existence of materialized views introduces a layer of "staleness." A game mi
 73. FAQ | Leela Chess Zero, accessed January 28, 2026, [https://lczero.org/play/faq/](https://lczero.org/play/faq/)
 74. Releases · LeelaChessZero/lczero-client \- GitHub, accessed January 28, 2026, [https://github.com/LeelaChessZero/lczero-client/releases](https://github.com/LeelaChessZero/lczero-client/releases)
 75. OpenBench Testing Framework, accessed January 28, 2026, [https://bench.lczero.org/test/303/](https://bench.lczero.org/test/303/)
+<!-- PGNTOOLS-LC0-END -->

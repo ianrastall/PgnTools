@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-LC0-BEGIN -->
 # **The Distributed Architecture of Leela Chess Zero: A Comprehensive Analysis of Client-Server Protocols and Worker Lifecycles**
 
 ## **1\. Introduction**
@@ -450,3 +451,4 @@ The lczero-client remains the unsung hero of the ecosystem, a silent worker tire
 [image1]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAgCAYAAAAmG5mqAAABJElEQVR4Xu2RP0uCURTGn6CgKIggkKClMRSapEWaQmxp7SME0dSQHyD8BtHQIg7S0uLg1tYi1uDS2BJNijQlRFA9z3uO1+trUK3hAz9e7nP+vPecC0w11Y8qkluyQ2bIAjkiHf/qHLTtgRZ5IwekTRpki7ySG7Ks5FlyRY5JjXw6p7A/SefuKQcb5J5skqYHqmTOk6Wy+4qjBPvdEnkmH2Q3pJoqsIK7lJ+YKl5M+Y8eu45NzSJT3dJ6h8V0taCMm3ux6ZLfI9nYLJA+bPhYWqUKzjDaWqIT8kJysQl7k/AGQ+n+GkidLjFaqbalJut+DsqTAew6StY8a2Q+Top1COu+kg58Jw1ShxX8SqvkAX8o6MKSxRPZHw9PSlsZcoHJd/h3+gKDYjz3nz0vXQAAAABJRU5ErkJggg==>
 
 [image2]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAhCAYAAADtR0oPAAAAv0lEQVR4XmNgGAWjgDZgFhD/R8J3gVgTiOcDcSUQMyKUQsA/ID7AANG4B4h/MUA0gtj8CGUIEIDGZwbiAiCWRxPHCYKA+By6IDYAcms4EF9jgPgBLwApTgDi00CsgiqFCUCKc4D4MBDLoMlhBcVAvAuIhdDEzRmweBxk+nYGTMUgcB2IXZAFDIH4NRBHA/F5BtTIA2EzhFIGBk4g3gjEZVC+BAMkomCKT0HF4YAViPWhNLIYyFYFBizJYRQMQQAAFbsg0kJlTh0AAAAASUVORK5CYII=>
+<!-- PGNTOOLS-LC0-END -->

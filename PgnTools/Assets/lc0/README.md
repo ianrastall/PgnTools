@@ -1,3 +1,4 @@
+<!-- PGNTOOLS-LC0-BEGIN -->
 # Lc0 Match Downloader
 
 A comprehensive Python tool for downloading, processing, and organizing **Leela Chess Zero (Lc0)** match data from the distributed training infrastructure.
@@ -324,3 +325,4 @@ For issues:
 1. Check `lc0_downloader.log`
 2. Review database with: `sqlite3 lc0_matches.db "SELECT * FROM matches LIMIT 10;"`
 3. Open an issue with log excerpts
+<!-- PGNTOOLS-LC0-END -->
