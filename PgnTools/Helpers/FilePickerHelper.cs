@@ -21,6 +21,7 @@ public static class FilePickerHelper
         string? settingsIdentifier,
         params string[] fileTypeFilters)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileOpenPicker();
 
         // Initialize with window handle for unpackaged apps
@@ -58,6 +59,7 @@ public static class FilePickerHelper
         string? settingsIdentifier,
         params string[] fileTypeFilters)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileOpenPicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -96,6 +98,7 @@ public static class FilePickerHelper
         Dictionary<string, IList<string>> fileTypeChoices,
         string? settingsIdentifier = null)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileSavePicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -112,6 +115,26 @@ public static class FilePickerHelper
             picker.FileTypeChoices.Add(choice.Key, choice.Value);
         }
 
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var extensions in fileTypeChoices.Values)
+            {
+                if (extensions.Count == 0)
+                {
+                    continue;
+                }
+
+                var extension = extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
         return await picker.PickSaveFileAsync();
     }
 
@@ -123,6 +146,7 @@ public static class FilePickerHelper
     /// <returns>The selected StorageFolder, or null if cancelled.</returns>
     public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FolderPicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -136,5 +160,13 @@ public static class FilePickerHelper
         }
 
         return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
     }
 }

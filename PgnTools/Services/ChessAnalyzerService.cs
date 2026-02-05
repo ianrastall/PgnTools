@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 using Chess;
 using PgnTools.Helpers;
 
@@ -45,7 +46,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
 
-    private readonly record struct PgnToken(string Text, bool IsMove, string? San);
+    private readonly record struct PgnToken(int Start, int Length, bool IsMove, string? San);
     private readonly record struct AnalyzedGameResult(string MoveText, EleganceScore? Elegance);
 
     public ChessAnalyzerService(PgnReader pgnReader, PgnWriter pgnWriter)
@@ -110,21 +111,14 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             Directory.CreateDirectory(outputDirectory);
         }
 
-        // Pass 1: count games for progress reporting
-        var totalGames = await CountGamesAsync(inputFullPath, cancellationToken);
-        if (totalGames == 0)
-        {
-            progress?.Report(new AnalyzerProgress(0, 0, 100));
-            return;
-        }
-
         try
         {
+            var totalGames = 0L;
             var processedGames = 0L;
             var analyzedGames = 0L;
             var failedGames = 0L;
             string? firstFailureMessage = null;
-            
+
             UciEngine? engine = null;
             var cancellationRegistration = default(CancellationTokenRegistration);
 
@@ -133,10 +127,11 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                 var newEngine = new UciEngine(engineFullPath);
                 try
                 {
-                    await newEngine.StartAsync(cancellationToken);
+                    await newEngine.StartAsync(cancellationToken).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(tablebasePath))
                     {
-                        await newEngine.SetOptionAsync("SyzygyPath", tablebasePath, cancellationToken);
+                        await newEngine.SetOptionAsync("SyzygyPath", tablebasePath, cancellationToken)
+                            .ConfigureAwait(false);
                     }
 
                     cancellationRegistration.Dispose();
@@ -152,6 +147,15 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             try
             {
+                await using var inputStream = new FileStream(
+                    inputFullPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    BufferSize,
+                    FileOptions.SequentialScan | FileOptions.Asynchronous);
+                var totalBytes = inputStream.CanSeek ? inputStream.Length : 0L;
+
                 await using (var outputStream = new FileStream(
                     tempOutputPath,
                     FileMode.Create,
@@ -161,22 +165,26 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     FileOptions.SequentialScan | FileOptions.Asynchronous))
                 using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
                 {
-                    engine = await StartEngineAsync();
+                    engine = await StartEngineAsync().ConfigureAwait(false);
+                    var needsReadyAfterNewGame = true;
 
                     var firstOutput = true;
                     progress?.Report(new AnalyzerProgress(0, totalGames, 0));
 
-                    await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                    await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken)
+                                       .ConfigureAwait(false))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         processedGames++;
+                        var currentEngine = engine ?? throw new InvalidOperationException("UCI engine is not initialized.");
+                        var waitForReady = needsReadyAfterNewGame;
 
                         try
                         {
                             await Task.Run(async () =>
                             {
-                                await engine.NewGameAsync(cancellationToken).ConfigureAwait(false);
-                                var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken)
+                                await currentEngine.NewGameAsync(cancellationToken, waitForReady).ConfigureAwait(false);
+                                var analysis = await AnalyzeGameAsync(game, currentEngine, depth, addEleganceTags, cancellationToken)
                                     .ConfigureAwait(false);
 
                                 game.MoveText = analysis.MoveText;
@@ -192,6 +200,11 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                                 }
                             }, cancellationToken).ConfigureAwait(false);
 
+                            if (waitForReady)
+                            {
+                                needsReadyAfterNewGame = false;
+                            }
+
                             analyzedGames++;
                         }
                         catch (OperationCanceledException)
@@ -203,10 +216,11 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                             failedGames++;
                             firstFailureMessage ??= $"Game #{processedGames}: {ex.GetType().Name}: {ex.Message}";
 
-                            if (engine.HasExited)
+                            if (engine != null && engine.HasExited)
                             {
                                 engine.Dispose();
-                                engine = await StartEngineAsync();
+                                engine = await StartEngineAsync().ConfigureAwait(false);
+                                needsReadyAfterNewGame = true;
                             }
 
                             // If analysis fails for a given game, preserve the original movetext
@@ -215,17 +229,19 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
                         if (!firstOutput)
                         {
-                            await writer.WriteLineAsync();
+                            await writer.WriteLineAsync().ConfigureAwait(false);
                         }
 
-                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
                         firstOutput = false;
 
-                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        var percent = totalBytes > 0 && inputStream.CanSeek
+                            ? Math.Clamp(inputStream.Position / (double)totalBytes * 100.0, 0, 100)
+                            : 0d;
                         progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
                     }
 
-                    await writer.FlushAsync();
+                    await writer.FlushAsync().ConfigureAwait(false);
                 }
 
                 if (analyzedGames == 0 && failedGames > 0)
@@ -296,7 +312,8 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         CancellationToken cancellationToken)
     {
         var board = CreateBoardFromHeaders(game.Headers);
-        var tokens = TokenizeMoveTextPreserving(game.MoveText);
+        var moveText = game.MoveText;
+        var tokens = TokenizeMoveTextPreserving(moveText);
 
         if (tokens.Count == 0 || tokens.TrueForAll(token => !token.IsMove))
         {
@@ -305,7 +322,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
         var builder = new StringBuilder(game.MoveText.Length + tokens.Count * 24);
         var fenBefore = board.ToFen();
-        var scoreBefore = await engine.AnalyzeAsync(fenBefore, depth, cancellationToken);
+        var scoreBefore = await engine.AnalyzeAsync(fenBefore, depth, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
         var metrics = addEleganceTags ? new RunningEleganceMetrics() : default;
@@ -320,22 +337,24 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var tokenSpan = moveText.AsSpan(token.Start, token.Length);
             if (!token.IsMove)
             {
-                builder.Append(token.Text);
+                builder.Append(tokenSpan);
                 continue;
             }
 
+            var tokenText = tokenSpan.ToString();
             if (string.IsNullOrWhiteSpace(token.San))
             {
-                throw new InvalidOperationException($"Unable to parse move token: {token.Text}");
+                throw new InvalidOperationException($"Unable to parse move token: {tokenText}");
             }
 
             var moverSide = board.Turn;
             if (!TryResolveMoveNotation(board, token.San, out var resolvedSan))
             {
                 throw new InvalidOperationException(
-                    $"Unsupported move notation '{token.San}' in token '{token.Text}'.");
+                    $"Unsupported move notation '{token.San}' in token '{tokenText}'.");
             }
 
             var hasCapture = resolvedSan.IndexOf('x') >= 0;
@@ -348,11 +367,11 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             if (!board.Move(resolvedSan))
             {
                 throw new InvalidOperationException(
-                    $"Failed to apply move '{resolvedSan}' parsed from token '{token.Text}'.");
+                    $"Failed to apply move '{resolvedSan}' parsed from token '{tokenText}'.");
             }
 
             var fenAfter = board.ToFen();
-            var scoreAfter = await engine.AnalyzeAsync(fenAfter, depth, cancellationToken);
+            var scoreAfter = await engine.AnalyzeAsync(fenAfter, depth, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             var deltaCp = ComputeDeltaForMover(scoreBefore, scoreAfter);
@@ -362,7 +381,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             var afterWhite = ToWhitePerspective(scoreAfter, sideToMoveAfter);
             var evalText = FormatEval(afterWhite);
 
-            var annotatedMove = BuildAnnotatedMove(token.Text, nag, evalText);
+            var annotatedMove = BuildAnnotatedMove(tokenText, nag, evalText);
             builder.Append(annotatedMove);
 
             if (addEleganceTags)
@@ -462,7 +481,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             fenBefore = fenAfter;
         }
 
-        if (!ContainsResultToken(tokens))
+        if (!ContainsResultToken(tokens, moveText))
         {
             var result = game.Headers.GetHeaderValueOrDefault("Result", "*");
             if (!string.IsNullOrWhiteSpace(result))
@@ -534,7 +553,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
         return new ChessBoard();
     }
 
-    private static bool ContainsResultToken(List<PgnToken> tokens)
+    private static bool ContainsResultToken(List<PgnToken> tokens, string moveText)
     {
         foreach (var token in tokens)
         {
@@ -543,10 +562,18 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                 continue;
             }
 
-            var trimmed = token.Text.Trim();
-            if (trimmed.Length > 0 && ResultTokens.Contains(trimmed))
+            var trimmed = moveText.AsSpan(token.Start, token.Length).Trim();
+            if (trimmed.Length == 0)
             {
-                return true;
+                continue;
+            }
+
+            foreach (var result in ResultTokens)
+            {
+                if (trimmed.Equals(result, StringComparison.Ordinal))
+                {
+                    return true;
+                }
             }
         }
 
@@ -563,7 +590,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             sb.Append(' ').Append(nag);
         }
 
-        sb.Append(" { eval: ").Append(evalText).Append(" }");
+        sb.Append(" { [%eval ").Append(evalText).Append("] }");
         return sb.ToString();
     }
 
@@ -934,29 +961,27 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             return tokens;
         }
 
-        var current = new StringBuilder(16);
         var variationDepth = 0;
+        var tokenStart = 0;
 
-        void FlushCurrent()
+        void FlushCurrent(int endIndex)
         {
-            if (current.Length == 0)
+            if (endIndex <= tokenStart)
             {
                 return;
             }
 
-            var text = current.ToString();
-            current.Clear();
-
+            var span = moveText.AsSpan(tokenStart, endIndex - tokenStart);
             var isMove = false;
             string? san = null;
 
-            if (variationDepth == 0 && TryParseMoveToken(text, out var parsedSan))
+            if (variationDepth == 0 && TryParseMoveToken(span, out var parsedSan))
             {
                 isMove = true;
                 san = parsedSan;
             }
 
-            tokens.Add(new PgnToken(text, isMove, san));
+            tokens.Add(new PgnToken(tokenStart, endIndex - tokenStart, isMove, san));
         }
 
         var i = 0;
@@ -966,7 +991,7 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             if (c == '{')
             {
-                FlushCurrent();
+                FlushCurrent(i);
                 var start = i;
                 i++;
                 while (i < moveText.Length && moveText[i] != '}')
@@ -979,13 +1004,14 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     i++;
                 }
 
-                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                tokens.Add(new PgnToken(start, i - start, false, null));
+                tokenStart = i;
                 continue;
             }
 
             if (c == ';')
             {
-                FlushCurrent();
+                FlushCurrent(i);
                 var start = i;
                 i++;
                 while (i < moveText.Length)
@@ -1011,13 +1037,14 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     i++;
                 }
 
-                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                tokens.Add(new PgnToken(start, i - start, false, null));
+                tokenStart = i;
                 continue;
             }
 
             if (char.IsWhiteSpace(c))
             {
-                FlushCurrent();
+                FlushCurrent(i);
                 var start = i;
                 i++;
                 while (i < moveText.Length && char.IsWhiteSpace(moveText[i]))
@@ -1025,50 +1052,58 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                     i++;
                 }
 
-                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                tokens.Add(new PgnToken(start, i - start, false, null));
+                tokenStart = i;
                 continue;
             }
 
             if (c == '(')
             {
-                FlushCurrent();
-                tokens.Add(new PgnToken("(", false, null));
+                FlushCurrent(i);
+                tokens.Add(new PgnToken(i, 1, false, null));
                 variationDepth++;
                 i++;
+                tokenStart = i;
                 continue;
             }
 
             if (c == ')')
             {
-                FlushCurrent();
-                tokens.Add(new PgnToken(")", false, null));
+                FlushCurrent(i);
+                tokens.Add(new PgnToken(i, 1, false, null));
                 if (variationDepth > 0)
                 {
                     variationDepth--;
                 }
 
                 i++;
+                tokenStart = i;
                 continue;
             }
 
-            current.Append(c);
             i++;
         }
 
-        FlushCurrent();
+        FlushCurrent(moveText.Length);
         return tokens;
     }
 
-    private static bool TryParseMoveToken(string token, out string san)
+    private static bool TryParseMoveToken(ReadOnlySpan<char> token, out string san)
     {
         san = string.Empty;
 
-        if (string.IsNullOrWhiteSpace(token))
+        if (token.IsEmpty)
         {
             return false;
         }
 
-        var trimmed = token.Trim();
+        var trimmedSpan = token.Trim();
+        if (trimmedSpan.IsEmpty)
+        {
+            return false;
+        }
+
+        var trimmed = trimmedSpan.ToString();
 
         var match = MoveNumberPrefixRegex.Match(trimmed);
         if (match.Success)
@@ -1106,28 +1141,16 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             return false;
         }
 
-        trimmed = InlineNagRegex.Replace(trimmed, string.Empty);
-        trimmed = SanitizeSan(trimmed);
+        var sanitized = InlineNagRegex.Replace(trimmed, string.Empty);
+        sanitized = SanitizeSan(sanitized);
 
-        if (trimmed.Length == 0)
+        if (sanitized.Length == 0)
         {
             return false;
         }
 
-        san = trimmed;
+        san = sanitized;
         return true;
-    }
-
-    private async Task<long> CountGamesAsync(string inputFilePath, CancellationToken cancellationToken)
-    {
-        var totalGames = 0L;
-        await foreach (var _ in _pgnReader.ReadGamesAsync(inputFilePath, cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            totalGames++;
-        }
-
-        return totalGames;
     }
 
     private struct RunningEleganceMetrics
@@ -1171,6 +1194,14 @@ internal sealed class UciEngine : IDisposable
     private static readonly Regex DepthRegex = new(@"\bdepth\s+(\d+)", RegexOptions.Compiled);
 
     private readonly Process _process;
+    private readonly Channel<string> _stdoutChannel = Channel.CreateUnbounded<string>(
+        new UnboundedChannelOptions
+        {
+            SingleWriter = true,
+            SingleReader = false
+        });
+    private CancellationTokenSource? _stdoutCts;
+    private Task? _stdoutReader;
 
     public UciEngine(string enginePath)
     {
@@ -1208,25 +1239,56 @@ internal sealed class UciEngine : IDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        if (!_process.Start())
+        ThrowIfAborted();
+
+        var started = false;
+        try
         {
-            throw new InvalidOperationException("Failed to start UCI engine process.");
+            if (!_process.Start())
+            {
+                throw new InvalidOperationException("Failed to start UCI engine process.");
+            }
+
+            started = true;
+            _process.BeginErrorReadLine();
+            StartOutputReader();
+
+            await SendAsync("uci", cancellationToken).ConfigureAwait(false);
+            await WaitForTokenAsync("uciok", DefaultTimeout, cancellationToken).ConfigureAwait(false);
+
+            await SendAsync("isready", cancellationToken).ConfigureAwait(false);
+            await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken).ConfigureAwait(false);
         }
+        catch
+        {
+            if (started)
+            {
+                try
+                {
+                    if (!_process.HasExited)
+                    {
+                        _process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                }
+            }
 
-        _process.BeginErrorReadLine();
-
-        await SendAsync("uci", cancellationToken);
-        await WaitForTokenAsync("uciok", DefaultTimeout, cancellationToken);
-
-        await SendAsync("isready", cancellationToken);
-        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+            throw;
+        }
     }
 
-    public async Task NewGameAsync(CancellationToken cancellationToken = default)
+    public async Task NewGameAsync(CancellationToken cancellationToken = default, bool waitForReady = false)
     {
-        await SendAsync("ucinewgame", cancellationToken);
-        await SendAsync("isready", cancellationToken);
-        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+        ThrowIfAborted();
+        await SendAsync("ucinewgame", cancellationToken).ConfigureAwait(false);
+
+        if (waitForReady)
+        {
+            await SendAsync("isready", cancellationToken).ConfigureAwait(false);
+            await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task SetOptionAsync(string name, string value, CancellationToken cancellationToken = default)
@@ -1241,9 +1303,10 @@ internal sealed class UciEngine : IDisposable
             return;
         }
 
-        await SendAsync($"setoption name {name} value {value}", cancellationToken);
-        await SendAsync("isready", cancellationToken);
-        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+        ThrowIfAborted();
+        await SendAsync($"setoption name {name} value {value}", cancellationToken).ConfigureAwait(false);
+        await SendAsync("isready", cancellationToken).ConfigureAwait(false);
+        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<EngineScore> AnalyzeAsync(string fen, int depth, CancellationToken cancellationToken = default)
@@ -1258,20 +1321,92 @@ internal sealed class UciEngine : IDisposable
             throw new ArgumentOutOfRangeException(nameof(depth), "Depth must be greater than zero.");
         }
 
+        ThrowIfAborted();
         cancellationToken.ThrowIfCancellationRequested();
 
-        await SendAsync($"position fen {fen}", cancellationToken);
-        await SendAsync($"go depth {depth}", cancellationToken);
+        await SendAsync($"position fen {fen}", cancellationToken).ConfigureAwait(false);
+        await SendAsync($"go depth {depth}", cancellationToken).ConfigureAwait(false);
 
         var timeout = GetAnalysisTimeout(depth);
-        return await ReadScoreUntilBestMoveAsync(timeout, cancellationToken);
+        return await ReadScoreUntilBestMoveAsync(timeout, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task SendAsync(string command, CancellationToken cancellationToken)
     {
+        ThrowIfAborted();
         cancellationToken.ThrowIfCancellationRequested();
-        await _process.StandardInput.WriteLineAsync(command);
-        await _process.StandardInput.FlushAsync();
+        await _process.StandardInput.WriteLineAsync(command).ConfigureAwait(false);
+        await _process.StandardInput.FlushAsync().ConfigureAwait(false);
+    }
+
+    private void StartOutputReader()
+    {
+        if (_stdoutReader != null)
+        {
+            return;
+        }
+
+        _stdoutCts = new CancellationTokenSource();
+        _stdoutReader = Task.Run(() => ReadStdoutLoopAsync(_stdoutCts.Token));
+    }
+
+    private async Task ReadStdoutLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var line = await _process.StandardOutput.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (line == null)
+                {
+                    break;
+                }
+
+                await _stdoutChannel.Writer.WriteAsync(line, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown.
+        }
+        catch (Exception ex)
+        {
+            _stdoutChannel.Writer.TryComplete(ex);
+            return;
+        }
+
+        _stdoutChannel.Writer.TryComplete();
+    }
+
+    private async Task<string?> ReadLineWithTimeoutAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (_stdoutChannel.Reader.Completion.IsCompleted)
+        {
+            return null;
+        }
+
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        try
+        {
+            return await _stdoutChannel.Reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            return null;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Timed out waiting for engine output.");
+        }
+    }
+
+    private void ThrowIfAborted()
+    {
+        if (Volatile.Read(ref _abortRequested) == 1)
+        {
+            throw new OperationCanceledException("Engine request was aborted.");
+        }
     }
 
     private static TimeSpan GetAnalysisTimeout(int depth)
@@ -1302,8 +1437,7 @@ internal sealed class UciEngine : IDisposable
             string? line;
             try
             {
-                var lineTask = _process.StandardOutput.ReadLineAsync();
-                line = await lineTask.WaitAsync(remaining, cancellationToken);
+                line = await ReadLineWithTimeoutAsync(remaining, cancellationToken).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
@@ -1343,7 +1477,7 @@ internal sealed class UciEngine : IDisposable
 
         if (timedOut)
         {
-            await StopSearchAndDrainAsync(cancellationToken);
+            await StopSearchAndDrainAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Return the best score we saw before timing out.
@@ -1354,7 +1488,7 @@ internal sealed class UciEngine : IDisposable
     {
         try
         {
-            await SendAsync("stop", cancellationToken);
+            await SendAsync("stop", cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -1363,9 +1497,13 @@ internal sealed class UciEngine : IDisposable
 
         try
         {
-            await WaitForTokenAsync("bestmove", TimeSpan.FromMilliseconds(500), cancellationToken);
+            await WaitForTokenAsync("bestmove", TimeSpan.FromMilliseconds(500), cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (TimeoutException)
+        {
+        }
+        catch (InvalidOperationException)
         {
         }
     }
@@ -1412,8 +1550,15 @@ internal sealed class UciEngine : IDisposable
                 break;
             }
 
-            var lineTask = _process.StandardOutput.ReadLineAsync();
-            var line = await lineTask.WaitAsync(remaining, cancellationToken);
+            string? line;
+            try
+            {
+                line = await ReadLineWithTimeoutAsync(remaining, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                break;
+            }
             if (line == null)
             {
                 break;
@@ -1433,6 +1578,14 @@ internal sealed class UciEngine : IDisposable
         if (Interlocked.Exchange(ref _abortRequested, 1) == 1)
         {
             return;
+        }
+
+        try
+        {
+            _stdoutCts?.Cancel();
+        }
+        catch
+        {
         }
 
         // Best-effort attempt to stop the current search and unblock readers.
@@ -1464,6 +1617,14 @@ internal sealed class UciEngine : IDisposable
     {
         try
         {
+            try
+            {
+                _stdoutCts?.Cancel();
+            }
+            catch
+            {
+            }
+
             if (!_process.HasExited)
             {
                 _process.StandardInput.WriteLine("quit");
@@ -1479,6 +1640,15 @@ internal sealed class UciEngine : IDisposable
         }
         finally
         {
+            try
+            {
+                _stdoutReader?.Wait(500);
+            }
+            catch
+            {
+            }
+
+            _stdoutCts?.Dispose();
             _process.Dispose();
         }
     }

@@ -57,11 +57,6 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
     {
         // Prefer the most capable build available on this CPU.
         // Order mirrors the release asset variants.
-        if (IsVnni512Supported())
-        {
-            return StockfishVariant.Vnni512;
-        }
-
         if (IsVnni256Supported())
         {
             return StockfishVariant.Vnni256;
@@ -99,7 +94,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         using var response = await SendWithRetryAsync(
             () => CreateGitHubRequest(LatestReleaseUri, expectsJson: true),
             ReleaseRequestTimeout,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
 
         if (IsRateLimited(response))
         {
@@ -109,8 +104,9 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 
         response.EnsureSuccessStatusCode();
 
-        await using var jsonStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(jsonStream, cancellationToken: cancellationToken);
+        await using var jsonStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(jsonStream, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
 
         var root = document.RootElement;
         var tag = root.GetProperty("tag_name").GetString() ?? "latest";
@@ -134,12 +130,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         }
 
         var installDirectory = GetInstallDirectory(tag, variant);
-        if (Directory.Exists(installDirectory))
-        {
-            Directory.Delete(installDirectory, recursive: true);
-        }
-
-        Directory.CreateDirectory(installDirectory);
+        var stagingDirectory = CreateStagingDirectory(installDirectory);
 
         var tempZipPath = Path.Combine(Path.GetTempPath(), $"stockfish_{tag}_{Guid.NewGuid():N}.zip");
 
@@ -150,7 +141,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
             using var assetResponse = await SendWithRetryAsync(
                 () => CreateGitHubRequest(new Uri(downloadUrl), expectsJson: false),
                 DownloadRequestTimeout,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
             if (IsRateLimited(assetResponse))
             {
@@ -160,21 +151,27 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
 
             assetResponse.EnsureSuccessStatusCode();
 
-            await using var assetStream = await assetResponse.Content.ReadAsStreamAsync(cancellationToken);
+            await using var assetStream = await assetResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             await using var fileStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
-            await assetStream.CopyToAsync(fileStream, cancellationToken);
-            await fileStream.FlushAsync(cancellationToken);
+            await assetStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             fileStream.Flush(true);
 
             status?.Report("Extracting Stockfish...");
-            ZipFile.ExtractToDirectory(tempZipPath, installDirectory, overwriteFiles: true);
+            ExtractZipSafely(tempZipPath, stagingDirectory);
 
             status?.Report("Locating engine executable...");
-            var exePath = FindExecutable(installDirectory, variant);
-            if (exePath == null)
+            var stagedExePath = FindExecutable(stagingDirectory, variant);
+            if (stagedExePath == null)
             {
-                throw new FileNotFoundException("Stockfish executable was not found after extraction.", installDirectory);
+                throw new FileNotFoundException("Stockfish executable was not found after extraction.", stagingDirectory);
             }
+
+            status?.Report("Finalizing install...");
+            ReplaceInstallDirectory(stagingDirectory, installDirectory);
+
+            var exePath = FindExecutable(installDirectory, variant)
+                ?? stagedExePath.Replace(stagingDirectory, installDirectory, StringComparison.OrdinalIgnoreCase);
 
             status?.Report($"Stockfish ready: {Path.GetFileName(exePath)}");
 
@@ -182,6 +179,7 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         }
         finally
         {
+            TryDeleteDirectory(stagingDirectory);
             try
             {
                 if (File.Exists(tempZipPath))
@@ -205,6 +203,121 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
         // GitHub API requires a User-Agent header.
         client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
         return client;
+    }
+
+    private static string CreateStagingDirectory(string installDirectory)
+    {
+        var parent = Path.GetDirectoryName(installDirectory);
+        if (string.IsNullOrWhiteSpace(parent))
+        {
+            parent = Path.GetTempPath();
+        }
+
+        var baseName = Path.GetFileName(installDirectory);
+        if (string.IsNullOrWhiteSpace(baseName))
+        {
+            baseName = "stockfish";
+        }
+
+        var stagingDirectory = Path.Combine(parent, $"{baseName}.staging.{Guid.NewGuid():N}");
+        if (Directory.Exists(stagingDirectory))
+        {
+            Directory.Delete(stagingDirectory, recursive: true);
+        }
+
+        Directory.CreateDirectory(stagingDirectory);
+        return stagingDirectory;
+    }
+
+    private static void ReplaceInstallDirectory(string stagingDirectory, string installDirectory)
+    {
+        var backupDirectory = $"{installDirectory}.bak.{Guid.NewGuid():N}";
+        if (Directory.Exists(installDirectory))
+        {
+            Directory.Move(installDirectory, backupDirectory);
+        }
+
+        try
+        {
+            Directory.Move(stagingDirectory, installDirectory);
+        }
+        catch
+        {
+            try
+            {
+                if (Directory.Exists(backupDirectory) && !Directory.Exists(installDirectory))
+                {
+                    Directory.Move(backupDirectory, installDirectory);
+                }
+            }
+            catch
+            {
+            }
+
+            throw;
+        }
+
+        TryDeleteDirectory(backupDirectory);
+    }
+
+    private static void ExtractZipSafely(string zipPath, string destinationDirectory)
+    {
+        var destinationRoot = NormalizeDirectoryPath(destinationDirectory);
+
+        using var archive = ZipFile.OpenRead(zipPath);
+        foreach (var entry in archive.Entries)
+        {
+            if (string.IsNullOrWhiteSpace(entry.FullName))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.GetFullPath(Path.Combine(destinationRoot, entry.FullName));
+            if (!destinationPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Zip entry '{entry.FullName}' is outside the destination directory.");
+            }
+
+            if (entry.FullName.EndsWith("/", StringComparison.Ordinal) ||
+                entry.FullName.EndsWith("\\", StringComparison.Ordinal))
+            {
+                Directory.CreateDirectory(destinationPath);
+                continue;
+            }
+
+            var destinationParent = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(destinationParent))
+            {
+                Directory.CreateDirectory(destinationParent);
+            }
+
+            entry.ExtractToFile(destinationPath, overwrite: true);
+        }
+    }
+
+    private static string NormalizeDirectoryPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!fullPath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+        {
+            fullPath += Path.DirectorySeparatorChar;
+        }
+
+        return fullPath;
+    }
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch
+        {
+        }
     }
 
     private static AssetInfo? SelectAsset(JsonElement assets, StockfishVariant preferredVariant)
@@ -390,17 +503,6 @@ public sealed class StockfishDownloaderService : IStockfishDownloaderService
     {
 #if NET8_0_OR_GREATER
         return AvxVnni.IsSupported;
-#else
-        return false;
-#endif
-    }
-
-    private static bool IsVnni512Supported()
-    {
-#if NET8_0_OR_GREATER
-        // There is no explicit vnni512 intrinsic in all TFMs; treat AVX-512 VNNI
-        // as equivalent to AVX-512 support when available.
-        return IsAvx512Supported() && IsVnni256Supported();
 #else
         return false;
 #endif

@@ -18,6 +18,7 @@ public partial class ChessAnalyzerViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeWhenIdle;
     private long _progressGames;
     private long _progressTotal;
     private const string SettingsPrefix = nameof(ChessAnalyzerViewModel);
@@ -190,6 +191,7 @@ public partial class ChessAnalyzerViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+            TryDisposeWhenIdle();
     }
     }
 
@@ -307,8 +309,8 @@ public partial class ChessAnalyzerViewModel(
 
             var progress = new Progress<AnalyzerProgress>(p =>
             {
-                _progressGames = p.ProcessedGames;
-                _progressTotal = p.TotalGames;
+                Interlocked.Exchange(ref _progressGames, p.ProcessedGames);
+                Interlocked.Exchange(ref _progressTotal, p.TotalGames);
                 ProgressValue = p.Percent;
                 StatusMessage = $"Analyzing games... {p.Percent:0}%";
                 StatusDetail = BuildProgressDetail(p.Percent, p.ProcessedGames, p.TotalGames, "games");
@@ -355,6 +357,7 @@ public partial class ChessAnalyzerViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+            TryDisposeWhenIdle();
     }
     }
 
@@ -434,6 +437,31 @@ public partial class ChessAnalyzerViewModel(
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
         _executionLock.Dispose();
+    }
+
+    public void DisposeWhenIdle()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (IsRunning)
+        {
+            _disposeWhenIdle = true;
+            return;
+        }
+
+        Dispose();
+    }
+
+    private void TryDisposeWhenIdle()
+    {
+        if (_disposeWhenIdle && !_disposed && !IsRunning)
+        {
+            _disposeWhenIdle = false;
+            Dispose();
+        }
     }
     private void LoadState()
     {

@@ -1,0 +1,3490 @@
+# Context Dump: Analyzer
+# Date: 2026-02-04 22:36:13
+# File Count: 10
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var filter in fileTypeFilters)
+        {
+            picker.FileTypeFilter.Add(filter);
+        }
+
+        if (fileTypeFilters.Length == 0)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var filter in fileTypeFilters)
+        {
+            picker.FileTypeFilter.Add(filter);
+        }
+
+        if (fileTypeFilters.Length == 0)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        foreach (var choice in fileTypeChoices)
+        {
+            picker.FileTypeChoices.Add(choice.Key, choice.Value);
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                if (File.Exists(destinationPath))
+                {
+                    File.Replace(tempFilePath, destinationPath, null);
+                }
+                else
+                {
+                    File.Move(tempFilePath, destinationPath);
+                }
+
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                // Destination does not exist yet, so fallback to a move.
+                File.Move(tempFilePath, destinationPath);
+                return;
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(destinationPath))
+                {
+                    File.Replace(tempFilePath, destinationPath, null);
+                }
+                else
+                {
+                    File.Move(tempFilePath, destinationPath);
+                }
+
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                File.Move(tempFilePath, destinationPath);
+                return;
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\ChessAnalyzerService.cs =====
+using System.Diagnostics;
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+using Chess;
+using PgnTools.Helpers;
+
+namespace PgnTools.Services;
+
+public interface IChessAnalyzerService
+{
+    Task AnalyzePgnAsync(
+        string inputFilePath,
+        string outputFilePath,
+        string enginePath,
+        int depth,
+        string? tablebasePath,
+        IProgress<AnalyzerProgress>? progress = null,
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false);
+}
+
+public readonly record struct AnalyzerProgress(long ProcessedGames, long TotalGames, double Percent);
+
+internal readonly record struct EngineScore(int Centipawns, bool IsMate, int MateIn)
+{
+    public static EngineScore FromCentipawns(int cp) => new(cp, false, 0);
+    public static EngineScore FromMate(int mateIn, int cpEquivalent) => new(cpEquivalent, true, mateIn);
+}
+
+/// <summary>
+/// Performs engine-based analysis of PGN games.
+/// </summary>
+/// <remarks>
+/// This implementation uses the Gera.Chess library to parse SAN moves and generate FEN
+/// positions for a UCI engine (e.g., Stockfish).
+/// </remarks>
+public sealed class ChessAnalyzerService : IChessAnalyzerService
+{
+    private const int BufferSize = 65536;
+    private const int BlunderThresholdCp = -300;
+    private const int MistakeThresholdCp = -150;
+    private const int InaccuracyThresholdCp = -60;
+
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    private readonly record struct PgnToken(string Text, bool IsMove, string? San);
+    private readonly record struct AnalyzedGameResult(string MoveText, EleganceScore? Elegance);
+
+    public ChessAnalyzerService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    public async Task AnalyzePgnAsync(
+        string inputFilePath,
+        string outputFilePath,
+        string enginePath,
+        int depth,
+        string? tablebasePath,
+        IProgress<AnalyzerProgress>? progress = null,
+        CancellationToken cancellationToken = default,
+        bool addEleganceTags = false)
+    {
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(enginePath))
+        {
+            throw new ArgumentException("Engine path is required.", nameof(enginePath));
+        }
+
+        if (depth <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(depth), "Depth must be greater than zero.");
+        }
+
+        var inputFullPath = Path.GetFullPath(inputFilePath);
+        var outputFullPath = Path.GetFullPath(outputFilePath);
+        var engineFullPath = Path.GetFullPath(enginePath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (!File.Exists(inputFullPath))
+        {
+            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+        }
+
+        if (!File.Exists(engineFullPath))
+        {
+            throw new FileNotFoundException("UCI engine not found.", engineFullPath);
+        }
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Input and output files must be different.");
+        }
+
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        // Pass 1: count games for progress reporting
+        var totalGames = await CountGamesAsync(inputFullPath, cancellationToken);
+        if (totalGames == 0)
+        {
+            progress?.Report(new AnalyzerProgress(0, 0, 100));
+            return;
+        }
+
+        try
+        {
+            var processedGames = 0L;
+            var analyzedGames = 0L;
+            var failedGames = 0L;
+            string? firstFailureMessage = null;
+            
+            UciEngine? engine = null;
+            var cancellationRegistration = default(CancellationTokenRegistration);
+
+            async Task<UciEngine> StartEngineAsync()
+            {
+                var newEngine = new UciEngine(engineFullPath);
+                try
+                {
+                    await newEngine.StartAsync(cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(tablebasePath))
+                    {
+                        await newEngine.SetOptionAsync("SyzygyPath", tablebasePath, cancellationToken);
+                    }
+
+                    cancellationRegistration.Dispose();
+                    cancellationRegistration = cancellationToken.Register(newEngine.RequestAbort);
+                    return newEngine;
+                }
+                catch
+                {
+                    newEngine.Dispose();
+                    throw;
+                }
+            }
+
+            try
+            {
+                await using (var outputStream = new FileStream(
+                    tempOutputPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    BufferSize,
+                    FileOptions.SequentialScan | FileOptions.Asynchronous))
+                using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
+                {
+                    engine = await StartEngineAsync();
+
+                    var firstOutput = true;
+                    progress?.Report(new AnalyzerProgress(0, totalGames, 0));
+
+                    await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        processedGames++;
+
+                        try
+                        {
+                            await Task.Run(async () =>
+                            {
+                                await engine.NewGameAsync(cancellationToken).ConfigureAwait(false);
+                                var analysis = await AnalyzeGameAsync(game, engine, depth, addEleganceTags, cancellationToken)
+                                    .ConfigureAwait(false);
+
+                                game.MoveText = analysis.MoveText;
+                                cancellationToken.ThrowIfCancellationRequested();
+                                game.Headers["Annotator"] = "PgnTools";
+                                game.Headers["AnalysisDepth"] = depth.ToString(CultureInfo.InvariantCulture);
+
+                                if (addEleganceTags && analysis.Elegance.HasValue)
+                                {
+                                    var elegance = analysis.Elegance.Value;
+                                    game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
+                                    game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
+                                }
+                            }, cancellationToken).ConfigureAwait(false);
+
+                            analyzedGames++;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            failedGames++;
+                            firstFailureMessage ??= $"Game #{processedGames}: {ex.GetType().Name}: {ex.Message}";
+
+                            if (engine.HasExited)
+                            {
+                                engine.Dispose();
+                                engine = await StartEngineAsync();
+                            }
+
+                            // If analysis fails for a given game, preserve the original movetext
+                            // and continue processing the rest of the file.
+                        }
+
+                        if (!firstOutput)
+                        {
+                            await writer.WriteLineAsync();
+                        }
+
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        firstOutput = false;
+
+                        var percent = Math.Clamp((double)processedGames / totalGames * 100.0, 0, 100);
+                        progress?.Report(new AnalyzerProgress(processedGames, totalGames, percent));
+                    }
+
+                    await writer.FlushAsync();
+                }
+
+                if (analyzedGames == 0 && failedGames > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"No games could be analyzed. First failure: {firstFailureMessage ?? "Unknown move parsing error."}");
+                }
+
+                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+                progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
+            }
+            finally
+            {
+                cancellationRegistration.Dispose();
+                engine?.Dispose();
+            }
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private static readonly Regex MoveNumberPrefixRegex = new(
+        @"^(?<num>\d+)\.(?:\.\.)?(?<rest>.*)$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex MoveNumberOnlyRegex = new(
+        @"^\d+\.(?:\.\.)?$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex NagRegex = new(
+        @"^\$\d+$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex InlineNagRegex = new(
+        @"\$\d+",
+        RegexOptions.Compiled);
+
+    private static readonly Regex CoordinateMoveRegex = new(
+        @"^(?<piece>[KQRBNP])?(?<from>[a-h][1-8])(?:[-x:]?)(?<to>[a-h][1-8])(?:=?(?<promo>[QRBN]))?$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly HashSet<string> ResultTokens =
+    [
+        "1-0",
+        "0-1",
+        "1/2-1/2",
+        "*"
+    ];
+
+    private async Task<AnalyzedGameResult> AnalyzeGameAsync(
+        PgnGame game,
+        UciEngine engine,
+        int depth,
+        bool addEleganceTags,
+        CancellationToken cancellationToken)
+    {
+        var board = CreateBoardFromHeaders(game.Headers);
+        var tokens = TokenizeMoveTextPreserving(game.MoveText);
+
+        if (tokens.Count == 0 || tokens.TrueForAll(token => !token.IsMove))
+        {
+            return new AnalyzedGameResult(game.MoveText, null);
+        }
+
+        var builder = new StringBuilder(game.MoveText.Length + tokens.Count * 24);
+        var fenBefore = board.ToFen();
+        var scoreBefore = await engine.AnalyzeAsync(fenBefore, depth, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var metrics = addEleganceTags ? new RunningEleganceMetrics() : default;
+        var whiteMaterialBefore = 0;
+        var blackMaterialBefore = 0;
+        if (addEleganceTags)
+        {
+            ComputeMaterialTotalsCp(fenBefore, out whiteMaterialBefore, out blackMaterialBefore);
+        }
+
+        foreach (var token in tokens)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!token.IsMove)
+            {
+                builder.Append(token.Text);
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(token.San))
+            {
+                throw new InvalidOperationException($"Unable to parse move token: {token.Text}");
+            }
+
+            var moverSide = board.Turn;
+            if (!TryResolveMoveNotation(board, token.San, out var resolvedSan))
+            {
+                throw new InvalidOperationException(
+                    $"Unsupported move notation '{token.San}' in token '{token.Text}'.");
+            }
+
+            var hasCapture = resolvedSan.IndexOf('x') >= 0;
+            var hasCheck = resolvedSan.IndexOf('+') >= 0;
+            var hasMate = resolvedSan.IndexOf('#') >= 0;
+            var hasPromotion = resolvedSan.IndexOf('=') >= 0;
+            var isQuiet = !hasCapture && !hasCheck && !hasMate && !hasPromotion;
+
+            // Apply the move. If this throws, the caller will preserve original movetext.
+            if (!board.Move(resolvedSan))
+            {
+                throw new InvalidOperationException(
+                    $"Failed to apply move '{resolvedSan}' parsed from token '{token.Text}'.");
+            }
+
+            var fenAfter = board.ToFen();
+            var scoreAfter = await engine.AnalyzeAsync(fenAfter, depth, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var deltaCp = ComputeDeltaForMover(scoreBefore, scoreAfter);
+            var nag = GetNagForDelta(deltaCp);
+
+            var sideToMoveAfter = board.Turn;
+            var afterWhite = ToWhitePerspective(scoreAfter, sideToMoveAfter);
+            var evalText = FormatEval(afterWhite);
+
+            var annotatedMove = BuildAnnotatedMove(token.Text, nag, evalText);
+            builder.Append(annotatedMove);
+
+            if (addEleganceTags)
+            {
+                metrics.PlyCount++;
+                metrics.EvaluatedPlyCount++;
+
+                ComputeMaterialTotalsCp(fenAfter, out var whiteMaterialAfter, out var blackMaterialAfter);
+
+                var whiteMaterialLossCp = whiteMaterialBefore - whiteMaterialAfter;
+                if (whiteMaterialLossCp > 0)
+                {
+                    UpdateSacrificeMetrics(
+                        PieceColor.White,
+                        whiteMaterialLossCp,
+                        scoreBefore,
+                        moverSide,
+                        scoreAfter,
+                        sideToMoveAfter,
+                        ref metrics);
+                }
+
+                var blackMaterialLossCp = blackMaterialBefore - blackMaterialAfter;
+                if (blackMaterialLossCp > 0)
+                {
+                    UpdateSacrificeMetrics(
+                        PieceColor.Black,
+                        blackMaterialLossCp,
+                        scoreBefore,
+                        moverSide,
+                        scoreAfter,
+                        sideToMoveAfter,
+                        ref metrics);
+                }
+
+                whiteMaterialBefore = whiteMaterialAfter;
+                blackMaterialBefore = blackMaterialAfter;
+
+                if (hasCapture || hasCheck || hasMate || hasPromotion)
+                {
+                    metrics.ForcingMoveCount++;
+                }
+
+                if (deltaCp <= BlunderThresholdCp)
+                {
+                    metrics.BlunderCount++;
+                }
+                else if (deltaCp <= MistakeThresholdCp)
+                {
+                    metrics.MistakeCount++;
+                }
+                else if (deltaCp <= InaccuracyThresholdCp)
+                {
+                    metrics.DubiousCount++;
+                }
+
+                if (isQuiet && deltaCp >= 150)
+                {
+                    metrics.QuietImprovementCount++;
+                }
+
+                var evalWhiteCp = afterWhite.Centipawns;
+                if (metrics.PreviousEvalWhiteCp.HasValue)
+                {
+                    metrics.SwingAbsSum += Math.Abs(evalWhiteCp - metrics.PreviousEvalWhiteCp.Value);
+                    metrics.SwingCount++;
+                }
+
+                metrics.PreviousEvalWhiteCp = evalWhiteCp;
+
+                metrics.MoverDeltaSum += deltaCp;
+                metrics.MoverDeltaSquareSum += deltaCp * (double)deltaCp;
+                metrics.MoverDeltaCount++;
+
+                var evalForMoverSide = moverSide == PieceColor.White ? evalWhiteCp : -evalWhiteCp;
+                if (moverSide == PieceColor.White)
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.WhiteLastEval,
+                        ref metrics.WhitePreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+                else
+                {
+                    UpdateTrendMetrics(
+                        evalForMoverSide,
+                        ref metrics.BlackLastEval,
+                        ref metrics.BlackPreviousDelta,
+                        ref metrics.TrendBreakCount);
+                }
+            }
+
+            // After the move, the engine evaluation is from the perspective of the
+            // next side to move, which is exactly the "before" score for the next ply.
+            scoreBefore = scoreAfter;
+            fenBefore = fenAfter;
+        }
+
+        if (!ContainsResultToken(tokens))
+        {
+            var result = game.Headers.GetHeaderValueOrDefault("Result", "*");
+            if (!string.IsNullOrWhiteSpace(result))
+            {
+                if (builder.Length > 0 && !char.IsWhiteSpace(builder[^1]))
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(result);
+            }
+        }
+
+        EleganceScore? elegance = null;
+        if (addEleganceTags && metrics.PlyCount > 0)
+        {
+            var forcingPercent = metrics.PlyCount > 0
+                ? metrics.ForcingMoveCount * 100d / metrics.PlyCount
+                : 0d;
+
+            var averageAbsSwing = metrics.SwingCount > 0
+                ? metrics.SwingAbsSum / metrics.SwingCount
+                : 350d;
+
+            var evalStdDev = 220d;
+            if (metrics.MoverDeltaCount > 0)
+            {
+                var mean = metrics.MoverDeltaSum / metrics.MoverDeltaCount;
+                var variance = (metrics.MoverDeltaSquareSum / metrics.MoverDeltaCount) - (mean * mean);
+                evalStdDev = Math.Sqrt(Math.Max(0d, variance));
+            }
+
+            var eleganceMetrics = new EleganceEvaluationMetrics(
+                metrics.PlyCount,
+                metrics.EvaluatedPlyCount,
+                forcingPercent,
+                metrics.QuietImprovementCount,
+                metrics.TrendBreakCount,
+                metrics.BlunderCount,
+                metrics.MistakeCount,
+                metrics.DubiousCount,
+                averageAbsSwing,
+                evalStdDev,
+                metrics.SoundSacrificeCount,
+                metrics.UnsoundSacrificeCount,
+                metrics.SoundSacrificeCp,
+                metrics.UnsoundSacrificeCp);
+
+            elegance = EleganceScoreCalculator.Calculate(eleganceMetrics);
+        }
+
+        return new AnalyzedGameResult(builder.ToString(), elegance);
+    }
+
+    private static ChessBoard CreateBoardFromHeaders(IReadOnlyDictionary<string, string> headers)
+    {
+        if (headers.TryGetHeaderValue("FEN", out var fen) && !string.IsNullOrWhiteSpace(fen))
+        {
+            try
+            {
+                return ChessBoard.LoadFromFen(fen);
+            }
+            catch
+            {
+                // Fall back to default start position on invalid FEN.
+            }
+        }
+
+        return new ChessBoard();
+    }
+
+    private static bool ContainsResultToken(List<PgnToken> tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (token.IsMove)
+            {
+                continue;
+            }
+
+            var trimmed = token.Text.Trim();
+            if (trimmed.Length > 0 && ResultTokens.Contains(trimmed))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string BuildAnnotatedMove(string san, string? nag, string evalText)
+    {
+        var sb = new StringBuilder(san.Length + 24);
+        sb.Append(san);
+
+        if (!string.IsNullOrWhiteSpace(nag))
+        {
+            sb.Append(' ').Append(nag);
+        }
+
+        sb.Append(" { eval: ").Append(evalText).Append(" }");
+        return sb.ToString();
+    }
+
+    private static int ComputeDeltaForMover(EngineScore before, EngineScore after)
+    {
+        // The engine score is from the perspective of the side to move.
+        // After making a move, the engine evaluates from the opponent's perspective,
+        // so we invert the sign to get the mover's perspective again.
+        var afterForMover = -after.Centipawns;
+        return afterForMover - before.Centipawns;
+    }
+
+    private static void UpdateSacrificeMetrics(
+        PieceColor sideLosingMaterial,
+        int materialLossCp,
+        EngineScore scoreBefore,
+        PieceColor sideToMoveBefore,
+        EngineScore scoreAfter,
+        PieceColor sideToMoveAfter,
+        ref RunningEleganceMetrics metrics)
+    {
+        // Ignore tiny losses (for example, transient rounding or malformed data).
+        if (materialLossCp < 100)
+        {
+            return;
+        }
+
+        var evalBeforeForLosingSide = ToPerspectiveCentipawns(scoreBefore, sideLosingMaterial, sideToMoveBefore);
+        var evalAfterForLosingSide = ToPerspectiveCentipawns(scoreAfter, sideLosingMaterial, sideToMoveAfter);
+        var evalDeltaForLosingSide = evalAfterForLosingSide - evalBeforeForLosingSide;
+
+        var maxAllowedDrop = materialLossCp switch
+        {
+            >= 500 => -140,
+            >= 300 => -120,
+            _ => -90
+        };
+
+        var absoluteFloor = materialLossCp switch
+        {
+            >= 500 => -220,
+            >= 300 => -180,
+            _ => -140
+        };
+
+        if (evalAfterForLosingSide >= absoluteFloor && evalDeltaForLosingSide >= maxAllowedDrop)
+        {
+            metrics.SoundSacrificeCount++;
+            metrics.SoundSacrificeCp += materialLossCp;
+        }
+        else
+        {
+            metrics.UnsoundSacrificeCount++;
+            metrics.UnsoundSacrificeCp += materialLossCp;
+        }
+    }
+
+    private static int ToPerspectiveCentipawns(EngineScore score, PieceColor perspective, PieceColor sideToMove)
+    {
+        var whitePerspective = ToWhitePerspective(score, sideToMove).Centipawns;
+        return perspective == PieceColor.White ? whitePerspective : -whitePerspective;
+    }
+
+    private static void ComputeMaterialTotalsCp(string fen, out int whiteMaterialCp, out int blackMaterialCp)
+    {
+        whiteMaterialCp = 0;
+        blackMaterialCp = 0;
+
+        if (string.IsNullOrWhiteSpace(fen))
+        {
+            return;
+        }
+
+        var span = fen.AsSpan();
+        var boardEnd = span.IndexOf(' ');
+        if (boardEnd < 0)
+        {
+            boardEnd = span.Length;
+        }
+
+        foreach (var symbol in span[..boardEnd])
+        {
+            if (symbol == '/' || (symbol >= '1' && symbol <= '8'))
+            {
+                continue;
+            }
+
+            var value = GetPieceMaterialValueCp(symbol);
+            if (value == 0)
+            {
+                continue;
+            }
+
+            if (char.IsUpper(symbol))
+            {
+                whiteMaterialCp += value;
+            }
+            else
+            {
+                blackMaterialCp += value;
+            }
+        }
+    }
+
+    private static int GetPieceMaterialValueCp(char piece) => piece switch
+    {
+        'P' or 'p' => 100,
+        'N' or 'n' => 320,
+        'B' or 'b' => 330,
+        'R' or 'r' => 500,
+        'Q' or 'q' => 900,
+        _ => 0
+    };
+
+    private static void UpdateTrendMetrics(
+        double evalForSide,
+        ref double? lastEval,
+        ref double? previousDelta,
+        ref int trendBreakCount)
+    {
+        if (!lastEval.HasValue)
+        {
+            lastEval = evalForSide;
+            return;
+        }
+
+        var delta1 = evalForSide - lastEval.Value;
+        if (previousDelta.HasValue)
+        {
+            var previousSign = Math.Sign(previousDelta.Value);
+            var currentSign = Math.Sign(delta1);
+            var delta2 = delta1 - previousDelta.Value;
+
+            if (previousSign != 0 &&
+                currentSign != 0 &&
+                previousSign != currentSign &&
+                Math.Abs(delta2) >= 50d)
+            {
+                trendBreakCount++;
+            }
+        }
+
+        previousDelta = delta1;
+        lastEval = evalForSide;
+    }
+
+    private static string? GetNagForDelta(int deltaCp)
+    {
+        if (deltaCp <= BlunderThresholdCp)
+        {
+            return "$4"; // blunder
+        }
+
+        if (deltaCp <= MistakeThresholdCp)
+        {
+            return "$2"; // mistake
+        }
+
+        if (deltaCp <= InaccuracyThresholdCp)
+        {
+            return "$6"; // inaccuracy/dubious move
+        }
+
+        return null;
+    }
+
+    private static EngineScore ToWhitePerspective(EngineScore score, PieceColor sideToMove)
+    {
+        if (sideToMove == PieceColor.White)
+        {
+            return score;
+        }
+
+        return score.IsMate
+            ? EngineScore.FromMate(-score.MateIn, -score.Centipawns)
+            : EngineScore.FromCentipawns(-score.Centipawns);
+    }
+
+    private static string FormatEval(EngineScore score)
+    {
+        if (score.IsMate)
+        {
+            if (score.MateIn == 0)
+            {
+                return "#0";
+            }
+
+            return score.MateIn > 0
+                ? $"#{score.MateIn}"
+                : $"#-{Math.Abs(score.MateIn)}";
+        }
+
+        var pawns = score.Centipawns / 100.0;
+        return pawns.ToString("0.00", CultureInfo.InvariantCulture);
+    }
+
+    private static string SanitizeSan(string san)
+    {
+        if (string.IsNullOrWhiteSpace(san))
+        {
+            return string.Empty;
+        }
+
+        var token = san.Trim();
+
+        // Normalize castling that uses zeros.
+        token = token
+            .Replace("0-0-0", "O-O-O", StringComparison.Ordinal)
+            .Replace("0-0", "O-O", StringComparison.Ordinal);
+
+        // Remove trailing annotation markers like !, ?, !?, ?!, etc.
+        while (token.Length > 0)
+        {
+            var last = token[^1];
+            if (last is '!' or '?')
+            {
+                token = token[..^1];
+                continue;
+            }
+
+            break;
+        }
+
+        return token;
+    }
+
+    private static bool TryResolveMoveNotation(ChessBoard board, string moveToken, out string resolvedSan)
+    {
+        resolvedSan = string.Empty;
+        if (string.IsNullOrWhiteSpace(moveToken))
+        {
+            return false;
+        }
+
+        var candidate = moveToken.Trim();
+        if (board.IsValidMove(candidate))
+        {
+            resolvedSan = candidate;
+            return true;
+        }
+
+        candidate = TrimNonSanSuffixes(candidate);
+        if (candidate.Length == 0)
+        {
+            return false;
+        }
+
+        if (board.IsValidMove(candidate))
+        {
+            resolvedSan = candidate;
+            return true;
+        }
+
+        var match = CoordinateMoveRegex.Match(candidate);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var from = match.Groups["from"].Value;
+        var to = match.Groups["to"].Value;
+        var pieceGroup = match.Groups["piece"];
+        var promoGroup = match.Groups["promo"];
+
+        var expectedPieceChar = pieceGroup.Success
+            ? char.ToLowerInvariant(pieceGroup.ValueSpan[0])
+            : '\0';
+
+        var expectedPromotionChar = promoGroup.Success
+            ? char.ToLowerInvariant(promoGroup.ValueSpan[0])
+            : '\0';
+
+        foreach (var legalMove in board.Moves(allowAmbiguousCastle: true, generateSan: true))
+        {
+            if (!SquareEquals(legalMove.OriginalPosition, from) ||
+                !SquareEquals(legalMove.NewPosition, to))
+            {
+                continue;
+            }
+
+            if (expectedPieceChar != '\0')
+            {
+                var movePieceChar = char.ToLowerInvariant(legalMove.Piece.Type.AsChar);
+                if (expectedPieceChar != movePieceChar)
+                {
+                    continue;
+                }
+            }
+
+            if (expectedPromotionChar != '\0')
+            {
+                if (!legalMove.IsPromotion)
+                {
+                    continue;
+                }
+
+                var promotionPiece = legalMove.Promotion;
+                if (promotionPiece == null)
+                {
+                    continue;
+                }
+
+                var movePromotionChar = char.ToLowerInvariant(promotionPiece.Type.AsChar);
+                if (expectedPromotionChar != movePromotionChar)
+                {
+                    continue;
+                }
+            }
+            else if (legalMove.IsPromotion)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(legalMove.San))
+            {
+                continue;
+            }
+
+            resolvedSan = legalMove.San;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string TrimNonSanSuffixes(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return string.Empty;
+        }
+
+        var candidate = token.Trim();
+        if (candidate.EndsWith("e.p.", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = candidate[..^4].TrimEnd();
+        }
+        else if (candidate.EndsWith("ep", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = candidate[..^2].TrimEnd();
+        }
+
+        while (candidate.Length > 0)
+        {
+            var last = candidate[^1];
+            if (last is '+' or '#')
+            {
+                candidate = candidate[..^1].TrimEnd();
+                continue;
+            }
+
+            break;
+        }
+
+        return candidate;
+    }
+
+    private static bool SquareEquals(Position position, string square)
+    {
+        return position.ToString().Equals(square, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<PgnToken> TokenizeMoveTextPreserving(string moveText)
+    {
+        var tokens = new List<PgnToken>();
+        if (string.IsNullOrEmpty(moveText))
+        {
+            return tokens;
+        }
+
+        var current = new StringBuilder(16);
+        var variationDepth = 0;
+
+        void FlushCurrent()
+        {
+            if (current.Length == 0)
+            {
+                return;
+            }
+
+            var text = current.ToString();
+            current.Clear();
+
+            var isMove = false;
+            string? san = null;
+
+            if (variationDepth == 0 && TryParseMoveToken(text, out var parsedSan))
+            {
+                isMove = true;
+                san = parsedSan;
+            }
+
+            tokens.Add(new PgnToken(text, isMove, san));
+        }
+
+        var i = 0;
+        while (i < moveText.Length)
+        {
+            var c = moveText[i];
+
+            if (c == '{')
+            {
+                FlushCurrent();
+                var start = i;
+                i++;
+                while (i < moveText.Length && moveText[i] != '}')
+                {
+                    i++;
+                }
+
+                if (i < moveText.Length)
+                {
+                    i++;
+                }
+
+                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                continue;
+            }
+
+            if (c == ';')
+            {
+                FlushCurrent();
+                var start = i;
+                i++;
+                while (i < moveText.Length)
+                {
+                    var cc = moveText[i];
+                    if (cc == '\r')
+                    {
+                        i++;
+                        if (i < moveText.Length && moveText[i] == '\n')
+                        {
+                            i++;
+                        }
+
+                        break;
+                    }
+
+                    if (cc == '\n')
+                    {
+                        i++;
+                        break;
+                    }
+
+                    i++;
+                }
+
+                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c))
+            {
+                FlushCurrent();
+                var start = i;
+                i++;
+                while (i < moveText.Length && char.IsWhiteSpace(moveText[i]))
+                {
+                    i++;
+                }
+
+                tokens.Add(new PgnToken(moveText.Substring(start, i - start), false, null));
+                continue;
+            }
+
+            if (c == '(')
+            {
+                FlushCurrent();
+                tokens.Add(new PgnToken("(", false, null));
+                variationDepth++;
+                i++;
+                continue;
+            }
+
+            if (c == ')')
+            {
+                FlushCurrent();
+                tokens.Add(new PgnToken(")", false, null));
+                if (variationDepth > 0)
+                {
+                    variationDepth--;
+                }
+
+                i++;
+                continue;
+            }
+
+            current.Append(c);
+            i++;
+        }
+
+        FlushCurrent();
+        return tokens;
+    }
+
+    private static bool TryParseMoveToken(string token, out string san)
+    {
+        san = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        var trimmed = token.Trim();
+
+        var match = MoveNumberPrefixRegex.Match(trimmed);
+        if (match.Success)
+        {
+            trimmed = match.Groups["rest"].Value.Trim();
+            if (trimmed.Length == 0)
+            {
+                return false;
+            }
+        }
+
+        if (MoveNumberOnlyRegex.IsMatch(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed == "..." || trimmed == "..")
+        {
+            return false;
+        }
+
+        if (ResultTokens.Contains(trimmed))
+        {
+            return false;
+        }
+
+        if (NagRegex.IsMatch(trimmed))
+        {
+            return false;
+        }
+
+        if (string.Equals(trimmed, "e.p.", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(trimmed, "ep", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        trimmed = InlineNagRegex.Replace(trimmed, string.Empty);
+        trimmed = SanitizeSan(trimmed);
+
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        san = trimmed;
+        return true;
+    }
+
+    private async Task<long> CountGamesAsync(string inputFilePath, CancellationToken cancellationToken)
+    {
+        var totalGames = 0L;
+        await foreach (var _ in _pgnReader.ReadGamesAsync(inputFilePath, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            totalGames++;
+        }
+
+        return totalGames;
+    }
+
+    private struct RunningEleganceMetrics
+    {
+        public int PlyCount;
+        public int EvaluatedPlyCount;
+        public int ForcingMoveCount;
+        public int QuietImprovementCount;
+        public int TrendBreakCount;
+        public int BlunderCount;
+        public int MistakeCount;
+        public int DubiousCount;
+        public int SoundSacrificeCount;
+        public int UnsoundSacrificeCount;
+        public int SoundSacrificeCp;
+        public int UnsoundSacrificeCp;
+        public double SwingAbsSum;
+        public int SwingCount;
+        public double MoverDeltaSum;
+        public double MoverDeltaSquareSum;
+        public int MoverDeltaCount;
+        public int? PreviousEvalWhiteCp;
+        public double? WhiteLastEval;
+        public double? WhitePreviousDelta;
+        public double? BlackLastEval;
+        public double? BlackPreviousDelta;
+    }
+}
+
+/// <summary>
+/// Minimal UCI engine wrapper.
+/// </summary>
+internal sealed class UciEngine : IDisposable
+{
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+    private const int MateCpBase = 100_000;
+    private int _abortRequested;
+
+    private static readonly Regex ScoreCpRegex = new(@"\bscore\s+cp\s+(-?\d+)", RegexOptions.Compiled);
+    private static readonly Regex ScoreMateRegex = new(@"\bscore\s+mate\s+(-?\d+)", RegexOptions.Compiled);
+    private static readonly Regex DepthRegex = new(@"\bdepth\s+(\d+)", RegexOptions.Compiled);
+
+    private readonly Process _process;
+
+    public UciEngine(string enginePath)
+    {
+        _process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = enginePath,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            }
+        };
+
+        // Drain stderr to avoid blocking if the engine writes warnings or errors.
+        _process.ErrorDataReceived += (_, _) => { };
+    }
+
+    public bool HasExited
+    {
+        get
+        {
+            try
+            {
+                return _process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+        }
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_process.Start())
+        {
+            throw new InvalidOperationException("Failed to start UCI engine process.");
+        }
+
+        _process.BeginErrorReadLine();
+
+        await SendAsync("uci", cancellationToken);
+        await WaitForTokenAsync("uciok", DefaultTimeout, cancellationToken);
+
+        await SendAsync("isready", cancellationToken);
+        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+    }
+
+    public async Task NewGameAsync(CancellationToken cancellationToken = default)
+    {
+        await SendAsync("ucinewgame", cancellationToken);
+        await SendAsync("isready", cancellationToken);
+        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+    }
+
+    public async Task SetOptionAsync(string name, string value, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Option name is required.", nameof(name));
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        await SendAsync($"setoption name {name} value {value}", cancellationToken);
+        await SendAsync("isready", cancellationToken);
+        await WaitForTokenAsync("readyok", DefaultTimeout, cancellationToken);
+    }
+
+    public async Task<EngineScore> AnalyzeAsync(string fen, int depth, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(fen))
+        {
+            throw new ArgumentException("FEN is required.", nameof(fen));
+        }
+
+        if (depth <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(depth), "Depth must be greater than zero.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await SendAsync($"position fen {fen}", cancellationToken);
+        await SendAsync($"go depth {depth}", cancellationToken);
+
+        var timeout = GetAnalysisTimeout(depth);
+        return await ReadScoreUntilBestMoveAsync(timeout, cancellationToken);
+    }
+
+    private async Task SendAsync(string command, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _process.StandardInput.WriteLineAsync(command);
+        await _process.StandardInput.FlushAsync();
+    }
+
+    private static TimeSpan GetAnalysisTimeout(int depth)
+    {
+        // Heuristic timeout scaling with depth; capped to avoid hangs.
+        var seconds = Math.Clamp((int)Math.Ceiling(depth * 2.5), 15, 120);
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private async Task<EngineScore> ReadScoreUntilBestMoveAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        var bestDepth = -1;
+        var bestScore = EngineScore.FromCentipawns(0);
+        var timedOut = false;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                timedOut = true;
+                break;
+            }
+
+            string? line;
+            try
+            {
+                var lineTask = _process.StandardOutput.ReadLineAsync();
+                line = await lineTask.WaitAsync(remaining, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                timedOut = true;
+                break;
+            }
+
+            if (line == null)
+            {
+                break;
+            }
+
+            if (line.StartsWith("bestmove", StringComparison.OrdinalIgnoreCase))
+            {
+                return bestScore;
+            }
+
+            if (!line.StartsWith("info", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var depth = TryParseDepth(line);
+            var score = TryParseScore(line);
+
+            if (!score.HasValue)
+            {
+                continue;
+            }
+
+            if (depth >= bestDepth)
+            {
+                bestDepth = depth;
+                bestScore = score.Value;
+            }
+        }
+
+        if (timedOut)
+        {
+            await StopSearchAndDrainAsync(cancellationToken);
+        }
+
+        // Return the best score we saw before timing out.
+        return bestScore;
+    }
+
+    private async Task StopSearchAndDrainAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SendAsync("stop", cancellationToken);
+        }
+        catch
+        {
+            return;
+        }
+
+        try
+        {
+            await WaitForTokenAsync("bestmove", TimeSpan.FromMilliseconds(500), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+        }
+    }
+
+    private static int TryParseDepth(string line)
+    {
+        var match = DepthRegex.Match(line);
+        return match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var depth)
+            ? depth
+            : -1;
+    }
+
+    private static EngineScore? TryParseScore(string line)
+    {
+        var mateMatch = ScoreMateRegex.Match(line);
+        if (mateMatch.Success && int.TryParse(mateMatch.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mateIn))
+        {
+            var sign = Math.Sign(mateIn);
+            var distance = Math.Min(999, Math.Abs(mateIn));
+            var cpEquivalent = sign * (MateCpBase - distance * 100);
+            return EngineScore.FromMate(mateIn, cpEquivalent);
+        }
+
+        var cpMatch = ScoreCpRegex.Match(line);
+        if (cpMatch.Success && int.TryParse(cpMatch.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var cp))
+        {
+            return EngineScore.FromCentipawns(cp);
+        }
+
+        return null;
+    }
+
+    private async Task WaitForTokenAsync(string token, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            var lineTask = _process.StandardOutput.ReadLineAsync();
+            var line = await lineTask.WaitAsync(remaining, cancellationToken);
+            if (line == null)
+            {
+                break;
+            }
+
+            if (line.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        throw new TimeoutException($"Timed out waiting for engine response: {token}");
+    }
+
+    public void RequestAbort()
+    {
+        if (Interlocked.Exchange(ref _abortRequested, 1) == 1)
+        {
+            return;
+        }
+
+        // Best-effort attempt to stop the current search and unblock readers.
+        try
+        {
+            if (!_process.HasExited)
+            {
+                _process.StandardInput.WriteLine("stop");
+                _process.StandardInput.Flush();
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (!_process.HasExited)
+            {
+                _process.StandardInput.WriteLine("quit");
+                _process.StandardInput.Flush();
+                if (!_process.WaitForExit(2000))
+                {
+                    _process.Kill(entireProcessTree: true);
+                }
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _process.Dispose();
+        }
+    }
+}
+===== END: PgnTools\Services\ChessAnalyzerService.cs =====
+
+===== BEGIN: PgnTools\Services\EleganceScoreCalculator.cs =====
+using System.Globalization;
+using System.Text.Json;
+
+namespace PgnTools.Services;
+
+internal readonly record struct EleganceScore(
+    int Score,
+    double Soundness,
+    double Coherence,
+    double Tactical,
+    double Quiet,
+    double LengthPenalty);
+
+internal readonly record struct EleganceEvaluationMetrics(
+    int PlyCount,
+    int EvaluatedPlyCount,
+    double ForcingMovePercent,
+    int QuietImprovementCount,
+    int TrendBreakCount,
+    int BlunderCount,
+    int MistakeCount,
+    int DubiousCount,
+    double AverageAbsSwingCp,
+    double EvalStdDevCp,
+    int SoundSacrificeCount,
+    int UnsoundSacrificeCount,
+    int SoundSacrificeCp,
+    int UnsoundSacrificeCp);
+
+internal static class EleganceScoreCalculator
+{
+    private static readonly NormalizationDistributions Norms = NormalizationDistributions.Load();
+
+    public static EleganceScore Calculate(in EleganceEvaluationMetrics metrics)
+    {
+        if (metrics.PlyCount <= 0)
+        {
+            return default;
+        }
+
+        var coverage = metrics.PlyCount > 0 ? metrics.EvaluatedPlyCount / (double)metrics.PlyCount : 0d;
+
+        var soundnessRaw = metrics.AverageAbsSwingCp + (metrics.BlunderCount * 25d) + (metrics.MistakeCount * 10d) + (metrics.DubiousCount * 5d);
+        var coherenceRaw = metrics.EvalStdDevCp + (metrics.TrendBreakCount * 18d);
+        var tacticalRaw = metrics.ForcingMovePercent;
+        var quietRaw = metrics.PlyCount > 0 ? metrics.QuietImprovementCount * 100d / metrics.PlyCount : 0d;
+
+        // Sacrifice awareness: reward compensated material losses, penalize unsound ones.
+        var soundSacrificeUnits = metrics.SoundSacrificeCp / 100d;
+        var unsoundSacrificeUnits = metrics.UnsoundSacrificeCp / 100d;
+        soundnessRaw += unsoundSacrificeUnits * 35d;
+        quietRaw += (soundSacrificeUnits * 0.75d) + (metrics.SoundSacrificeCount * 0.35d);
+        quietRaw -= (unsoundSacrificeUnits * 0.40d) + (metrics.UnsoundSacrificeCount * 0.25d);
+        quietRaw = Math.Max(0d, quietRaw);
+
+        var soundness = Norms.Normalize(DistributionType.Soundness, soundnessRaw);
+        var coherence = Norms.Normalize(DistributionType.Coherence, coherenceRaw);
+        var tactical = Norms.Normalize(DistributionType.TacticalDensity, tacticalRaw);
+        var quiet = Norms.Normalize(DistributionType.QuietBrilliancy, quietRaw);
+        var lengthPenalty = ComputeLengthPenalty(metrics.PlyCount);
+
+        if (coverage < 0.8d)
+        {
+            var scale = Math.Clamp((coverage - 0.2d) / 0.6d, 0d, 1d);
+            soundness *= scale;
+            coherence *= scale;
+            quiet *= scale;
+        }
+
+        var rawScore =
+            (0.25d * soundness) +
+            (0.20d * coherence) +
+            (0.20d * tactical) +
+            (0.30d * quiet) -
+            (0.05d * lengthPenalty);
+
+        var score = (int)Math.Round(Math.Clamp(rawScore, 0d, 100d), MidpointRounding.AwayFromZero);
+
+        return new EleganceScore(score, soundness, coherence, tactical, quiet, lengthPenalty);
+    }
+
+    public static string FormatDetails(in EleganceScore elegance)
+    {
+        return FormattableString.Invariant(
+            $"S={Math.Round(elegance.Soundness, MidpointRounding.AwayFromZero):0};C={Math.Round(elegance.Coherence, MidpointRounding.AwayFromZero):0};T={Math.Round(elegance.Tactical, MidpointRounding.AwayFromZero):0};Q={Math.Round(elegance.Quiet, MidpointRounding.AwayFromZero):0};L={Math.Round(elegance.LengthPenalty, MidpointRounding.AwayFromZero):0}");
+    }
+
+    private static double ComputeLengthPenalty(int plyCount)
+    {
+        const int threshold = 160;
+        if (plyCount <= threshold)
+        {
+            return 0;
+        }
+
+        var distance = plyCount - threshold;
+        return 100d * (1d - 1d / (1d + Math.Exp(-distance / 30d)));
+    }
+
+    private enum DistributionType
+    {
+        Soundness,
+        Coherence,
+        TacticalDensity,
+        QuietBrilliancy
+    }
+
+    private sealed class NormalizationDistributions
+    {
+        private readonly Dictionary<DistributionType, DistributionBand> _bands;
+
+        private NormalizationDistributions(Dictionary<DistributionType, DistributionBand> bands)
+        {
+            _bands = bands;
+        }
+
+        public static NormalizationDistributions Load()
+        {
+            var bands = CreateDefaultBands();
+            var configPath = ResolveConfigPath();
+            if (string.IsNullOrWhiteSpace(configPath))
+            {
+                return new NormalizationDistributions(bands);
+            }
+
+            try
+            {
+                using var stream = File.OpenRead(configPath);
+                var config = JsonSerializer.Deserialize<NormalizationConfig>(stream);
+                if (config?.Distributions == null)
+                {
+                    return new NormalizationDistributions(bands);
+                }
+
+                foreach (var entry in config.Distributions)
+                {
+                    if (!TryMapDistribution(entry.Key, out var type))
+                    {
+                        continue;
+                    }
+
+                    var value = entry.Value;
+                    if (value == null || !value.P10.HasValue || !value.P90.HasValue || !value.HigherIsBetter.HasValue)
+                    {
+                        continue;
+                    }
+
+                    bands[type] = new DistributionBand(value.P10.Value, value.P90.Value, value.HigherIsBetter.Value);
+                }
+            }
+            catch
+            {
+            }
+
+            return new NormalizationDistributions(bands);
+        }
+
+        public double Normalize(DistributionType type, double rawValue)
+        {
+            if (!_bands.TryGetValue(type, out var band))
+            {
+                return 50;
+            }
+
+            return band.Normalize(rawValue);
+        }
+
+        private static Dictionary<DistributionType, DistributionBand> CreateDefaultBands()
+        {
+            return new Dictionary<DistributionType, DistributionBand>
+            {
+                { DistributionType.Soundness, new DistributionBand(45d, 280d, HigherIsBetter: false) },
+                { DistributionType.Coherence, new DistributionBand(35d, 240d, HigherIsBetter: false) },
+                { DistributionType.TacticalDensity, new DistributionBand(22d, 56d, HigherIsBetter: true) },
+                { DistributionType.QuietBrilliancy, new DistributionBand(0.4d, 6.5d, HigherIsBetter: true) }
+            };
+        }
+
+        private static string? ResolveConfigPath()
+        {
+            var primary = Path.Combine(AppContext.BaseDirectory, "Assets", "elegance-distributions.json");
+            if (File.Exists(primary))
+            {
+                return primary;
+            }
+
+            var secondary = Path.Combine(AppContext.BaseDirectory, "elegance-distributions.json");
+            return File.Exists(secondary) ? secondary : null;
+        }
+
+        private static bool TryMapDistribution(string key, out DistributionType type)
+        {
+            type = default;
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return false;
+            }
+
+            return key.Trim().ToLowerInvariant() switch
+            {
+                "soundness" => Assign(DistributionType.Soundness, out type),
+                "coherence" => Assign(DistributionType.Coherence, out type),
+                "tacticaldensity" => Assign(DistributionType.TacticalDensity, out type),
+                "quietbrilliancy" => Assign(DistributionType.QuietBrilliancy, out type),
+                _ => false
+            };
+        }
+
+        private static bool Assign(DistributionType mapped, out DistributionType type)
+        {
+            type = mapped;
+            return true;
+        }
+    }
+
+    private readonly record struct DistributionBand(double P10, double P90, bool HigherIsBetter)
+    {
+        public double Normalize(double rawValue)
+        {
+            if (P90 <= P10)
+            {
+                return 50;
+            }
+
+            var t = (rawValue - P10) / (P90 - P10);
+            if (!HigherIsBetter)
+            {
+                t = 1d - t;
+            }
+
+            return Math.Clamp(t, 0d, 1d) * 100d;
+        }
+    }
+
+    private sealed class NormalizationConfig
+    {
+        public Dictionary<string, DistributionConfigEntry>? Distributions { get; set; }
+    }
+
+    private sealed class DistributionConfigEntry
+    {
+        public double? P10 { get; set; }
+        public double? P90 { get; set; }
+        public bool? HigherIsBetter { get; set; }
+    }
+}
+===== END: PgnTools\Services\EleganceScoreCalculator.cs =====
+
+===== BEGIN: PgnTools\Services\StockfishDownloaderService.cs =====
+using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Runtime.Intrinsics.X86;
+using System.Text.Json;
+
+namespace PgnTools.Services;
+
+public sealed record StockfishDownloadResult(
+    string Tag,
+    string Variant,
+    string InstallDirectory,
+    string ExecutablePath);
+
+public interface IStockfishDownloaderService
+{
+    StockfishVariant SelectBestVariant();
+
+    Task<StockfishDownloadResult> DownloadLatestAsync(
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default);
+}
+
+public enum StockfishVariant
+{
+    Base,
+    Sse41Popcnt,
+    Bmi2,
+    Avx2,
+    Avx512,
+    Vnni256,
+    Vnni512
+}
+
+/// <summary>
+/// Downloads the latest Stockfish release from the official GitHub repository,
+/// selecting a suitable variant for the current CPU.
+/// </summary>
+public sealed class StockfishDownloaderService : IStockfishDownloaderService
+{
+    private const int BufferSize = 65536;
+    private const int MaxRetryAttempts = 4;
+    private static readonly TimeSpan ReleaseRequestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DownloadRequestTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan[] RetryDelays =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2)
+    ];
+    private static readonly Uri LatestReleaseUri = new("https://api.github.com/repos/official-stockfish/Stockfish/releases/latest");
+
+    private static readonly HttpClient HttpClient = CreateClient();
+
+    public StockfishVariant SelectBestVariant()
+    {
+        // Prefer the most capable build available on this CPU.
+        // Order mirrors the release asset variants.
+        if (IsVnni512Supported())
+        {
+            return StockfishVariant.Vnni512;
+        }
+
+        if (IsVnni256Supported())
+        {
+            return StockfishVariant.Vnni256;
+        }
+
+        if (IsAvx512Supported())
+        {
+            return StockfishVariant.Avx512;
+        }
+
+        if (Avx2.IsSupported)
+        {
+            return StockfishVariant.Avx2;
+        }
+
+        if (Bmi2.IsSupported)
+        {
+            return StockfishVariant.Bmi2;
+        }
+
+        if (Sse41.IsSupported && Popcnt.IsSupported)
+        {
+            return StockfishVariant.Sse41Popcnt;
+        }
+
+        return StockfishVariant.Base;
+    }
+
+    public async Task<StockfishDownloadResult> DownloadLatestAsync(
+        IProgress<string>? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        status?.Report("Querying latest Stockfish release...");
+
+        using var response = await SendWithRetryAsync(
+            () => CreateGitHubRequest(LatestReleaseUri, expectsJson: true),
+            ReleaseRequestTimeout,
+            cancellationToken);
+
+        if (IsRateLimited(response))
+        {
+            throw new InvalidOperationException(
+                "GitHub API rate limit exceeded. Set PGNTOOLS_GITHUB_TOKEN or GITHUB_TOKEN to increase the limit.");
+        }
+
+        response.EnsureSuccessStatusCode();
+
+        await using var jsonStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(jsonStream, cancellationToken: cancellationToken);
+
+        var root = document.RootElement;
+        var tag = root.GetProperty("tag_name").GetString() ?? "latest";
+        var assets = root.GetProperty("assets");
+
+        var variant = SelectBestVariant();
+        var asset = SelectAsset(assets, variant);
+        if (asset is null)
+        {
+            throw new InvalidOperationException("No compatible Stockfish Windows asset was found in the latest release.");
+        }
+
+        var assetName = asset.Name;
+        var downloadUrl = !string.IsNullOrWhiteSpace(asset.BrowserUrl)
+            ? asset.BrowserUrl
+            : asset.ApiUrl;
+
+        if (string.IsNullOrWhiteSpace(downloadUrl))
+        {
+            throw new InvalidOperationException($"Download URL not found for asset '{assetName}'.");
+        }
+
+        var installDirectory = GetInstallDirectory(tag, variant);
+        if (Directory.Exists(installDirectory))
+        {
+            Directory.Delete(installDirectory, recursive: true);
+        }
+
+        Directory.CreateDirectory(installDirectory);
+
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"stockfish_{tag}_{Guid.NewGuid():N}.zip");
+
+        try
+        {
+            status?.Report($"Downloading {assetName}...");
+
+            using var assetResponse = await SendWithRetryAsync(
+                () => CreateGitHubRequest(new Uri(downloadUrl), expectsJson: false),
+                DownloadRequestTimeout,
+                cancellationToken);
+
+            if (IsRateLimited(assetResponse))
+            {
+                throw new InvalidOperationException(
+                    "GitHub API rate limit exceeded while downloading the asset. Set PGNTOOLS_GITHUB_TOKEN or GITHUB_TOKEN to increase the limit.");
+            }
+
+            assetResponse.EnsureSuccessStatusCode();
+
+            await using var assetStream = await assetResponse.Content.ReadAsStreamAsync(cancellationToken);
+            await using var fileStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
+            await assetStream.CopyToAsync(fileStream, cancellationToken);
+            await fileStream.FlushAsync(cancellationToken);
+            fileStream.Flush(true);
+
+            status?.Report("Extracting Stockfish...");
+            ZipFile.ExtractToDirectory(tempZipPath, installDirectory, overwriteFiles: true);
+
+            status?.Report("Locating engine executable...");
+            var exePath = FindExecutable(installDirectory, variant);
+            if (exePath == null)
+            {
+                throw new FileNotFoundException("Stockfish executable was not found after extraction.", installDirectory);
+            }
+
+            status?.Report($"Stockfish ready: {Path.GetFileName(exePath)}");
+
+            return new StockfishDownloadResult(tag, variant.ToString(), installDirectory, exePath);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempZipPath))
+                {
+                    File.Delete(tempZipPath);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+
+        // GitHub API requires a User-Agent header.
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
+    }
+
+    private static AssetInfo? SelectAsset(JsonElement assets, StockfishVariant preferredVariant)
+    {
+        var assetsList = assets.EnumerateArray()
+            .Select(a => new
+            {
+                Name = a.GetProperty("name").GetString(),
+                ApiUrl = a.TryGetProperty("url", out var apiUrl) ? apiUrl.GetString() : null,
+                BrowserUrl = a.TryGetProperty("browser_download_url", out var browserUrl) ? browserUrl.GetString() : null
+            })
+            .Where(a => !string.IsNullOrWhiteSpace(a.Name) &&
+                        (!string.IsNullOrWhiteSpace(a.ApiUrl) || !string.IsNullOrWhiteSpace(a.BrowserUrl)))
+            .Select(a => new AssetInfo(a.Name!, a.ApiUrl ?? string.Empty, a.BrowserUrl ?? string.Empty))
+            .ToList();
+
+        if (assetsList.Count == 0)
+        {
+            return null;
+        }
+
+        var preferredNames = GetVariantAssetNamesInPriority(preferredVariant);
+        foreach (var name in preferredNames)
+        {
+            var match = assetsList.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                return match;
+            }
+        }
+
+        // Final fallback: any stockfish Windows x64 zip.
+        var fallback = assetsList.FirstOrDefault(a =>
+            a.Name!.StartsWith("stockfish-windows-x86-64", StringComparison.OrdinalIgnoreCase) &&
+            a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
+
+        return fallback;
+    }
+
+    private static IReadOnlyList<string> GetVariantAssetNamesInPriority(StockfishVariant variant)
+    {
+        // Order: preferred variant first, then progressively more general options.
+        var variants = variant switch
+        {
+            StockfishVariant.Vnni512 => new[]
+            {
+                "stockfish-windows-x86-64-vnni512.zip",
+                "stockfish-windows-x86-64-vnni256.zip",
+                "stockfish-windows-x86-64-avx512.zip",
+                "stockfish-windows-x86-64-avx2.zip",
+                "stockfish-windows-x86-64-bmi2.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            StockfishVariant.Vnni256 => new[]
+            {
+                "stockfish-windows-x86-64-vnni256.zip",
+                "stockfish-windows-x86-64-avx512.zip",
+                "stockfish-windows-x86-64-avx2.zip",
+                "stockfish-windows-x86-64-bmi2.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            StockfishVariant.Avx512 => new[]
+            {
+                "stockfish-windows-x86-64-avx512.zip",
+                "stockfish-windows-x86-64-avx2.zip",
+                "stockfish-windows-x86-64-bmi2.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            StockfishVariant.Avx2 => new[]
+            {
+                "stockfish-windows-x86-64-avx2.zip",
+                "stockfish-windows-x86-64-bmi2.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            StockfishVariant.Bmi2 => new[]
+            {
+                "stockfish-windows-x86-64-bmi2.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            StockfishVariant.Sse41Popcnt => new[]
+            {
+                "stockfish-windows-x86-64-sse41-popcnt.zip",
+                "stockfish-windows-x86-64.zip"
+            },
+            _ => new[]
+            {
+                "stockfish-windows-x86-64.zip",
+                "stockfish-windows-x86-64-sse41-popcnt.zip"
+            }
+        };
+
+        return variants;
+    }
+
+    private static string GetInstallDirectory(string tag, StockfishVariant variant)
+    {
+        var variantSegment = variant.ToString().ToLowerInvariant();
+
+        var assetsPreferred = Path.Combine(
+            AppContext.BaseDirectory,
+            "Assets",
+            "stockfish",
+            tag,
+            variantSegment);
+
+        if (CanWriteToDirectory(assetsPreferred))
+        {
+            return assetsPreferred;
+        }
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PgnTools",
+            "Stockfish",
+            tag,
+            variantSegment);
+    }
+
+    private static bool CanWriteToDirectory(string directoryPath)
+    {
+        try
+        {
+            Directory.CreateDirectory(directoryPath);
+            var probePath = Path.Combine(directoryPath, $".write_probe_{Guid.NewGuid():N}.tmp");
+            using (new FileStream(probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+            }
+
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? FindExecutable(string installDirectory, StockfishVariant variant)
+    {
+        var exes = Directory.EnumerateFiles(installDirectory, "*.exe", SearchOption.AllDirectories)
+            .Where(p => Path.GetFileName(p).Contains("stockfish", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (exes.Count == 0)
+        {
+            return null;
+        }
+
+        var variantToken = variant.ToString().ToLowerInvariant();
+
+        var preferred = exes
+            .Where(p => Path.GetFileName(p).Contains(variantToken, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p.Length)
+            .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(preferred))
+        {
+            return preferred;
+        }
+
+        return exes
+            .OrderBy(p => p.Length)
+            .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .First();
+    }
+
+    private static bool IsAvx512Supported()
+    {
+#if NET8_0_OR_GREATER
+        return Avx512F.IsSupported;
+#else
+        return false;
+#endif
+    }
+
+    private static bool IsVnni256Supported()
+    {
+#if NET8_0_OR_GREATER
+        return AvxVnni.IsSupported;
+#else
+        return false;
+#endif
+    }
+
+    private static bool IsVnni512Supported()
+    {
+#if NET8_0_OR_GREATER
+        // There is no explicit vnni512 intrinsic in all TFMs; treat AVX-512 VNNI
+        // as equivalent to AVX-512 support when available.
+        return IsAvx512Supported() && IsVnni256Supported();
+#else
+        return false;
+#endif
+    }
+
+    private static HttpRequestMessage CreateGitHubRequest(Uri uri, bool expectsJson)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri)
+        {
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
+            Version = HttpVersion.Version20
+        };
+
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(
+            expectsJson ? "application/vnd.github+json" : "application/octet-stream"));
+        request.Headers.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+
+        var token = GetGitHubToken();
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+
+        return request;
+    }
+
+    private static string? GetGitHubToken()
+    {
+        var token = Environment.GetEnvironmentVariable("PGNTOOLS_GITHUB_TOKEN");
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return token;
+        }
+
+        token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return token;
+        }
+
+        token = Environment.GetEnvironmentVariable("GH_TOKEN");
+        return string.IsNullOrWhiteSpace(token) ? null : token;
+    }
+
+    private static async Task<HttpResponseMessage> SendWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var lastException = (Exception?)null;
+
+        for (var attempt = 1; attempt <= MaxRetryAttempts; attempt++)
+        {
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.CancelAfter(timeout);
+
+            using var request = requestFactory();
+            try
+            {
+                var response = await HttpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        attemptCts.Token)
+                    .ConfigureAwait(false);
+
+                if (!IsTransientStatusCode(response.StatusCode) || attempt == MaxRetryAttempts)
+                {
+                    return response;
+                }
+
+                response.Dispose();
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxRetryAttempts)
+            {
+                lastException = new TimeoutException("Request timed out.");
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRetryAttempts)
+            {
+                lastException = ex;
+            }
+
+            var delay = GetRetryDelay(attempt);
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException("Failed to reach GitHub after multiple attempts.", lastException);
+    }
+
+    private static TimeSpan GetRetryDelay(int attempt)
+    {
+        if (attempt <= 0 || attempt > RetryDelays.Length)
+        {
+            return TimeSpan.FromSeconds(2);
+        }
+
+        return RetryDelays[attempt - 1];
+    }
+
+    private static bool IsTransientStatusCode(HttpStatusCode statusCode)
+    {
+        return statusCode == HttpStatusCode.RequestTimeout ||
+               statusCode == HttpStatusCode.TooManyRequests ||
+               statusCode == HttpStatusCode.InternalServerError ||
+               statusCode == HttpStatusCode.BadGateway ||
+               statusCode == HttpStatusCode.ServiceUnavailable ||
+               statusCode == HttpStatusCode.GatewayTimeout;
+    }
+
+    private static bool IsRateLimited(HttpResponseMessage response)
+    {
+        if (response.StatusCode != HttpStatusCode.Forbidden)
+        {
+            return false;
+        }
+
+        if (!response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining))
+        {
+            return false;
+        }
+
+        foreach (var value in remaining)
+        {
+            if (string.Equals(value, "0", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private sealed record AssetInfo(string Name, string ApiUrl, string BrowserUrl);
+}
+===== END: PgnTools\Services\StockfishDownloaderService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Chess Analyzer tool.
+/// </summary>
+public partial class ChessAnalyzerViewModel(
+    IChessAnalyzerService chessAnalyzerService,
+    IStockfishDownloaderService stockfishDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IChessAnalyzerService _chessAnalyzerService = chessAnalyzerService;
+    private readonly IStockfishDownloaderService _stockfishDownloaderService = stockfishDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private long _progressGames;
+    private long _progressTotal;
+    private const string SettingsPrefix = nameof(ChessAnalyzerViewModel);
+
+    [ObservableProperty]
+    private string _inputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _inputFileName = string.Empty;
+
+    [ObservableProperty]
+    private string _enginePath = string.Empty;
+
+    [ObservableProperty]
+    private string _engineName = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private int _depth = 18;
+
+    [ObservableProperty]
+    private bool _addEleganceTags;
+
+    [ObservableProperty]
+    private bool _useTablebases;
+
+    [ObservableProperty]
+    private string _tablebasePath = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private double _progressValue;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select an input PGN and a UCI engine (e.g., Stockfish)";
+    public void Initialize()
+    {
+        Title = "Chess Analyzer";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectInputFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            InputFilePath = file.Path;
+            InputFileName = file.Name;
+            StatusMessage = $"Selected input: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
+                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_analyzed.pgn";
+                OutputFilePath = Path.Combine(directory, suggestedName);
+                OutputFileName = Path.GetFileName(OutputFilePath);
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting input file: {ex.Message}";
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectEngineAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Engine",
+                ".exe");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access engine: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            EnginePath = file.Path;
+            EngineName = file.Name;
+            StatusMessage = $"Selected engine: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting engine: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDownloadLatestEngine))]
+    private async Task DownloadLatestEngineAsync()
+    {
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Preparing Stockfish download...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            ProgressValue = 0;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var statusProgress = new Progress<string>(message =>
+            {
+                StatusMessage = message;
+                StatusDetail = BuildProgressDetail(ProgressValue);
+            });
+
+            var result = await _stockfishDownloaderService.DownloadLatestAsync(
+                statusProgress,
+                _cancellationTokenSource.Token);
+
+            EnginePath = result.ExecutablePath;
+            EngineName = Path.GetFileName(result.ExecutablePath);
+            StatusMessage = $"Stockfish downloaded ({result.Tag}, {result.Variant}).";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100);
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Stockfish download cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error downloading Stockfish: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
+                ? "analyzed.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_analyzed.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file == null)
+            {
+                return;
+    }
+            OutputFilePath = file.Path;
+            OutputFileName = file.Name;
+            StatusMessage = $"Selected output: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectTablebaseFolderAsync()
+    {
+        try
+        {
+            var folder = await FilePickerHelper.PickFolderAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Tablebases");
+            if (folder == null)
+            {
+                return;
+    }
+            TablebasePath = folder.Path;
+            UseTablebases = true;
+            StatusMessage = $"Selected tablebase folder: {folder.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting tablebase folder: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    private bool CanDownloadLatestEngine() => !IsRunning;
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (string.IsNullOrWhiteSpace(InputFilePath) ||
+            string.IsNullOrWhiteSpace(EnginePath) ||
+            string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var inputFullPath = Path.GetFullPath(InputFilePath);
+        var outputFullPath = Path.GetFullPath(OutputFilePath);
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "Input and output files must be different.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (Depth <= 0)
+        {
+            StatusMessage = "Depth must be greater than zero.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!File.Exists(EnginePath))
+        {
+            StatusMessage = "Engine executable not found.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (UseTablebases && (string.IsNullOrWhiteSpace(TablebasePath) || !Directory.Exists(TablebasePath)))
+        {
+            StatusMessage = "Tablebase folder not found.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressValue = 0;
+            StatusMessage = "Initializing engine...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            _progressGames = 0;
+            _progressTotal = 0;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<AnalyzerProgress>(p =>
+            {
+                _progressGames = p.ProcessedGames;
+                _progressTotal = p.TotalGames;
+                ProgressValue = p.Percent;
+                StatusMessage = $"Analyzing games... {p.Percent:0}%";
+                StatusDetail = BuildProgressDetail(p.Percent, p.ProcessedGames, p.TotalGames, "games");
+            });
+
+            await _chessAnalyzerService.AnalyzePgnAsync(
+                InputFilePath,
+                OutputFilePath,
+                EnginePath,
+                Depth,
+                UseTablebases ? TablebasePath : null,
+                progress,
+                _cancellationTokenSource.Token,
+                AddEleganceTags);
+
+            if (_cancellationTokenSource?.IsCancellationRequested == true)
+            {
+                throw new OperationCanceledException(_cancellationTokenSource.Token);
+    }
+            ProgressValue = 100;
+            StatusMessage = AddEleganceTags
+                ? "Analysis and Elegance tagging complete. (Move-by-move evals require SAN/FEN support.)"
+                : "Analysis complete. (Move-by-move evals require SAN/FEN support.)";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, _progressTotal > 0 ? _progressTotal : _progressGames, _progressTotal, "games");
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Analysis cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue, _progressGames, _progressTotal, "games");
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(InputFilePath) &&
+        !string.IsNullOrWhiteSpace(EnginePath) &&
+        !string.IsNullOrWhiteSpace(OutputFilePath) &&
+        File.Exists(InputFilePath) &&
+        File.Exists(EnginePath) &&
+        (!UseTablebases || (!string.IsNullOrWhiteSpace(TablebasePath) && Directory.Exists(TablebasePath)));
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling... finishing current game.";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+    partial void OnInputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnEnginePathChanged(string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) && !File.Exists(value))
+        {
+            StatusMessage = "Engine executable not found.";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnDepthChanged(int value)
+    {
+        const int minDepth = 1;
+        const int maxDepth = 50;
+
+        if (value < minDepth)
+        {
+            Depth = minDepth;
+            return;
+    }
+        if (value > maxDepth)
+        {
+            Depth = maxDepth;
+            return;
+    }
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnUseTablebasesChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnTablebasePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+        DownloadLatestEngineCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
+        {
+            InputFileName = Path.GetFileName(InputFilePath);
+    }
+        else
+        {
+            InputFilePath = string.Empty;
+            InputFileName = string.Empty;
+    }
+        EnginePath = _settings.GetValue($"{SettingsPrefix}.{nameof(EnginePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(EnginePath) && !File.Exists(EnginePath))
+        {
+            EnginePath = string.Empty;
+    }
+        if (string.IsNullOrWhiteSpace(EnginePath) || IsTemporaryPath(EnginePath))
+        {
+            var preferredEnginePath = ResolvePreferredEnginePath();
+            if (!string.IsNullOrWhiteSpace(preferredEnginePath))
+            {
+                EnginePath = preferredEnginePath;
+    }
+        }
+
+        EngineName = !string.IsNullOrWhiteSpace(EnginePath) && File.Exists(EnginePath)
+            ? Path.GetFileName(EnginePath)
+            : string.Empty;
+
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+
+        Depth = _settings.GetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
+        AddEleganceTags = _settings.GetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
+        UseTablebases = _settings.GetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
+        TablebasePath = _settings.GetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
+        if (!string.IsNullOrWhiteSpace(TablebasePath) && !Directory.Exists(TablebasePath))
+        {
+            TablebasePath = string.Empty;
+            UseTablebases = false;
+    }
+    }
+
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(EnginePath)}", EnginePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Depth)}", Depth);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
+    }
+    private static string ResolvePreferredEnginePath()
+    {
+        var assetsRoot = Path.Combine(AppContext.BaseDirectory, "Assets");
+        var assetsCandidate = FindStockfishExeUnder(assetsRoot);
+        if (!string.IsNullOrWhiteSpace(assetsCandidate))
+        {
+            return assetsCandidate;
+    }
+        var localAppDataRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PgnTools",
+            "Stockfish");
+
+        return FindStockfishExeUnder(localAppDataRoot) ?? string.Empty;
+    }
+    private static string? FindStockfishExeUnder(string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            return null;
+    }
+        try
+        {
+            return Directory.EnumerateFiles(rootPath, "*.exe", SearchOption.AllDirectories)
+                .Where(path => Path.GetFileName(path).Contains("stockfish", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path.Contains($"{Path.DirectorySeparatorChar}Assets{Path.DirectorySeparatorChar}stockfish{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenByDescending(File.GetLastWriteTimeUtc)
+                .ThenBy(path => path.Length)
+                .FirstOrDefault();
+    }
+        catch
+        {
+            return null;
+    }
+    }
+
+    private static bool IsTemporaryPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+    }
+        var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
+        var fullPath = Path.GetFullPath(path);
+        return fullPath.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\ChessAnalyzerPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.ChessAnalyzerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Chess Analyzer" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Run a UCI engine (like Stockfish) to annotate games with evaluations and NAGs."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+            <TextBlock Text="Note: move-by-move analysis requires SAN-to-FEN support."
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="UCI Engine"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select engine executable..."
+                         Text="{x:Bind ViewModel.EnginePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Download Latest"
+                        Command="{x:Bind ViewModel.DownloadLatestEngineCommand}"
+                        Style="{StaticResource Action}"
+                        Margin="0,0,12,0"/>
+
+                <Button Grid.Column="2"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectEngineCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="Depth" VerticalAlignment="Center"/>
+                <NumberBox Width="180"
+                           Minimum="1"
+                           SmallChange="1"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.Depth, Mode=TwoWay}"/>
+            </StackPanel>
+
+            <CheckBox Content="Add Elegance tags (0-100) during analysis"
+                      IsChecked="{x:Bind ViewModel.AddEleganceTags, Mode=TwoWay}"/>
+
+            <TextBlock Text="Tablebases"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Use Syzygy tablebases"
+                      IsChecked="{x:Bind ViewModel.UseTablebases, Mode=TwoWay}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select tablebase folder..."
+                         Text="{x:Bind ViewModel.TablebasePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectTablebaseFolderCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\ChessAnalyzerPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\ChessAnalyzerPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Chess Analyzer tool.
+/// </summary>
+public sealed partial class ChessAnalyzerPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public ChessAnalyzerViewModel ViewModel { get; }
+
+    public ChessAnalyzerPage() : this(App.GetService<ChessAnalyzerViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public ChessAnalyzerPage(ChessAnalyzerViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+
+===== END: PgnTools\Views\Tools\ChessAnalyzerPage.xaml.cs =====
+

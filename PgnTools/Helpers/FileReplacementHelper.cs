@@ -57,22 +57,18 @@ public static class FileReplacementHelper
         {
             try
             {
-                if (File.Exists(destinationPath))
+                var backupPath = CreateBackupPath(destinationPath);
+                try
                 {
-                    File.Replace(tempFilePath, destinationPath, null);
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
                 }
-                else
+                catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath);
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
                 }
-
-                return;
-            }
-            catch (FileNotFoundException)
-            {
-                // Destination does not exist yet, so fallback to a move.
-                File.Move(tempFilePath, destinationPath);
-                return;
             }
             catch (IOException ex) when (attempt < MaxReplaceAttempts)
             {
@@ -119,21 +115,18 @@ public static class FileReplacementHelper
             ct.ThrowIfCancellationRequested();
             try
             {
-                if (File.Exists(destinationPath))
+                var backupPath = CreateBackupPath(destinationPath);
+                try
                 {
-                    File.Replace(tempFilePath, destinationPath, null);
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
                 }
-                else
+                catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath);
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
                 }
-
-                return;
-            }
-            catch (FileNotFoundException)
-            {
-                File.Move(tempFilePath, destinationPath);
-                return;
             }
             catch (IOException ex) when (attempt < MaxReplaceAttempts)
             {
@@ -150,6 +143,38 @@ public static class FileReplacementHelper
         throw new IOException(
             $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
             lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
     }
 }
 // PGNTOOLS-TABLEBASES-END

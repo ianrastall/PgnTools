@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$OutputPath = "..\Context\Lc0_Context.txt",
+    [string]$OutputPath = "..\Context\Analyzer_Context.txt",
     [string]$ExtraManifestPath = "",
-    [string[]]$Tags = @("LC0"),
+    [string[]]$Tags = @("ANALYZER"),
     [switch]$TaggedOnly,
     [switch]$IncludeUntagged
 )
@@ -38,22 +38,24 @@ Write-Host "Repo Root detected as: $RepoRoot" -ForegroundColor Cyan
 # 2. Build File List (Topic Slice)
 # These paths are relative to the Repo Root
 $manualFiles = @(
-    "Docs\Lc0DownloaderService.md",
-    "PgnTools\Services\Lc0DownloaderService.cs",
-    "PgnTools\ViewModels\Tools\Lc0DownloaderViewModel.cs",
-    "PgnTools\Views\Tools\Lc0DownloaderPage.xaml",
-    "PgnTools\Views\Tools\Lc0DownloaderPage.xaml.cs",
+    "PgnTools\Services\ChessAnalyzerService.cs",
+    "PgnTools\Services\EleganceScoreCalculator.cs",
+    "PgnTools\Services\StockfishDownloaderService.cs",
+    "PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs",
+    "PgnTools\Views\Tools\ChessAnalyzerPage.xaml",
+    "PgnTools\Views\Tools\ChessAnalyzerPage.xaml.cs",
+    "PgnTools\Helpers\FileReplacementHelper.cs",
     "PgnTools\Helpers\FileValidationHelper.cs",
     "PgnTools\Helpers\FilePickerHelper.cs",
     "PgnTools\Helpers\PgnHeaderExtensions.cs"
 )
 
-# Auto-discover all Lc0-named files in the primary folders
+# Auto-discover all Analyzer-named files in the primary folders
 $autoPatterns = @(
-    "PgnTools\Services\*Lc0*.cs",
-    "PgnTools\ViewModels\Tools\*Lc0*.cs",
-    "PgnTools\Views\Tools\*Lc0*.xaml",
-    "PgnTools\Views\Tools\*Lc0*.xaml.cs"
+    "PgnTools\Services\*Analyzer*.cs",
+    "PgnTools\ViewModels\Tools\*Analyzer*.cs",
+    "PgnTools\Views\Tools\*Analyzer*.xaml",
+    "PgnTools\Views\Tools\*Analyzer*.xaml.cs"
 )
 
 $autoFiles = foreach ($pattern in $autoPatterns) {
@@ -63,7 +65,7 @@ $autoFiles = foreach ($pattern in $autoPatterns) {
 
 # Optional extra manifest file (one relative path per line, '#' for comments)
 if ([string]::IsNullOrWhiteSpace($ExtraManifestPath)) {
-    $ExtraManifestPath = Join-Path $ScriptLocation "code-dump-lc0.extra.txt"
+    $ExtraManifestPath = Join-Path $ScriptLocation "code-dump-analyzer.extra.txt"
 }
 
 $extraFiles = @()
@@ -95,7 +97,7 @@ $writer = [System.IO.StreamWriter]::new($OutputFullPath, $false, $utf8)
 
 try {
     # Write Header
-    $writer.WriteLine("# Context Dump: Lc0")
+    $writer.WriteLine("# Context Dump: Analyzer")
     $writer.WriteLine("# Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
     $writer.WriteLine("# File Count: $($targetFiles.Count)")
     $writer.WriteLine()
