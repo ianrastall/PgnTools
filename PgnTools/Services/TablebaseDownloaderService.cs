@@ -75,7 +75,7 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         {
             ct.ThrowIfCancellationRequested();
 
-            var fileName = Path.GetFileName(url);
+            var fileName = GetFileNameFromUrl(url);
             var filePath = Path.Combine(targetPath, fileName);
             var finalBytesRead = 0L;
             long? finalTotalBytes = null;
@@ -287,14 +287,7 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
 
         try
         {
-            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
-            using var headResponse = await httpClient.SendAsync(headRequest, ct).ConfigureAwait(false);
-            if (!headResponse.IsSuccessStatusCode)
-            {
-                return false;
-            }
-
-            var expected = headResponse.Content.Headers.ContentLength;
+            var expected = await TryGetRemoteContentLengthAsync(url, ct).ConfigureAwait(false);
             if (!expected.HasValue || expected.Value <= 0)
             {
                 return false;
@@ -322,6 +315,14 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
             return false;
         }
         catch (IOException)
+        {
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+        catch
         {
             return true;
         }
@@ -389,7 +390,7 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         long existingBytes = 0;
         foreach (var url in urls)
         {
-            var fileName = Path.GetFileName(url);
+            var fileName = GetFileNameFromUrl(url);
             if (string.IsNullOrWhiteSpace(fileName))
             {
                 continue;
@@ -404,6 +405,64 @@ public sealed class TablebaseDownloaderService(HttpClient httpClient) : ITableba
         }
 
         return existingBytes;
+    }
+
+    private static string GetFileNameFromUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new ArgumentException("URL is required.", nameof(url));
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"Invalid tablebase URL: {url}");
+        }
+
+        var fileName = Path.GetFileName(Uri.UnescapeDataString(uri.LocalPath));
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            throw new InvalidOperationException($"URL does not contain a file name: {url}");
+        }
+
+        return fileName;
+    }
+
+    private async Task<long?> TryGetRemoteContentLengthAsync(string url, CancellationToken ct)
+    {
+        using (var headRequest = new HttpRequestMessage(HttpMethod.Head, url))
+        using (var headResponse = await httpClient.SendAsync(headRequest, ct).ConfigureAwait(false))
+        {
+            if (headResponse.IsSuccessStatusCode)
+            {
+                var length = headResponse.Content.Headers.ContentLength;
+                if (length.HasValue && length.Value > 0)
+                {
+                    return length.Value;
+                }
+            }
+        }
+
+        using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        rangeRequest.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+        using var rangeResponse = await httpClient.SendAsync(
+            rangeRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct).ConfigureAwait(false);
+
+        if (!rangeResponse.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var contentRange = rangeResponse.Content.Headers.ContentRange;
+        if (contentRange?.Length is long totalLength && totalLength > 0)
+        {
+            return totalLength;
+        }
+
+        var lengthFallback = rangeResponse.Content.Headers.ContentLength;
+        return lengthFallback.HasValue && lengthFallback.Value > 0 ? lengthFallback.Value : null;
     }
 
     private static bool TryGetAvailableFreeSpace(string path, out long availableBytes)

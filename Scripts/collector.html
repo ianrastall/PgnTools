@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>LLM Round-up Combiner</title>
+  <title>LLM Round-up Tools</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
-    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); }
+    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); position: sticky; top: 0; backdrop-filter: blur(10px); }
     main { padding: 18px; max-width: 1200px; margin: 0 auto; }
     .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
     @media (min-width: 980px) { .row.cols2 { grid-template-columns: 1fr 1fr; } }
     .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 12px; background: rgba(127,127,127,.06); }
-    label { display: block; font-weight: 700; margin: 0 0 6px; }
+    label { display: block; font-weight: 800; margin: 0 0 6px; }
     textarea, input[type="text"] {
       width: 100%; box-sizing: border-box;
       border: 1px solid rgba(127,127,127,.45);
@@ -29,10 +29,10 @@
       padding: 10px 12px;
       background: rgba(127,127,127,.12);
       cursor: pointer;
-      font-weight: 700;
+      font-weight: 800;
     }
     button:hover { background: rgba(127,127,127,.18); }
-    select { font-weight: 600; }
+    select { font-weight: 700; }
     .small { font-size: 12px; opacity: .85; }
     .pill {
       display: inline-flex; align-items: center; gap: 6px;
@@ -45,11 +45,57 @@
     .inline > * { flex: 1; min-width: 240px; }
     .out textarea { min-height: 280px; }
     .muted { opacity: .8; }
-    .twoLine {
-      display: flex; align-items: baseline; justify-content: space-between;
-      gap: 12px; margin-bottom: 6px;
-    }
+
+    /* model card header */
+    .twoLine { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
     .count { font-size: 12px; opacity: .8; }
+    .modelHdr { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .modelHdrLeft { display: flex; align-items: baseline; gap: 10px; }
+    .miniBtn {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    /* tabs */
+    .tabs { display: inline-flex; gap: 8px; }
+    .tabBtn[aria-selected="true"] { background: rgba(127,127,127,.22); }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* toast */
+    .toastWrap {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      display: grid;
+      gap: 10px;
+      z-index: 9999;
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: none;
+      max-width: min(520px, calc(100vw - 28px));
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(30,30,30,.88);
+      color: rgba(255,255,255,.96);
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: rgba(80,200,120,.65); }
+    .toast.error { border-color: rgba(220,80,80,.65); }
+    .toast .tTitle { font-weight: 900; margin-bottom: 2px; }
+    .toast .tBody { font-size: 12px; opacity: .95; }
+
+    /* helper note */
+    .note { font-size: 12px; opacity: .8; margin-top: 8px; }
+    code.kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 1px 6px; border: 1px solid rgba(127,127,127,.45); border-radius: 8px; background: rgba(127,127,127,.10); }
   </style>
 </head>
 
@@ -57,84 +103,192 @@
   <header>
     <div class="toolbar">
       <div style="flex: 1;">
-        <div style="font-size: 18px; font-weight: 900;">LLM Round-up Combiner</div>
-        <div class="small muted">Paste each model’s response → Combine → Download (.md/.txt) or Copy.</div>
+        <div style="font-size: 18px; font-weight: 950;">LLM Round-up Tools</div>
+        <div class="small muted">Combiner + Prompt Builder (local only; no network calls).</div>
       </div>
+
+      <div class="tabs" role="tablist" aria-label="Views">
+        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="true" type="button">Combiner</button>
+        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="false" type="button">Prompt Builder</button>
+      </div>
+
       <span class="pill" id="status">Ready</span>
     </div>
   </header>
 
   <main>
-    <section class="card">
-      <div class="inline">
-        <div>
-          <label for="title">Session title (optional)</label>
-          <input id="title" type="text" placeholder="e.g., PgnTools: Memory-mapped virtualized list review" />
+    <!-- ===================== -->
+    <!-- VIEW: COMBINER         -->
+    <!-- ===================== -->
+    <section id="viewCombiner" class="view active" aria-labelledby="tabCombiner">
+      <section class="card">
+        <div class="inline">
+          <div>
+            <label for="title">Session title (optional)</label>
+            <input id="title" type="text" placeholder="e.g., PgnTools: Memory-mapped virtualized list review" />
+          </div>
+          <div>
+            <label for="format">Output format</label>
+            <select id="format" style="width:100%;">
+              <option value="md" selected>Markdown (.md)</option>
+              <option value="txt">Plain text (.txt)</option>
+            </select>
+          </div>
+          <div>
+            <label for="filename">Filename (optional)</label>
+            <input id="filename" type="text" placeholder="auto-generated if empty" />
+            <div class="small muted">Leave blank to auto-stamp with date/time.</div>
+          </div>
         </div>
-        <div>
-          <label for="format">Output format</label>
-          <select id="format" style="width:100%;">
-            <option value="md" selected>Markdown (.md)</option>
-            <option value="txt">Plain text (.txt)</option>
-          </select>
+      </section>
+
+      <section class="row cols2" style="margin-top: 12px;">
+        <div class="card">
+          <label for="task">Task / Prompt</label>
+          <textarea id="task">Please examine this collected codebase and fix the listed problems.</textarea>
+          <div class="note">You can edit this per session if needed.</div>
         </div>
-        <div>
-          <label for="filename">Filename (optional)</label>
-          <input id="filename" type="text" placeholder="auto-generated if empty" />
-          <div class="small muted">Leave blank to auto-stamp with date/time.</div>
+        <div class="card">
+          <label for="context">Context (optional)</label>
+          <textarea id="context" placeholder="Paste shared code/context (or a short summary)."></textarea>
         </div>
-      </div>
+      </section>
+
+      <h2 style="margin: 16px 2px 8px;">Model outputs</h2>
+      <section class="row cols2" id="boxes"></section>
+
+      <section class="card out" style="margin-top: 12px;">
+        <div class="toolbar" style="margin-bottom: 10px;">
+          <div style="flex:1;">
+            <label for="output" style="margin:0 0 4px;">Combined output</label>
+            <div class="small muted">Ctrl+Enter runs Combine. Copy/Download uses this exact text.</div>
+          </div>
+          <button id="combineBtn" type="button">Combine</button>
+          <button id="copyBtn" type="button">Copy</button>
+          <button id="downloadBtn" type="button">Download</button>
+          <button id="clearBtn" type="button" title="Clears all inputs">Clear all</button>
+        </div>
+        <textarea id="output" readonly placeholder="Click Combine to generate output..."></textarea>
+      </section>
+
+      <section class="small muted" style="margin-top: 12px;">
+        Clipboard note: Some browsers restrict “Paste” button access when opened as a local file. If Paste fails, click the box and use <code class="kbd">Ctrl</code>+<code class="kbd">V</code>.
+      </section>
     </section>
 
-    <section class="row cols2" style="margin-top: 12px;">
-      <div class="card">
-        <label for="task">Task / Prompt (optional)</label>
-        <textarea id="task" placeholder="Paste the prompt you gave the models."></textarea>
-      </div>
-      <div class="card">
-        <label for="context">Context (optional)</label>
-        <textarea id="context" placeholder="Paste shared code/context (or a short summary)."></textarea>
-      </div>
-    </section>
-
-    <h2 style="margin: 16px 2px 8px;">Model outputs</h2>
-
-    <section class="row cols2" id="boxes"></section>
-
-    <section class="card out" style="margin-top: 12px;">
-      <div class="toolbar" style="margin-bottom: 10px;">
-        <div style="flex:1;">
-          <label for="output" style="margin:0 0 4px;">Combined output</label>
-          <div class="small muted">Ctrl+Enter also runs Combine.</div>
+    <!-- ===================== -->
+    <!-- VIEW: PROMPT BUILDER   -->
+    <!-- ===================== -->
+    <section id="viewBuilder" class="view" aria-labelledby="tabBuilder">
+      <section class="card">
+        <div style="display:flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <div>
+            <div style="font-size:16px; font-weight:950;">Prompt Builder</div>
+            <div class="small muted">Creates the “full prompt” you paste into each LLM (task + codebase content).</div>
+          </div>
         </div>
-        <button id="combineBtn" type="button">Combine</button>
-        <button id="copyBtn" type="button">Copy</button>
-        <button id="downloadBtn" type="button">Download</button>
-        <button id="clearBtn" type="button" title="Clears all inputs">Clear all</button>
-      </div>
-      <textarea id="output" readonly placeholder="Click Combine to generate output..."></textarea>
-    </section>
+      </section>
 
-    <section class="small muted" style="margin-top: 12px;">
-      Everything stays local in your browser (no network calls).
+      <section class="row cols2" style="margin-top: 12px;">
+        <div class="card">
+          <label for="pb_task">Task / Prompt</label>
+          <textarea id="pb_task">Please examine this section of my codebase and list all the problems you find in order of severity, along with their fixes.</textarea>
+          <div class="note">This becomes the top of your single paste-ready prompt.</div>
+        </div>
+        <div class="card">
+          <label for="pb_options">Options</label>
+          <div class="small muted" style="margin-bottom:8px;">How the codebase text is embedded in the prompt.</div>
+          <div style="display:grid; gap:10px;">
+            <label style="font-weight:800;">
+              <input id="pb_wrap" type="checkbox" checked />
+              Wrap codebase in triple backticks
+            </label>
+            <label style="font-weight:800;">
+              <input id="pb_tag" type="checkbox" checked />
+              Include a "CODEBASE" header line
+            </label>
+            <label style="font-weight:800;">
+              <input id="pb_hint" type="checkbox" />
+              Include "LANGUAGE: " hint line (optional)
+            </label>
+            <input id="pb_lang" type="text" placeholder="Language hint (e.g., csharp, python, js) — used only if enabled above" />
+          </div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 12px;">
+        <label for="pb_code">Collected codebase text (paste file contents here)</label>
+        <textarea id="pb_code" style="min-height:240px" placeholder="Paste the contents of your collected codebase text file here..."></textarea>
+      </section>
+
+      <section class="card out" style="margin-top: 12px;">
+        <div class="toolbar" style="margin-bottom: 10px;">
+          <div style="flex:1;">
+            <label for="pb_output" style="margin:0 0 4px;">Built prompt</label>
+            <div class="small muted">Click Build, then Copy, then paste into each LLM.</div>
+          </div>
+          <button id="pb_buildBtn" type="button">Build</button>
+          <button id="pb_copyBtn" type="button">Copy</button>
+          <button id="pb_clearBtn" type="button">Clear</button>
+        </div>
+        <textarea id="pb_output" readonly placeholder="Click Build to generate the paste-ready prompt..."></textarea>
+      </section>
+
+      <section class="small muted" style="margin-top: 12px;">
+        Tip: After copying, jump back to the Combiner tab to paste each LLM’s output into its labeled box.
+      </section>
     </section>
   </main>
 
+  <!-- Toast container -->
+  <div class="toastWrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
+
 <script>
 (() => {
+  // ===== Models (fixed labels) =====
   const MODELS = [
-    { id: "chatgpt", label: "ChatGPT" },
-    { id: "claude",  label: "Claude"  },
-    { id: "deepseek",label: "DeepSeek"},
-	{ id: "gemini",  label: "Gemini"  },
-    { id: "kimi",    label: "Kimi"    },
-    { id: "qwen",    label: "Qwen"    },
-    { id: "zai",     label: "Z.ai"    },
+    { id: "chatgpt",	label: "ChatGPT"    },
+    { id: "claude",		label: "Claude"     },
+    { id: "deepseek",	label: "DeepSeek"   },
+	{ id: "gemini",		label: "Gemini"     },
+	{ id: "grok",		label: "Grok"		},
+    { id: "kimi",		label: "Kimi"       },
+	{ id: "mistral",	label: "Mistral"    },
+	{ id: "perplexity",	label: "Perplexity" }, 
+    { id: "qwen",    	label: "Qwen"       },
+    { id: "zai",    	label: "Z.ai"       },
   ];
 
   const el = (id) => document.getElementById(id);
   const status = el("status");
   const boxes = el("boxes");
+  const toastWrap = el("toastWrap");
+
+  // ===== Toast =====
+  function toast(title, body = "", type = "success") {
+    const t = document.createElement("div");
+    t.className = `toast ${type}`;
+    t.innerHTML = `
+      <div class="tTitle">${escapeHtml(title)}</div>
+      ${body ? `<div class="tBody">${escapeHtml(body)}</div>` : ""}
+    `;
+    toastWrap.appendChild(t);
+    requestAnimationFrame(() => t.classList.add("show"));
+
+    setTimeout(() => {
+      t.classList.remove("show");
+      setTimeout(() => t.remove(), 220);
+    }, 2400);
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
 
   function setStatus(text) {
     status.textContent = text;
@@ -142,28 +296,68 @@
     setStatus._t = setTimeout(() => status.textContent = "Ready", 2500);
   }
 
-  function pad2(n) { return String(n).padStart(2, "0"); }
+  // ===== Tabs =====
+  function setTab(which) {
+    const comb = (which === "combiner");
+    el("viewCombiner").classList.toggle("active", comb);
+    el("viewBuilder").classList.toggle("active", !comb);
+    el("tabCombiner").setAttribute("aria-selected", comb ? "true" : "false");
+    el("tabBuilder").setAttribute("aria-selected", comb ? "false" : "true");
+  }
 
+  el("tabCombiner").addEventListener("click", () => setTab("combiner"));
+  el("tabBuilder").addEventListener("click", () => setTab("builder"));
+
+  // ===== Time helpers =====
+  function pad2(n) { return String(n).padStart(2, "0"); }
   function nowStamp() {
     const d = new Date();
     return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
   }
-
   function safeFileStamp() {
     const d = new Date();
     return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
   }
-
   function normalizeNewlines(s) {
     return String(s || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   }
-
   function countChars(s) { return (s || "").length; }
   function countWords(s) {
     const t = (s || "").trim();
     return t ? t.split(/\s+/).length : 0;
   }
 
+  // ===== Clipboard helpers =====
+  async function clipboardReadText() {
+    // Some browsers block readText on file://; we’ll catch and fallback.
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      throw new Error("Clipboard readText not available in this browser/context.");
+    }
+    return await navigator.clipboard.readText();
+  }
+
+  async function clipboardWriteText(text) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      // fallback
+      return legacyCopy(text);
+    }
+    await navigator.clipboard.writeText(text);
+  }
+
+  function legacyCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (!ok) throw new Error("Legacy copy failed.");
+  }
+
+  // ===== Combiner output builders =====
   function buildMarkdown() {
     const title = el("title").value.trim();
     const task = el("task").value.trim();
@@ -262,25 +456,25 @@
     const text = (fmt === "md") ? buildMarkdown() : buildPlainText();
     el("output").value = text;
     setStatus("Combined");
+    toast("Combined", "Output updated.");
   }
 
   async function copyOutput() {
     const text = el("output").value;
-    if (!text) { setStatus("Nothing to copy"); return; }
+    if (!text) { setStatus("Nothing to copy"); toast("Nothing to copy", "Click Combine first.", "error"); return; }
     try {
-      await navigator.clipboard.writeText(text);
+      await clipboardWriteText(text);
       setStatus("Copied");
-    } catch {
-      el("output").focus();
-      el("output").select();
-      document.execCommand("copy");
-      setStatus("Copied");
+      toast("Copied", "Combined output copied to clipboard.");
+    } catch (e) {
+      setStatus("Copy failed");
+      toast("Copy failed", String(e?.message || e), "error");
     }
   }
 
   function downloadOutput() {
     const text = el("output").value;
-    if (!text) { setStatus("Nothing to download"); return; }
+    if (!text) { setStatus("Nothing to download"); toast("Nothing to download", "Click Combine first.", "error"); return; }
 
     const fmt = el("format").value;
     const ext = (fmt === "md") ? "md" : "txt";
@@ -304,6 +498,7 @@
     a.remove();
     URL.revokeObjectURL(url);
     setStatus("Downloaded");
+    toast("Downloaded", name);
   }
 
   function clearAll() {
@@ -313,12 +508,13 @@
       const c = el(`count_${m.id}`);
       if (c) c.textContent = "0 words • 0 chars";
     }
-    el("task").value = "";
+    // Keep task default; user asked for pre-entered text.
     el("context").value = "";
     el("title").value = "";
     el("filename").value = "";
     el("output").value = "";
     setStatus("Cleared");
+    toast("Cleared", "All model boxes cleared.");
   }
 
   function updateCount(id) {
@@ -329,6 +525,25 @@
     c.textContent = `${countWords(v)} words • ${countChars(v)} chars`;
   }
 
+  async function pasteInto(id, label) {
+    try {
+      const text = await clipboardReadText();
+      const ta = el(`box_${id}`);
+      if (!ta) return;
+      ta.value = text;
+      updateCount(id);
+      setStatus("Pasted");
+      toast("Pasted", `Clipboard inserted into ${label}.`);
+      ta.focus();
+    } catch (e) {
+      setStatus("Paste blocked");
+      toast("Paste blocked", `Click the ${label} box and use Ctrl+V.`, "error");
+      const ta = el(`box_${id}`);
+      if (ta) ta.focus();
+    }
+  }
+
+  // Build model boxes UI
   function initBoxes() {
     boxes.innerHTML = "";
     for (const m of MODELS) {
@@ -338,16 +553,29 @@
       const top = document.createElement("div");
       top.className = "twoLine";
 
+      const left = document.createElement("div");
+      left.className = "modelHdrLeft";
+
       const lab = document.createElement("label");
       lab.setAttribute("for", `box_${m.id}`);
       lab.textContent = m.label;
+
+      const pasteBtn = document.createElement("button");
+      pasteBtn.type = "button";
+      pasteBtn.className = "miniBtn";
+      pasteBtn.textContent = "Paste";
+      pasteBtn.title = "Paste from clipboard into this box";
+      pasteBtn.addEventListener("click", () => pasteInto(m.id, m.label));
+
+      left.appendChild(lab);
+      left.appendChild(pasteBtn);
 
       const cnt = document.createElement("div");
       cnt.className = "count";
       cnt.id = `count_${m.id}`;
       cnt.textContent = "0 words • 0 chars";
 
-      top.appendChild(lab);
+      top.appendChild(left);
       top.appendChild(cnt);
 
       const ta = document.createElement("textarea");
@@ -367,15 +595,81 @@
     }
   }
 
+  // Wire combiner buttons
   el("combineBtn").addEventListener("click", combine);
   el("copyBtn").addEventListener("click", copyOutput);
   el("downloadBtn").addEventListener("click", downloadOutput);
   el("clearBtn").addEventListener("click", clearAll);
 
+  // Convenience: combine on Ctrl+Enter anywhere in combiner view
   document.addEventListener("keydown", (e) => {
-    if (e.ctrlKey && e.key === "Enter") combine();
+    const combinerActive = el("viewCombiner").classList.contains("active");
+    if (combinerActive && e.ctrlKey && e.key === "Enter") combine();
   });
 
+  // ===== Prompt Builder =====
+  function pbBuild() {
+    const task = el("pb_task").value.trim();
+    const code = el("pb_code").value.trim();
+    const wrap = el("pb_wrap").checked;
+    const tag = el("pb_tag").checked;
+    const hintOn = el("pb_hint").checked;
+    const lang = el("pb_lang").value.trim();
+
+    const parts = [];
+    if (task) parts.push(task);
+    parts.push("");
+
+    if (tag) parts.push("CODEBASE:");
+    if (hintOn && lang) parts.push(`LANGUAGE: ${lang}`);
+
+    if (wrap) {
+      parts.push("```" + (hintOn && lang ? lang : "text"));
+      parts.push(normalizeNewlines(code));
+      parts.push("```");
+    } else {
+      parts.push(normalizeNewlines(code));
+    }
+
+    const out = parts.join("\n").trim() + "\n";
+    el("pb_output").value = out;
+
+    setStatus("Built");
+    toast("Built", "Paste-ready prompt generated.");
+  }
+
+  async function pbCopy() {
+    const text = el("pb_output").value;
+    if (!text) { toast("Nothing to copy", "Click Build first.", "error"); return; }
+    try {
+      await clipboardWriteText(text);
+      setStatus("Copied");
+      toast("Copied", "Built prompt copied to clipboard.");
+    } catch (e) {
+      setStatus("Copy failed");
+      toast("Copy failed", String(e?.message || e), "error");
+    }
+  }
+
+  function pbClear() {
+    // Keep default task; clear rest.
+    el("pb_code").value = "";
+    el("pb_output").value = "";
+    setStatus("Cleared");
+    toast("Cleared", "Prompt Builder cleared.");
+  }
+
+  el("pb_buildBtn").addEventListener("click", pbBuild);
+  el("pb_copyBtn").addEventListener("click", pbCopy);
+  el("pb_clearBtn").addEventListener("click", pbClear);
+
+  // Build on Ctrl+Enter in builder view
+  document.addEventListener("keydown", (e) => {
+    const builderActive = el("viewBuilder").classList.contains("active");
+    if (builderActive && e.ctrlKey && e.key === "Enter") pbBuild();
+  });
+
+  // Init
   initBoxes();
 })();
 </script>

@@ -25,7 +25,14 @@ public sealed partial class TablebaseDownloaderPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            ViewModel.Dispose();
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.Cancel();
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 }

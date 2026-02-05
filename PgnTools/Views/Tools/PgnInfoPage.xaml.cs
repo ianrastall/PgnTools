@@ -26,7 +26,14 @@ public sealed partial class PgnInfoPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            ViewModel.Dispose();
+            if (ViewModel.IsAnalyzing)
+            {
+                ViewModel.CancelAnalysisCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 

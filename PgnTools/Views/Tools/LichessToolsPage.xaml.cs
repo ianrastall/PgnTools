@@ -24,7 +24,22 @@ public sealed partial class LichessToolsPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            ViewModel.Dispose();
+            if (ViewModel.UserDownloader.IsRunning || ViewModel.DatabaseDownloader.IsRunning)
+            {
+                if (ViewModel.UserDownloader.IsRunning)
+                {
+                    ViewModel.UserDownloader.CancelCommand.Execute(null);
+                }
+
+                if (ViewModel.DatabaseDownloader.IsRunning)
+                {
+                    ViewModel.DatabaseDownloader.CancelCommand.Execute(null);
+                }
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 }

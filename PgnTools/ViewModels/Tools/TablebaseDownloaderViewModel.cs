@@ -106,6 +106,8 @@ public partial class TablebaseDownloaderViewModel(
 
         if (!await _executionLock.WaitAsync(0))
         {
+            StatusMessage = "A download is already in progress.";
+            StatusSeverity = InfoBarSeverity.Warning;
             return;
         }
 
@@ -264,16 +266,11 @@ public partial class TablebaseDownloaderViewModel(
             cts.Cancel();
             cts.Dispose();
         }
-        _executionLock.Dispose();
     }
 
     private void LoadState()
     {
         TargetFolder = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetFolder)}", TargetFolder);
-        if (!string.IsNullOrWhiteSpace(TargetFolder) && !Directory.Exists(TargetFolder))
-        {
-            TargetFolder = string.Empty;
-        }
         Download345 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download345)}", Download345);
         Download6 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download6)}", Download6);
         Download7 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download7)}", Download7);

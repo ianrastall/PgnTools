@@ -24,7 +24,14 @@ public sealed partial class ChessAnalyzerPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            ViewModel.Dispose();
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 }
