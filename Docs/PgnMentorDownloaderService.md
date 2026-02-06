@@ -5,7 +5,7 @@
 **Version:** Current implementation (updated 2026-02-05)  
 **Layer:** Service Layer (Domain Logic)  
 **Dependencies:** `HttpClient`, `FileReplacementHelper`  
-**Thread Safety:** Not safe for concurrent calls (static `Random` for jitter; shared `HttpClient` is fine, but jitter is not thread-safe).
+**Thread Safety:** Safe for concurrent calls (uses `Random.Shared`; shared `HttpClient` is thread-safe). Avoid concurrent calls that target the same output path.
 
 ## 1. Objective
 

@@ -26,7 +26,7 @@ public sealed partial class PgnMentorDownloaderPage : Page
         {
             if (ViewModel.IsRunning)
             {
-                ViewModel.CancelCommand.Execute(null);
+                ViewModel.RequestDispose();
             }
             else
             {

@@ -16,7 +16,10 @@ public partial class PgnMentorDownloaderViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeWhenDone;
     private const string SettingsPrefix = nameof(PgnMentorDownloaderViewModel);
+    private string _lastStatusMessage = string.Empty;
+    private bool _hadFailures;
 
     [ObservableProperty]
     private string _outputFilePath = string.Empty;
@@ -56,13 +59,13 @@ public partial class PgnMentorDownloaderViewModel(
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-    }
+            }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-    }
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -71,11 +74,11 @@ public partial class PgnMentorDownloaderViewModel(
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-    }
+        }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-    }
+        }
         try
         {
             IsRunning = true;
@@ -83,10 +86,17 @@ public partial class PgnMentorDownloaderViewModel(
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
+            _lastStatusMessage = string.Empty;
+            _hadFailures = false;
 
             _cancellationTokenSource = new CancellationTokenSource();
             var progress = new Progress<string>(message =>
             {
+                _lastStatusMessage = message;
+                if (message.StartsWith("Failed ", StringComparison.OrdinalIgnoreCase))
+                {
+                    _hadFailures = true;
+                }
                 StatusMessage = message;
                 StatusDetail = BuildProgressDetail();
             });
@@ -96,22 +106,33 @@ public partial class PgnMentorDownloaderViewModel(
                 progress,
                 _cancellationTokenSource.Token);
 
-            StatusMessage = "PGN Mentor download complete.";
-            StatusSeverity = InfoBarSeverity.Success;
+            if (string.Equals(_lastStatusMessage, "Download complete.", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusSeverity = _hadFailures ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+            }
+            else if (_lastStatusMessage.StartsWith("No ", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else if (_hadFailures)
+            {
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (OperationCanceledException)
         {
             StatusMessage = "PGN Mentor download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         finally
         {
             IsRunning = false;
@@ -119,7 +140,11 @@ public partial class PgnMentorDownloaderViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-    }
+            if (_disposeWhenDone && !_disposed)
+            {
+                Dispose();
+            }
+        }
     }
 
     private bool CanRun() =>
@@ -132,6 +157,18 @@ public partial class PgnMentorDownloaderViewModel(
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
+    }
+
+    public void RequestDispose()
+    {
+        _disposeWhenDone = true;
+        if (IsRunning)
+        {
+            Cancel();
+            return;
+        }
+
+        Dispose();
     }
     partial void OnOutputFilePathChanged(string value)
     {
@@ -146,7 +183,13 @@ public partial class PgnMentorDownloaderViewModel(
         if (_disposed)
         {
             return;
-    }
+        }
+        if (IsRunning)
+        {
+            _disposeWhenDone = true;
+            Cancel();
+            return;
+        }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();

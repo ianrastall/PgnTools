@@ -31,6 +31,7 @@
             <x:String x:Key="IconDeduplicate">&#xE8D4;</x:String>
             <x:String x:Key="IconElo">&#xE8D3;</x:String>
             <x:String x:Key="IconMerge">&#xEA3C;</x:String>
+            <x:String x:Key="IconInfo">&#xE946;</x:String>
             <x:String x:Key="IconPly">&#xE8EF;</x:String>
             <x:String x:Key="IconSort">&#xE8CB;</x:String>
             <x:String x:Key="IconSplit">&#xE8A4;</x:String>

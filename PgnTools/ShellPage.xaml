@@ -111,6 +111,12 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
 
+                <NavigationViewItem Tag="PgnInfo" Content="PGN Info">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="{StaticResource IconInfo}"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+
                 <NavigationViewItem Tag="PgnMentorDownloader" Content="PGN Mentor">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="{StaticResource IconDownload}"/>
@@ -138,6 +144,12 @@
                 <NavigationViewItem Tag="StockfishNormalizer" Content="Stockfish Normalizer">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="{StaticResource IconNormalize}"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+
+                <NavigationViewItem Tag="Tablebases" Content="Tablebases">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="{StaticResource IconDownload}"/>
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
 
