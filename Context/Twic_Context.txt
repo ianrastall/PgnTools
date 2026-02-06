@@ -1,0 +1,1381 @@
+# Context Dump: TWIC Downloader
+# Date: 2026-02-06 15:28:53
+# File Count: 8
+
+===== BEGIN: Docs\TwicDownloaderService.md =====
+# TwicDownloaderService.md
+
+## Service Implementation: TwicDownloaderService
+
+**Version:** Current implementation (updated 2026-02-06)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `HttpClient`, `FileReplacementHelper`  
+**Thread Safety:** Safe for concurrent calls. Avoid concurrent calls that target the same output path.
+
+## 1. Objective
+
+Download TWIC issues from the official ZIP archive endpoint and combine them into a single PGN file. The service also provides a lightweight "estimate + probe" workflow to identify the most recent issue number.
+
+## 2. Public API (Actual)
+
+```csharp
+public interface ITwicDownloaderService
+{
+    Task<int> DownloadIssuesAsync(int start, int end, string outputFile, IProgress<string> status, CancellationToken ct);
+}
+```
+
+### 2.1 Helper API (Static)
+```csharp
+public static int CalculateEstimatedLatestIssue(DateTime? today = null);
+public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct);
+```
+
+### 2.2 Parameter Semantics
+- `start` / `end`: Inclusive issue range. Must be positive. `end >= start`.
+- `outputFile`: Destination PGN file path. Required.
+- `status`: Emits short progress messages.
+- `ct`: Cancels the download, extraction, or writing pipeline.
+- **Return:** Number of issues successfully appended.
+
+## 3. Constants & Endpoints (Actual)
+
+- **Base URI:** `https://www.theweekinchess.com/zips/`
+- **Issue file pattern:** `twic{N}g.zip` (games‑only ZIPs)
+- **BufferSize:** `65536` (64 KB)
+- **MinimumIssue:** `920` (used as a lower bound for estimation and UI defaults)
+- **AnchorIssue:** `1628` published on **2026-01-19 (UTC)** for estimate stability
+
+## 4. High-Level Pipeline (Actual)
+
+1. Validate inputs and compute full output paths.
+2. Create a temp output file and a unique temp folder for ZIP downloads.
+3. For each issue in `[start, end]`:
+   - Wait **2–4 seconds** between issues (polite rate limiting).
+   - Download `twic{issue}g.zip` with up to **3 attempts**.
+   - If **404**, report and continue to the next issue.
+   - Extract the first PGN entry and append it to the combined output.
+   - Delete the ZIP immediately to save disk space.
+4. If at least one issue was appended, replace the destination file via `FileReplacementHelper.ReplaceFile`.
+5. Always clean up temp artifacts in `finally`.
+
+## 5. Latest Issue Detection (Actual)
+
+### 5.1 Estimate
+`CalculateEstimatedLatestIssue` uses the weekly cadence from an anchor point:
+
+- Anchor: **TWIC 1628** on **2026-01-19 (UTC)**
+- `estimated = AnchorIssue + floor((today - AnchorIssueDate) / 7 days)`
+- Result is clamped to `>= MinimumIssue` (920)
+
+### 5.2 Probe
+`ProbeLatestIssueAsync` confirms the latest issue by HEAD‑requesting sequential ZIPs:
+
+- Starts at `max(MinimumIssue, estimatedIssue - 3)`
+- Sends `HEAD` requests to `twic{N}g.zip`
+- Stops after **3 consecutive failures** (404 or other non‑success)
+- Waits **~400 ms** between probes
+- Manual redirect handling (max **5** redirects)
+- If no success is confirmed in the probe window, it **falls back to the estimate** and reports that the result is unconfirmed.
+
+## 6. ZIP Extraction & Append (Actual)
+
+- Only ZIP archives are supported (the endpoint provides ZIP files).
+- Entry selection:
+  - Prefer `twic{issue}.pgn`
+  - Otherwise, the first `.pgn` entry found
+- Encoding: **Windows‑1252** with BOM detection (BOM overrides to UTF‑8/UTF‑16 when present).
+- Leading blank lines in each PGN are skipped.
+- **Two blank lines** are inserted between issues.
+
+## 7. Error Handling & Reporting (Actual)
+
+| Scenario | Behavior |
+| --- | --- |
+| Download failure (network/HTTP) | Reports status and continues with the next issue |
+| HTTP 404 | Reports `"Issue #{N} not found"` and continues |
+| ZIP processing error | Returns `false` for that issue; continues |
+| No issues appended | Reports `"No issues were successfully downloaded."` and removes temp output |
+| Cancellation | Reports `"Download cancelled."` and rethrows for the caller |
+| Unexpected exception | Reports `"Error: <message>"`, cleans up, and rethrows |
+
+## 8. Usage Example (ViewModel Context)
+
+```csharp
+var progress = new Progress<string>(message =>
+{
+    StatusMessage = message;
+    StatusDetail = BuildProgressDetail();
+});
+
+var issuesWritten = await _twicDownloaderService.DownloadIssuesAsync(
+    start,
+    end,
+    OutputFilePath,
+    progress,
+    _cancellationTokenSource.Token);
+```
+
+## 9. UI Integration Notes (Actual)
+
+- The UI offers:
+  - **Full download:** issues **920 → latest**
+  - **Custom range:** user‑specified start/end
+- Latest issue can be probed from the UI via `ProbeLatestIssueAsync`.
+- Output file is chosen using the WinUI file picker.
+
+## 10. Limitations (Current Implementation)
+
+- **Single source:** Only `https://www.theweekinchess.com/zips/` is used (no mirrors or FTP).
+- **ZIP only:** No `.pgn` or `.gz` handling.
+- **No checksums:** Integrity is not verified.
+- **No incremental cache:** Previously downloaded issues are not tracked.
+- **No dedup/sorting:** Output preserves source order and content as-is.
+- **Latest probing is heuristic:** It assumes sequential issue numbering and stops after 3 consecutive failures.
+===== END: Docs\TwicDownloaderService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Services\ITwicDownloaderService.cs =====
+namespace PgnTools.Services;
+
+/// <summary>
+/// Interface for downloading TWIC issues into a single PGN file.
+/// </summary>
+public interface ITwicDownloaderService
+{
+    Task<int> DownloadIssuesAsync(int start, int end, string outputFile, IProgress<string> status, CancellationToken ct);
+}
+===== END: PgnTools\Services\ITwicDownloaderService.cs =====
+
+===== BEGIN: PgnTools\Services\TwicDownloaderService.cs =====
+using System.IO.Compression;
+using System.Net;
+using System.Text;
+using PgnTools.Helpers;
+
+namespace PgnTools.Services;
+
+public class TwicDownloaderService : ITwicDownloaderService
+{
+    private const int BufferSize = 65536;
+    private const int MinimumIssue = 920;
+
+    // Anchor for estimation to reduce long-term calendar drift.
+    // TWIC 1628 was published on 2026-01-19.
+    private const int AnchorIssue = 1628;
+    private static readonly DateTime AnchorIssueDate = new(2026, 1, 19, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly Uri BaseUri = new("https://www.theweekinchess.com/zips/");
+
+    // Use a shared client to respect socket pooling, but configure timeouts
+    private static readonly HttpClient HttpClient = CreateClient();
+    private static readonly Random RandomJitter = Random.Shared;
+
+    static TwicDownloaderService()
+    {
+        // Ensure legacy code pages (e.g., Windows-1252) are available.
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
+    public async Task<int> DownloadIssuesAsync(
+        int start,
+        int end,
+        string outputFile,
+        IProgress<string> status,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(outputFile)) throw new ArgumentException("Output file path is required.", nameof(outputFile));
+        if (start < 1 || end < 1) throw new ArgumentOutOfRangeException(nameof(start), "Issue numbers must be positive.");
+        if (end < start) throw new ArgumentException("End issue must be greater than or equal to start issue.");
+
+        var outputFullPath = Path.GetFullPath(outputFile);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+        // Use a unique temp folder to avoid collisions
+        var tempFolder = Path.Combine(Path.GetTempPath(), $"PgnTools_Twic_{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(tempFolder);
+        if (Path.GetDirectoryName(outputFullPath) is { } dir) Directory.CreateDirectory(dir);
+
+        var issuesWritten = 0;
+        var isFirstGlobalEntry = true;
+
+        try
+        {
+            await using (var outputStream = new FileStream(tempOutputPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize))
+            {
+                for (var issue = start; issue <= end; issue++)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    // RATE LIMITING:
+                    // Wait 2 to 4 seconds between requests to be respectful.
+                    // If this is the very first request, we don't need to wait.
+                    if (issuesWritten > 0 || issue > start)
+                    {
+                        var delayMs = RandomJitter.Next(2000, 4000);
+                        await Task.Delay(delayMs, ct);
+                    }
+
+                    status.Report($"Downloading TWIC #{issue}...");
+
+                    string? zipPath = null;
+                    try
+                    {
+                        zipPath = await DownloadIssueZipWithRetryAsync(issue, tempFolder, ct);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        continue;
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        continue;
+                    }
+                    catch (IOException ex)
+                    {
+                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        continue;
+                    }
+
+                    if (zipPath == null)
+                    {
+                        status.Report($"Issue #{issue} not found (404).");
+                        continue;
+                    }
+
+                    status.Report($"Processing TWIC #{issue}...");
+                    var appended = await AppendIssueFromZipAsync(writer, zipPath, issue, isFirstGlobalEntry, ct);
+
+                    // Cleanup ZIP immediately to save disk space
+                    try { File.Delete(zipPath); } catch { /* Ignore file lock issues on temp files */ }
+
+                    if (appended)
+                    {
+                        isFirstGlobalEntry = false;
+                        issuesWritten++;
+                    }
+                    else
+                    {
+                        status.Report($"No PGN content found in #{issue}.");
+                    }
+                }
+
+                await writer.FlushAsync(ct);
+            }
+
+            if (issuesWritten == 0)
+            {
+                status.Report("No issues were successfully downloaded.");
+                CleanupTemp(tempOutputPath);
+                return 0;
+            }
+
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, ct);
+            status.Report($"Done. {issuesWritten:N0} issues saved to {Path.GetFileName(outputFullPath)}");
+            return issuesWritten;
+        }
+        catch (OperationCanceledException)
+        {
+            status.Report("Download cancelled.");
+            CleanupTemp(tempOutputPath);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            status.Report($"Error: {ex.Message}");
+            CleanupTemp(tempOutputPath);
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void CleanupTemp(string path)
+    {
+        if (File.Exists(path)) try { File.Delete(path); } catch { }
+    }
+
+    public static int CalculateEstimatedLatestIssue(DateTime? today = null)
+    {
+        var current = (today ?? DateTime.UtcNow).Date;
+        var daysPassed = (current - AnchorIssueDate).TotalDays;
+        var weeksPassed = (int)Math.Floor(daysPassed / 7.0);
+        var estimated = AnchorIssue + weeksPassed;
+        return Math.Max(MinimumIssue, estimated);
+    }
+
+    public static async Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct)
+    {
+        // Start probing slightly before the estimate in case of calculation errors or holidays
+        var probe = Math.Max(MinimumIssue, estimatedIssue - 3);
+        var lastSuccess = 0;
+        var hadSuccess = false;
+        var failures = 0;
+
+        while (failures < 3) // Stop after 3 consecutive 404s
+        {
+            ct.ThrowIfCancellationRequested();
+            var url = new Uri(BaseUri, $"twic{probe}g.zip");
+
+            status.Report($"Probing TWIC #{probe}...");
+
+            try
+            {
+                using var response = await SendWithRedirectsAsync(HttpMethod.Head, url, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    lastSuccess = probe;
+                    hadSuccess = true;
+                    probe++;
+                    failures = 0; // Reset failures on success
+                }
+                else if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    failures++;
+                    probe++;
+                }
+                else
+                {
+                    failures++;
+                    probe++;
+                }
+            }
+            catch (HttpRequestException)
+            {
+                // Network error counts as a failure to find
+                failures++;
+                probe++;
+            }
+
+            // Minimal delay during probing, but still some
+            await Task.Delay(400, ct);
+        }
+
+        if (!hadSuccess)
+        {
+            var fallback = Math.Max(MinimumIssue, estimatedIssue);
+            status.Report($"Could not confirm latest issue; using estimate {fallback}.");
+            return fallback;
+        }
+
+        status.Report($"Latest confirmed issue: {lastSuccess}");
+        return lastSuccess;
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        };
+
+        var client = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+        // Polite User Agent
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
+    }
+
+    private static async Task<string?> DownloadIssueZipWithRetryAsync(int issue, string tempFolder, CancellationToken ct)
+    {
+        var fileName = $"twic{issue}g.zip";
+        var url = new Uri(BaseUri, fileName);
+        var outputPath = Path.Combine(tempFolder, fileName);
+
+        int attempts = 0;
+        while (true)
+        {
+            attempts++;
+            try
+            {
+                using var response = await SendWithRedirectsAsync(HttpMethod.Get, url, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (response.StatusCode == HttpStatusCode.NotFound) return null;
+
+                response.EnsureSuccessStatusCode();
+
+                await using var contentStream = await response.Content.ReadAsStreamAsync(ct);
+                await using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
+                await contentStream.CopyToAsync(fileStream, ct);
+
+                return outputPath;
+            }
+            catch (Exception) when (attempts < 3)
+            {
+                // Exponential backoff: 1s, 2s, 4s
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempts - 1)), ct);
+            }
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendWithRedirectsAsync(
+        HttpMethod method,
+        Uri url,
+        HttpCompletionOption completionOption,
+        CancellationToken ct)
+    {
+        const int maxRedirects = 5;
+        var current = url;
+
+        for (var redirectCount = 0; redirectCount <= maxRedirects; redirectCount++)
+        {
+            using var request = new HttpRequestMessage(method, current);
+            var response = await HttpClient.SendAsync(request, completionOption, ct);
+
+            if (!IsRedirectStatusCode(response.StatusCode))
+            {
+                return response;
+            }
+
+            var location = response.Headers.Location;
+            response.Dispose();
+
+            if (location == null)
+            {
+                throw new HttpRequestException($"Redirect response from {current} did not include a Location header.");
+            }
+
+            current = location.IsAbsoluteUri ? location : new Uri(current, location);
+        }
+
+        throw new HttpRequestException($"Too many redirects when requesting {url}.");
+    }
+
+    private static bool IsRedirectStatusCode(HttpStatusCode statusCode) =>
+        statusCode == HttpStatusCode.Moved ||
+        statusCode == HttpStatusCode.Redirect ||
+        statusCode == HttpStatusCode.RedirectMethod ||
+        statusCode == HttpStatusCode.TemporaryRedirect ||
+        statusCode == HttpStatusCode.PermanentRedirect;
+
+    private static async Task<bool> AppendIssueFromZipAsync(StreamWriter writer, string zipPath, int issue, bool isFirstGlobalEntry, CancellationToken ct)
+    {
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            // TWIC sometimes nests files or names them differently.
+            // Priority: "twicX.pgn", then any ".pgn".
+            var entry = archive.Entries.FirstOrDefault(e => e.Name.Equals($"twic{issue}.pgn", StringComparison.OrdinalIgnoreCase))
+                        ?? archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase));
+
+            if (entry == null) return false;
+
+            await using var entryStream = entry.Open();
+            // Detect encoding (often Windows-1252 or UTF8)
+            using var reader = new StreamReader(entryStream, Encoding.GetEncoding(1252), detectEncodingFromByteOrderMarks: true);
+
+            string? line;
+            var hasContent = false;
+            while ((line = await reader.ReadLineAsync(ct)) != null)
+            {
+                if (!hasContent)
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue; // Skip leading empty lines
+                    }
+
+                    if (!isFirstGlobalEntry)
+                    {
+                        await writer.WriteLineAsync();
+                        await writer.WriteLineAsync(); // Double newline between files
+                    }
+
+                    hasContent = true;
+                }
+
+                await writer.WriteLineAsync(line);
+            }
+
+            return hasContent;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+===== END: PgnTools\Services\TwicDownloaderService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\TwicDownloaderViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the TWIC Downloader tool.
+/// </summary>
+public partial class TwicDownloaderViewModel(
+    ITwicDownloaderService twicDownloaderService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private const int BaseIssue = 920;
+    private readonly ITwicDownloaderService _twicDownloaderService = twicDownloaderService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(TwicDownloaderViewModel);
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private double _startIssue = BaseIssue;
+
+    [ObservableProperty]
+    private double _endIssue;
+
+    [ObservableProperty]
+    private int _estimatedLatestIssue;
+
+    [ObservableProperty]
+    private int _latestIssue;
+
+    [ObservableProperty]
+    private int _selectedModeIndex;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select output file and download range";
+    public void Initialize()
+    {
+        Title = "TWIC Downloader";
+        StatusSeverity = InfoBarSeverity.Informational;
+        EstimatedLatestIssue = TwicDownloaderService.CalculateEstimatedLatestIssue();
+        LatestIssue = EstimatedLatestIssue;
+        EndIssue = LatestIssue;
+        SelectedModeIndex = 0;
+        LoadState();
+    }
+    public bool IsCustomRange => SelectedModeIndex == 1;
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = "twic_collection.pgn";
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanProbe))]
+    private async Task ProbeLatestAsync()
+    {
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Probing TWIC for the latest issue...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail();
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            var progress = new Progress<string>(message =>
+            {
+                StatusMessage = message;
+                StatusDetail = BuildProgressDetail();
+            });
+
+            var latest = await TwicDownloaderService.ProbeLatestIssueAsync(
+                LatestIssue,
+                progress,
+                _cancellationTokenSource.Token);
+
+            LatestIssue = latest;
+            StatusMessage = $"Latest issue detected: {latest}";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Probe cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail();
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var start = IsCustomRange ? (int)Math.Round(StartIssue) : BaseIssue;
+        var end = IsCustomRange ? (int)Math.Round(EndIssue) : LatestIssue;
+
+        if (start < 1 || end < 1 || end < start)
+        {
+            StatusMessage = "Enter a valid issue range.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            StatusMessage = "Starting TWIC download...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail();
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            var progress = new Progress<string>(message =>
+            {
+                StatusMessage = message;
+                StatusDetail = BuildProgressDetail();
+            });
+
+            var issuesWritten = await _twicDownloaderService.DownloadIssuesAsync(
+                start,
+                end,
+                OutputFilePath,
+                progress,
+                _cancellationTokenSource.Token);
+
+            StatusSeverity = issuesWritten > 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "TWIC download cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail();
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail();
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun()
+    {
+        if (IsRunning || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return false;
+    }
+        if (!IsCustomRange)
+        {
+            return LatestIssue >= BaseIssue;
+    }
+        var start = (int)Math.Round(StartIssue);
+        var end = (int)Math.Round(EndIssue);
+        return start >= 1 && end >= start;
+    }
+    private bool CanProbe() => !IsRunning;
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnStartIssueChanged(double value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnEndIssueChanged(double value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+        ProbeLatestCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnSelectedModeIndexChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsCustomRange));
+        if (!IsCustomRange)
+        {
+            EndIssue = LatestIssue;
+    }
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnLatestIssueChanged(int value)
+    {
+        if (!IsCustomRange)
+        {
+            EndIssue = value;
+    }
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+
+        SelectedModeIndex = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedModeIndex)}", SelectedModeIndex);
+        StartIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(StartIssue)}", StartIssue);
+        EndIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedModeIndex)}", SelectedModeIndex);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(StartIssue)}", StartIssue);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\TwicDownloaderViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\TwicDownloaderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.TwicDownloaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="TWIC Downloader" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Download The Week in Chess issues and combine them into a single PGN."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Latest Issue"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="{x:Bind ViewModel.LatestIssue, Mode=OneWay}" VerticalAlignment="Center"/>
+                <Button Content="Probe Latest"
+                        Command="{x:Bind ViewModel.ProbeLatestCommand}"
+                        Style="{StaticResource Action}"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="Estimated Latest:"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBlock Text="{x:Bind ViewModel.EstimatedLatestIssue, Mode=OneWay}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+
+            <TextBlock Text="Download Mode"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <RadioButtons SelectedIndex="{x:Bind ViewModel.SelectedModeIndex, Mode=TwoWay}">
+                <x:String>Full download (920 to latest)</x:String>
+                <x:String>Custom range</x:String>
+            </RadioButtons>
+
+            <StackPanel Orientation="Horizontal"
+                        Spacing="12"
+                        Visibility="{x:Bind ViewModel.IsCustomRange, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="Start Issue" VerticalAlignment="Center"/>
+                <NumberBox Width="160"
+                           Minimum="1"
+                           SmallChange="1"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.StartIssue, Mode=TwoWay}"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal"
+                        Spacing="12"
+                        Visibility="{x:Bind ViewModel.IsCustomRange, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="End Issue" VerticalAlignment="Center"/>
+                <NumberBox Width="160"
+                           Minimum="1"
+                           SmallChange="1"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.EndIssue, Mode=TwoWay}"/>
+            </StackPanel>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="True"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\TwicDownloaderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\TwicDownloaderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the TWIC Downloader tool.
+/// </summary>
+public sealed partial class TwicDownloaderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public TwicDownloaderViewModel ViewModel { get; }
+
+    public TwicDownloaderPage() : this(App.GetService<TwicDownloaderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public TwicDownloaderPage(TwicDownloaderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\TwicDownloaderPage.xaml.cs =====
+

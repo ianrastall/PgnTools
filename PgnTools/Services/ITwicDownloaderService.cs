@@ -5,5 +5,5 @@ namespace PgnTools.Services;
 /// </summary>
 public interface ITwicDownloaderService
 {
-    Task DownloadIssuesAsync(int start, int end, string outputFile, IProgress<string> status, CancellationToken ct);
+    Task<int> DownloadIssuesAsync(int start, int end, string outputFile, IProgress<string> status, CancellationToken ct);
 }

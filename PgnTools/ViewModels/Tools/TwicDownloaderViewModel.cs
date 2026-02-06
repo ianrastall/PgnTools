@@ -176,15 +176,14 @@ public partial class TwicDownloaderViewModel(
                 StatusDetail = BuildProgressDetail();
             });
 
-            await _twicDownloaderService.DownloadIssuesAsync(
+            var issuesWritten = await _twicDownloaderService.DownloadIssuesAsync(
                 start,
                 end,
                 OutputFilePath,
                 progress,
                 _cancellationTokenSource.Token);
 
-            StatusMessage = "TWIC download complete.";
-            StatusSeverity = InfoBarSeverity.Success;
+            StatusSeverity = issuesWritten > 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
     }
         catch (OperationCanceledException)

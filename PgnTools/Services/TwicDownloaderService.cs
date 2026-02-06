@@ -18,9 +18,15 @@ public class TwicDownloaderService : ITwicDownloaderService
 
     // Use a shared client to respect socket pooling, but configure timeouts
     private static readonly HttpClient HttpClient = CreateClient();
-    private static readonly Random RandomJitter = new();
+    private static readonly Random RandomJitter = Random.Shared;
 
-    public async Task DownloadIssuesAsync(
+    static TwicDownloaderService()
+    {
+        // Ensure legacy code pages (e.g., Windows-1252) are available.
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
+    public async Task<int> DownloadIssuesAsync(
         int start,
         int end,
         string outputFile,
@@ -67,7 +73,21 @@ public class TwicDownloaderService : ITwicDownloaderService
                     {
                         zipPath = await DownloadIssueZipWithRetryAsync(issue, tempFolder, ct);
                     }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        continue;
+                    }
                     catch (HttpRequestException ex)
+                    {
+                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        continue;
+                    }
+                    catch (IOException ex)
                     {
                         status.Report($"Failed to download #{issue}: {ex.Message}");
                         continue;
@@ -96,23 +116,25 @@ public class TwicDownloaderService : ITwicDownloaderService
                     }
                 }
 
-                await writer.FlushAsync();
+                await writer.FlushAsync(ct);
             }
 
             if (issuesWritten == 0)
             {
                 status.Report("No issues were successfully downloaded.");
                 CleanupTemp(tempOutputPath);
-                return;
+                return 0;
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, ct);
             status.Report($"Done. {issuesWritten:N0} issues saved to {Path.GetFileName(outputFullPath)}");
+            return issuesWritten;
         }
         catch (OperationCanceledException)
         {
             status.Report("Download cancelled.");
             CleanupTemp(tempOutputPath);
+            throw;
         }
         catch (Exception ex)
         {
@@ -122,7 +144,13 @@ public class TwicDownloaderService : ITwicDownloaderService
         }
         finally
         {
-            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+            try
+            {
+                if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -144,7 +172,8 @@ public class TwicDownloaderService : ITwicDownloaderService
     {
         // Start probing slightly before the estimate in case of calculation errors or holidays
         var probe = Math.Max(MinimumIssue, estimatedIssue - 3);
-        var lastSuccess = probe;
+        var lastSuccess = 0;
+        var hadSuccess = false;
         var failures = 0;
 
         while (failures < 3) // Stop after 3 consecutive 404s
@@ -161,6 +190,7 @@ public class TwicDownloaderService : ITwicDownloaderService
                 if (response.IsSuccessStatusCode)
                 {
                     lastSuccess = probe;
+                    hadSuccess = true;
                     probe++;
                     failures = 0; // Reset failures on success
                 }
@@ -186,13 +216,25 @@ public class TwicDownloaderService : ITwicDownloaderService
             await Task.Delay(400, ct);
         }
 
+        if (!hadSuccess)
+        {
+            var fallback = Math.Max(MinimumIssue, estimatedIssue);
+            status.Report($"Could not confirm latest issue; using estimate {fallback}.");
+            return fallback;
+        }
+
         status.Report($"Latest confirmed issue: {lastSuccess}");
         return lastSuccess;
     }
 
     private static HttpClient CreateClient()
     {
-        var client = new HttpClient
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        };
+
+        var client = new HttpClient(handler)
         {
             Timeout = TimeSpan.FromSeconds(30)
         };
@@ -279,14 +321,14 @@ public class TwicDownloaderService : ITwicDownloaderService
             using var archive = ZipFile.OpenRead(zipPath);
             // TWIC sometimes nests files or names them differently.
             // Priority: "twicX.pgn", then any ".pgn".
-            var entry = archive.Entries.FirstOrDefault(e => e.FullName.Equals($"twic{issue}.pgn", StringComparison.OrdinalIgnoreCase))
-                        ?? archive.Entries.FirstOrDefault(e => e.FullName.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase));
+            var entry = archive.Entries.FirstOrDefault(e => e.Name.Equals($"twic{issue}.pgn", StringComparison.OrdinalIgnoreCase))
+                        ?? archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase));
 
             if (entry == null) return false;
 
             await using var entryStream = entry.Open();
             // Detect encoding (often Windows-1252 or UTF8)
-            using var reader = new StreamReader(entryStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            using var reader = new StreamReader(entryStream, Encoding.GetEncoding(1252), detectEncodingFromByteOrderMarks: true);
 
             string? line;
             var hasContent = false;
@@ -312,6 +354,10 @@ public class TwicDownloaderService : ITwicDownloaderService
             }
 
             return hasContent;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
