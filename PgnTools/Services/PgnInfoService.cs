@@ -62,6 +62,7 @@ public partial class PgnInfoService : IPgnInfoService
         var count = 0;
         var inComment = false;
         var inLineComment = false;
+        var inBracketAnnotation = false;
         var depth = 0;
         var wordStart = -1;
         var span = moveText.AsSpan();
@@ -75,6 +76,15 @@ public partial class PgnInfoService : IPgnInfoService
                 if (c == '\n' || c == '\r')
                 {
                     inLineComment = false;
+                }
+                continue;
+            }
+
+            if (inBracketAnnotation)
+            {
+                if (c == ']')
+                {
+                    inBracketAnnotation = false;
                 }
                 continue;
             }
@@ -96,6 +106,22 @@ public partial class PgnInfoService : IPgnInfoService
                 case '}':
                     inComment = false;
                     continue;
+                case '[':
+                    if (!inComment && depth == 0)
+                    {
+                        if (wordStart >= 0)
+                        {
+                            var word = span.Slice(wordStart, i - wordStart);
+                            if (IsSanMove(word))
+                            {
+                                count++;
+                            }
+                            wordStart = -1;
+                        }
+                        inBracketAnnotation = true;
+                        continue;
+                    }
+                    break;
                 case '(':
                     if (wordStart >= 0)
                     {

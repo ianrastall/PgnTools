@@ -262,7 +262,7 @@ public partial class PgnReader
         var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
         {
-            if (TryParseHeaderLine(trimmedSpan, out var tagKey, out var rawValue))
+            if (TryParseHeaderLine(trimmedSpan, allowUnquotedValue: !inMoveSection, out var tagKey, out var rawValue))
             {
                 if (inMoveSection && currentGame != null)
                 {
@@ -478,12 +478,12 @@ public partial class PgnReader
         return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 
-    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
+    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, bool allowUnquotedValue, out string key, out string rawValue)
     {
-        return TryParseHeaderFallback(line, out key, out rawValue);
+        return TryParseHeaderFallback(line, allowUnquotedValue, out key, out rawValue);
     }
 
-    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
+    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, bool allowUnquotedValue, out string key, out string rawValue)
     {
         key = string.Empty;
         rawValue = string.Empty;
@@ -518,6 +518,24 @@ public partial class PgnReader
             key = nameSpan.ToString();
             rawValue = string.Empty;
             return true;
+        }
+
+        if (!allowUnquotedValue)
+        {
+            var first = nameSpan[0];
+            if (!char.IsLetter(first))
+            {
+                return false;
+            }
+
+            for (var i = 1; i < nameSpan.Length; i++)
+            {
+                var c = nameSpan[i];
+                if (!char.IsLetterOrDigit(c) && c != '_')
+                {
+                    return false;
+                }
+            }
         }
 
         if (span[0] == '"' || span[0] == '\'')
@@ -557,6 +575,11 @@ public partial class PgnReader
             key = nameSpan.ToString();
             rawValue = builder.ToString();
             return true;
+        }
+
+        if (!allowUnquotedValue)
+        {
+            return false;
         }
 
         var closingIndex = span.IndexOf(']');
