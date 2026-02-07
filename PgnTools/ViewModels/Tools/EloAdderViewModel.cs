@@ -17,6 +17,7 @@ public partial class EloAdderViewModel(
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
     private bool _disposed;
     private const string SettingsPrefix = nameof(EloAdderViewModel);
 
@@ -122,7 +123,7 @@ public partial class EloAdderViewModel(
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RunAsync()
     {
-        if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        if (_disposed || string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
     }
@@ -186,7 +187,18 @@ public partial class EloAdderViewModel(
             IsRunning = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
@@ -228,6 +240,11 @@ public partial class EloAdderViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsRunning || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()

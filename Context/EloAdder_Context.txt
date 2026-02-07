@@ -1,0 +1,2110 @@
+# Context Dump: Elo Adder
+# Date: 2026-02-07 02:01:41
+# File Count: 10
+
+===== BEGIN: Docs\EloAdderService.md =====
+# EloAdderService.md
+
+## Service Implementation: EloAdderService
+
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `PgnReader`, `PgnWriter`, `FileReplacementHelper`, `IRatingDatabase`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
+
+## 1. Objective
+
+Add missing `WhiteElo` and `BlackElo` tags by looking up historical ratings in a ratings database.
+
+## 2. Public API (Actual)
+
+```csharp
+public interface IEloAdderService
+{
+    Task AddElosAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IRatingDatabase db,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default);
+}
+
+public interface IRatingDatabase
+{
+    int? Lookup(string name, int year, int month);
+}
+```
+
+## 3. High-Level Pipeline (Actual)
+
+1. **Validate paths** and ensure the input exists.
+2. **Stream games** from input with `PgnReader`.
+3. **Parse `Date`** (`YYYY.MM.DD`) and lookup ratings.
+4. **Add Elo tags** only if missing.
+5. **Write to temp** and replace output file.
+
+## 4. Lookup Rules
+
+- Date parsing uses **year + month** from the `Date` header.
+- Ratings are only added when `WhiteElo`/`BlackElo` is absent.
+- Player names are looked up verbatim from headers.
+
+## 5. Progress Reporting
+
+Progress is reported by input stream position (percent), throttled by:
+- Every 200 games, or
+- At least every 100 ms.
+
+## 6. Limitations
+
+- Requires a ratings database implementation.
+- Games without a parsable `Date` are skipped.
+===== END: Docs\EloAdderService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\EloAdderService.cs =====
+using System.Globalization;
+using System.Runtime.CompilerServices;
+using System.Text;
+using PgnTools.Helpers;
+
+namespace PgnTools.Services;
+
+public interface IRatingDatabase
+{
+    int? Lookup(string name, int year, int month);
+}
+
+public sealed class EmptyRatingDatabase : IRatingDatabase
+{
+    public int? Lookup(string name, int year, int month) => null;
+}
+
+public interface IEloAdderService
+{
+    Task AddElosAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IRatingDatabase db,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default);
+}
+
+public class EloAdderService : IEloAdderService
+{
+    private const int BufferSize = 65536;
+    private const int ProgressGameInterval = 200;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    public EloAdderService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    public async Task AddElosAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IRatingDatabase db,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
+        if (db is null)
+        {
+            throw new ArgumentNullException(nameof(db));
+        }
+
+        var inputFullPath = Path.GetFullPath(inputFilePath);
+        var outputFullPath = Path.GetFullPath(outputFilePath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (!File.Exists(inputFullPath))
+        {
+            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+        }
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Input and output files must be different.");
+        }
+
+        if (Path.GetDirectoryName(outputFullPath) is { } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var processed = 0L;
+        var lastProgressReport = DateTime.MinValue;
+
+        try
+        {
+            await using (var inputStream = new FileStream(
+                inputFullPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            await using (var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
+            {
+                var firstOutput = true;
+
+                progress?.Report(0);
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, ct).ConfigureAwait(false))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    processed++;
+
+                    AddRatings(game, db);
+
+                    if (!firstOutput)
+                    {
+                        await writer.WriteLineAsync().ConfigureAwait(false);
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
+                    firstOutput = false;
+
+                    if (ShouldReportProgress(processed, ref lastProgressReport))
+                    {
+                        progress?.Report(GetProgressPercent(inputStream));
+                    }
+                }
+
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+
+            if (processed == 0)
+            {
+                if (File.Exists(tempOutputPath))
+                {
+                    File.Delete(tempOutputPath);
+                }
+
+                progress?.Report(100);
+                return;
+            }
+
+            ct.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, ct).ConfigureAwait(false);
+            progress?.Report(100);
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+            throw;
+        }
+    }
+
+    private static int AddRatings(PgnGame game, IRatingDatabase db)
+    {
+        if (!TryParseDate(game.Headers.GetHeaderValueOrDefault("Date"), out var year, out var month))
+        {
+            return 0;
+        }
+
+        var added = 0;
+
+        if (game.Headers.TryGetHeaderValue("White", out var white))
+        {
+            if (!game.Headers.TryGetHeaderValue("WhiteElo", out _))
+            {
+                var elo = db.Lookup(white, year, month);
+                if (elo.HasValue)
+                {
+                    game.Headers["WhiteElo"] = elo.Value.ToString(CultureInfo.InvariantCulture);
+                    added++;
+                }
+            }
+        }
+
+        if (game.Headers.TryGetHeaderValue("Black", out var black))
+        {
+            if (!game.Headers.TryGetHeaderValue("BlackElo", out _))
+            {
+                var elo = db.Lookup(black, year, month);
+                if (elo.HasValue)
+                {
+                    game.Headers["BlackElo"] = elo.Value.ToString(CultureInfo.InvariantCulture);
+                    added++;
+                }
+            }
+        }
+
+        return added;
+    }
+
+    private static bool TryParseDate(string? date, out int year, out int month)
+    {
+        year = 0;
+        month = 0;
+
+        if (string.IsNullOrWhiteSpace(date))
+        {
+            return false;
+        }
+
+        var normalized = date.Replace('/', '.').Replace('-', '.');
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(parts[0], out year) || year < 1)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(parts[1], out month) || month < 1 || month > 12)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static double GetProgressPercent(Stream stream)
+    {
+        if (!stream.CanSeek || stream.Length == 0)
+        {
+            return 0;
+        }
+
+        var percent = stream.Position / (double)stream.Length * 100;
+        if (percent < 0)
+        {
+            return 0;
+        }
+
+        return percent > 100 ? 100 : percent;
+    }
+
+    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    {
+        if (games <= 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
+        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        if (!gameIntervalMet && !timeIntervalMet)
+        {
+            return false;
+        }
+
+        lastReportUtc = now;
+        return true;
+    }
+}
+===== END: PgnTools\Services\EloAdderService.cs =====
+
+===== BEGIN: PgnTools\Services\EmbeddedRatingsDatabase.cs =====
+using System.Buffers;
+using System.Text;
+using ZstdSharp;
+
+namespace PgnTools.Services;
+
+/// <summary>
+/// Rating database backed by the embedded Rust-generated ratings.bin.zst file.
+/// </summary>
+public sealed class EmbeddedRatingsDatabase : IRatingDatabase
+{
+    private const string RatingsFileName = "ratings.bin.zst";
+    private const double FuzzyMinScore = 0.90;
+    private const double FuzzyStrongScore = 0.97;
+    private const double FuzzyMinGap = 0.02;
+    private const double FuzzyLastMinScore = 0.92;
+    private const int NameCacheCapacity = 100_000;
+    private const int LastCacheCapacity = 10_000;
+
+    private readonly Lazy<Dictionary<string, PlayerRecord>> _db;
+    private readonly Lazy<FuzzyIndex> _fuzzyIndex;
+
+    private readonly Dictionary<string, string?> _nameCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _lastCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _cacheLock = new();
+
+    public EmbeddedRatingsDatabase()
+    {
+        _db = new Lazy<Dictionary<string, PlayerRecord>>(LoadDatabase, LazyThreadSafetyMode.ExecutionAndPublication);
+        _fuzzyIndex = new Lazy<FuzzyIndex>(() => new FuzzyIndex(_db.Value), LazyThreadSafetyMode.ExecutionAndPublication);
+    }
+
+    public int? Lookup(string name, int year, int month)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (year < 1 || month is < 1 or > 12)
+        {
+            return null;
+        }
+
+        var db = _db.Value;
+        if (db.Count == 0)
+        {
+            return null;
+        }
+
+        var yearU16 = (ushort)Math.Clamp(year, 0, ushort.MaxValue);
+        var monthU8 = (byte)month;
+
+        // Direct and swapped-name lookups first.
+        var primaryKey = NormalizeKey(name);
+        if (primaryKey.Length == 0)
+        {
+            return null;
+        }
+
+        if (TryLookup(db, primaryKey, yearU16, monthU8, out var elo))
+        {
+            return elo;
+        }
+
+        var swapped = SwappedNameKey(name);
+        if (!string.IsNullOrWhiteSpace(swapped) &&
+            !string.Equals(swapped, primaryKey, StringComparison.Ordinal) &&
+            TryLookup(db, swapped, yearU16, monthU8, out elo))
+        {
+            return elo;
+        }
+
+        // Canonicalize and try again.
+        var canonical = CanonicalizeName(name);
+        if (!string.IsNullOrWhiteSpace(canonical))
+        {
+            var canonicalKey = NormalizeKey(canonical);
+            if (canonicalKey.Length > 0 && TryLookup(db, canonicalKey, yearU16, monthU8, out elo))
+            {
+                return elo;
+            }
+        }
+
+        // Fuzzy lookup by last name bucket.
+        var matchedKey = GetCachedOrFuzzyMatchKey(db, name, canonical);
+        if (matchedKey != null && TryLookup(db, matchedKey, yearU16, monthU8, out elo))
+        {
+            return elo;
+        }
+
+        return null;
+    }
+
+    private string? GetCachedOrFuzzyMatchKey(Dictionary<string, PlayerRecord> db, string rawName, string canonical)
+    {
+        var cacheKey = rawName;
+
+        lock (_cacheLock)
+        {
+            if (_nameCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        var matched = FuzzyMatchKey(db, rawName, canonical);
+
+        lock (_cacheLock)
+        {
+            if (_nameCache.Count >= NameCacheCapacity)
+            {
+                _nameCache.Clear();
+            }
+
+            _nameCache[cacheKey] = matched;
+        }
+
+        return matched;
+    }
+
+    private string? FuzzyMatchKey(Dictionary<string, PlayerRecord> db, string rawName, string canonical)
+    {
+        if (string.IsNullOrWhiteSpace(canonical))
+        {
+            return null;
+        }
+
+        var tokens = canonical.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+        {
+            return null;
+        }
+
+        var lastKey = LastNameKey(rawName) ?? LastNameKey(canonical);
+        if (lastKey == null)
+        {
+            return null;
+        }
+
+        var resolvedLast = ResolveLastName(lastKey);
+        if (resolvedLast == null || !_fuzzyIndex.Value.ByLast.TryGetValue(resolvedLast, out var candidates))
+        {
+            return null;
+        }
+
+        if (tokens.Length < 2 && candidates.Count == 1)
+        {
+            return candidates[0];
+        }
+
+        var queryKey = NormalizeKey(canonical);
+        if (queryKey.Length == 0)
+        {
+            return null;
+        }
+
+        var swappedQueryKey = SwappedNameKey(canonical);
+
+        var bestScore = 0.0;
+        var secondBest = 0.0;
+        string? bestKey = null;
+
+        foreach (var candidateKey in candidates)
+        {
+            if (!db.TryGetValue(candidateKey, out var player))
+            {
+                continue;
+            }
+
+            var candidateCanonical = CanonicalizeName(player.Name);
+            if (candidateCanonical.Length == 0)
+            {
+                continue;
+            }
+
+            var candidateKeyNormalized = NormalizeKey(candidateCanonical);
+            if (candidateKeyNormalized.Length == 0)
+            {
+                continue;
+            }
+
+            var score = Math.Max(
+                JaroWinklerSimilarity(queryKey, candidateKeyNormalized),
+                swappedQueryKey is null ? 0.0 : JaroWinklerSimilarity(swappedQueryKey, candidateKeyNormalized));
+
+            if (score > bestScore)
+            {
+                secondBest = bestScore;
+                bestScore = score;
+                bestKey = candidateKey;
+            }
+            else if (score > secondBest)
+            {
+                secondBest = score;
+            }
+        }
+
+        if (bestKey == null)
+        {
+            return null;
+        }
+
+        // Apply similar acceptance thresholds to the Rust version.
+        if (bestScore >= FuzzyStrongScore)
+        {
+            return bestKey;
+        }
+
+        if (bestScore >= FuzzyMinScore && (bestScore - secondBest) >= FuzzyMinGap)
+        {
+            return bestKey;
+        }
+
+        return null;
+    }
+
+    private string? ResolveLastName(string lastKey)
+    {
+        lock (_cacheLock)
+        {
+            if (_lastCache.TryGetValue(lastKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        var resolved = ResolveLastNameCore(lastKey);
+
+        lock (_cacheLock)
+        {
+            if (_lastCache.Count >= LastCacheCapacity)
+            {
+                _lastCache.Clear();
+            }
+
+            _lastCache[lastKey] = resolved;
+        }
+
+        return resolved;
+    }
+
+    private string? ResolveLastNameCore(string lastKey)
+    {
+        var index = _fuzzyIndex.Value;
+
+        if (index.ByLast.ContainsKey(lastKey))
+        {
+            return lastKey;
+        }
+
+        var initial = lastKey[0];
+        if (!index.LastByInitial.TryGetValue(initial, out var lastNames))
+        {
+            return null;
+        }
+
+        var bestScore = 0.0;
+        string? best = null;
+        foreach (var candidate in lastNames)
+        {
+            var score = JaroWinklerSimilarity(lastKey, candidate);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        return bestScore >= FuzzyLastMinScore ? best : null;
+    }
+
+    private static bool TryLookup(
+        Dictionary<string, PlayerRecord> db,
+        string key,
+        ushort year,
+        byte month,
+        out int elo)
+    {
+        elo = 0;
+        if (!db.TryGetValue(key, out var player))
+        {
+            return false;
+        }
+
+        var rating = player.RatingFor(year, month);
+        if (!rating.HasValue)
+        {
+            return false;
+        }
+
+        elo = rating.Value;
+        return true;
+    }
+
+    private static Dictionary<string, PlayerRecord> LoadDatabase()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var path = Path.Combine(baseDir, "Assets", RatingsFileName);
+
+        if (!File.Exists(path))
+        {
+            return new Dictionary<string, PlayerRecord>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var decompressed = new DecompressionStream(fileStream);
+
+        return LoadFromBincodeStream(decompressed);
+    }
+
+    private static Dictionary<string, PlayerRecord> LoadFromBincodeStream(Stream stream)
+    {
+        // The Rust tool uses bincode default configuration:
+        // - little-endian fixed-width integers
+        // - sequence/string lengths encoded as u64
+        var map = new Dictionary<string, PlayerRecord>(capacity: 600_000, comparer: StringComparer.OrdinalIgnoreCase);
+
+        while (true)
+        {
+            var record = TryReadPlayerRecord(stream);
+            if (record == null)
+            {
+                break;
+            }
+
+            var key = NormalizeKey(record.Name);
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            record.SortRatings();
+            map[key] = record;
+        }
+
+        return map;
+    }
+
+    private static PlayerRecord? TryReadPlayerRecord(Stream stream)
+    {
+        // Read the first string length. If we hit EOF here, we're done.
+        if (!TryReadUInt64(stream, out var nameLen))
+        {
+            return null;
+        }
+
+        var name = ReadString(stream, nameLen);
+        var country = ReadString(stream);
+        var fideId = ReadUInt32(stream);
+        var bio = ReadString(stream);
+        var ratings = ReadRatings(stream);
+
+        return new PlayerRecord(name, country, fideId, bio, ratings);
+    }
+
+    private static string ReadString(Stream stream)
+    {
+        var length = ReadUInt64(stream);
+        return ReadString(stream, length);
+    }
+
+    private static string ReadString(Stream stream, ulong length)
+    {
+        if (length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (length > int.MaxValue)
+        {
+            throw new InvalidDataException("String length exceeds maximum supported size.");
+        }
+
+        var byteCount = (int)length;
+        var buffer = ArrayPool<byte>.Shared.Rent(byteCount);
+        try
+        {
+            ReadExactly(stream, buffer.AsSpan(0, byteCount));
+            return Encoding.UTF8.GetString(buffer, 0, byteCount);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static List<PlayerRating> ReadRatings(Stream stream)
+    {
+        var length = ReadUInt64(stream);
+        if (length == 0)
+        {
+            return new List<PlayerRating>(0);
+        }
+
+        if (length > int.MaxValue)
+        {
+            throw new InvalidDataException("Ratings vector length exceeds maximum supported size.");
+        }
+
+        var count = (int)length;
+        var list = new List<PlayerRating>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var year = ReadUInt16(stream);
+            var month = ReadByte(stream);
+            var rating = ReadUInt16(stream);
+            list.Add(new PlayerRating(year, month, rating));
+        }
+
+        return list;
+    }
+
+    private static ushort ReadUInt16(Stream stream)
+    {
+        Span<byte> buffer = stackalloc byte[2];
+        ReadExactly(stream, buffer);
+        return (ushort)(buffer[0] | (buffer[1] << 8));
+    }
+
+    private static uint ReadUInt32(Stream stream)
+    {
+        Span<byte> buffer = stackalloc byte[4];
+        ReadExactly(stream, buffer);
+        return (uint)(buffer[0]
+                      | (buffer[1] << 8)
+                      | (buffer[2] << 16)
+                      | (buffer[3] << 24));
+    }
+
+    private static ulong ReadUInt64(Stream stream)
+    {
+        if (!TryReadUInt64(stream, out var value))
+        {
+            throw new EndOfStreamException("Unexpected end of stream while reading u64.");
+        }
+
+        return value;
+    }
+
+    private static bool TryReadUInt64(Stream stream, out ulong value)
+    {
+        Span<byte> buffer = stackalloc byte[8];
+        var read = stream.Read(buffer);
+        if (read == 0)
+        {
+            value = 0;
+            return false;
+        }
+
+        if (read < buffer.Length)
+        {
+            ReadExactly(stream, buffer[read..]);
+        }
+
+        value = (ulong)buffer[0]
+                | ((ulong)buffer[1] << 8)
+                | ((ulong)buffer[2] << 16)
+                | ((ulong)buffer[3] << 24)
+                | ((ulong)buffer[4] << 32)
+                | ((ulong)buffer[5] << 40)
+                | ((ulong)buffer[6] << 48)
+                | ((ulong)buffer[7] << 56);
+        return true;
+    }
+
+    private static byte ReadByte(Stream stream)
+    {
+        var b = stream.ReadByte();
+        if (b < 0)
+        {
+            throw new EndOfStreamException("Unexpected end of stream while reading byte.");
+        }
+
+        return (byte)b;
+    }
+
+    private static void ReadExactly(Stream stream, Span<byte> buffer)
+    {
+        var totalRead = 0;
+        while (totalRead < buffer.Length)
+        {
+            var read = stream.Read(buffer[totalRead..]);
+            if (read <= 0)
+            {
+                throw new EndOfStreamException("Unexpected end of stream.");
+            }
+
+            totalRead += read;
+        }
+    }
+
+    private static string NormalizeKey(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(name.Length);
+        foreach (var c in name)
+        {
+            if (c is ' ' or ',')
+            {
+                continue;
+            }
+
+            sb.Append(char.ToLowerInvariant(c));
+        }
+
+        return sb.ToString();
+    }
+
+    private static string? SwappedNameKey(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var cleaned = name.Replace(",", " ", StringComparison.Ordinal);
+        var parts = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2)
+        {
+            return null;
+        }
+
+        var last = parts[^1];
+        var reordered = string.Join(' ', new[] { last }.Concat(parts[..^1]));
+        var key = NormalizeKey(reordered);
+        return key.Length == 0 ? null : key;
+    }
+
+    private static string CanonicalizeName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return string.Empty;
+        }
+
+        var lower = name.ToLowerInvariant();
+        var sb = new StringBuilder(lower.Length);
+        var lastWasSpace = false;
+
+        foreach (var c in lower)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                sb.Append(c);
+                lastWasSpace = false;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c) || c is ',' or '.' or '-' or '_' or '\'')
+            {
+                if (!lastWasSpace)
+                {
+                    sb.Append(' ');
+                    lastWasSpace = true;
+                }
+            }
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private static string? LastNameKey(string name)
+    {
+        var canonical = CanonicalizeName(name);
+        if (canonical.Length == 0)
+        {
+            return null;
+        }
+
+        var parts = canonical.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            return null;
+        }
+
+        var last = parts[^1];
+        return last.Length == 0 ? null : NormalizeKey(last);
+    }
+
+    private static double JaroWinklerSimilarity(string a, string b)
+    {
+        if (a.Length == 0 && b.Length == 0)
+        {
+            return 1.0;
+        }
+
+        var jaro = JaroSimilarity(a, b);
+        if (jaro <= 0)
+        {
+            return 0;
+        }
+
+        var prefix = 0;
+        var maxPrefix = Math.Min(4, Math.Min(a.Length, b.Length));
+        while (prefix < maxPrefix && a[prefix] == b[prefix])
+        {
+            prefix++;
+        }
+
+        const double scalingFactor = 0.1;
+        return jaro + prefix * scalingFactor * (1 - jaro);
+    }
+
+    private static double JaroSimilarity(string a, string b)
+    {
+        if (a.Length == 0 || b.Length == 0)
+        {
+            return 0.0;
+        }
+
+        var matchDistance = Math.Max(0, Math.Max(a.Length, b.Length) / 2 - 1);
+        var aMatches = new bool[a.Length];
+        var bMatches = new bool[b.Length];
+
+        var matches = 0;
+        for (var i = 0; i < a.Length; i++)
+        {
+            var start = Math.Max(0, i - matchDistance);
+            var end = Math.Min(i + matchDistance + 1, b.Length);
+
+            for (var j = start; j < end; j++)
+            {
+                if (bMatches[j] || a[i] != b[j])
+                {
+                    continue;
+                }
+
+                aMatches[i] = true;
+                bMatches[j] = true;
+                matches++;
+                break;
+            }
+        }
+
+        if (matches == 0)
+        {
+            return 0.0;
+        }
+
+        var k = 0;
+        var transpositions = 0;
+        for (var i = 0; i < a.Length; i++)
+        {
+            if (!aMatches[i])
+            {
+                continue;
+            }
+
+            while (!bMatches[k])
+            {
+                k++;
+            }
+
+            if (a[i] != b[k])
+            {
+                transpositions++;
+            }
+
+            k++;
+        }
+
+        var m = matches;
+        return (m / (double)a.Length +
+                m / (double)b.Length +
+                (m - transpositions / 2.0) / m) / 3.0;
+    }
+
+    private sealed class FuzzyIndex
+    {
+        public Dictionary<string, List<string>> ByLast { get; }
+        public Dictionary<char, List<string>> LastByInitial { get; }
+
+        public FuzzyIndex(Dictionary<string, PlayerRecord> db)
+        {
+            ByLast = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (key, player) in db)
+            {
+                var last = LastNameKey(player.Name);
+                if (string.IsNullOrWhiteSpace(last))
+                {
+                    continue;
+                }
+
+                if (!ByLast.TryGetValue(last, out var list))
+                {
+                    list = new List<string>();
+                    ByLast[last] = list;
+                }
+
+                list.Add(key);
+            }
+
+            LastByInitial = new Dictionary<char, List<string>>();
+            foreach (var last in ByLast.Keys)
+            {
+                var initial = last[0];
+                if (!LastByInitial.TryGetValue(initial, out var list))
+                {
+                    list = new List<string>();
+                    LastByInitial[initial] = list;
+                }
+
+                list.Add(last);
+            }
+        }
+    }
+
+    private sealed class PlayerRecord
+    {
+        public string Name { get; }
+        public string Country { get; }
+        public uint FideId { get; }
+        public string Bio { get; }
+        public List<PlayerRating> Ratings { get; }
+
+        public PlayerRecord(string name, string country, uint fideId, string bio, List<PlayerRating> ratings)
+        {
+            Name = name;
+            Country = country;
+            FideId = fideId;
+            Bio = bio;
+            Ratings = ratings;
+        }
+
+        public void SortRatings()
+        {
+            Ratings.Sort(static (a, b) =>
+            {
+                var yearCompare = a.Year.CompareTo(b.Year);
+                return yearCompare != 0 ? yearCompare : a.Month.CompareTo(b.Month);
+            });
+        }
+
+        public int? RatingFor(ushort year, byte month)
+        {
+            if (Ratings.Count == 0)
+            {
+                return null;
+            }
+
+            var idx = BinarySearch(year, month);
+            if (idx >= 0)
+            {
+                return Ratings[idx].Rating;
+            }
+
+            // Try previous month.
+            if (month > 1)
+            {
+                idx = BinarySearch(year, (byte)(month - 1));
+                if (idx >= 0)
+                {
+                    return Ratings[idx].Rating;
+                }
+            }
+
+            // Try next month.
+            if (month < 12)
+            {
+                idx = BinarySearch(year, (byte)(month + 1));
+                if (idx >= 0)
+                {
+                    return Ratings[idx].Rating;
+                }
+            }
+
+            return null;
+        }
+
+        private int BinarySearch(ushort year, byte month)
+        {
+            var lo = 0;
+            var hi = Ratings.Count - 1;
+
+            while (lo <= hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                var current = Ratings[mid];
+
+                var cmp = current.Year.CompareTo(year);
+                if (cmp == 0)
+                {
+                    cmp = current.Month.CompareTo(month);
+                }
+
+                if (cmp == 0)
+                {
+                    return mid;
+                }
+
+                if (cmp < 0)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid - 1;
+                }
+            }
+
+            return -1;
+        }
+    }
+
+    private readonly record struct PlayerRating(ushort Year, byte Month, ushort Rating);
+}
+
+===== END: PgnTools\Services\EmbeddedRatingsDatabase.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\EloAdderViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Elo Adder tool.
+/// </summary>
+public partial class EloAdderViewModel(
+    IEloAdderService eloService,
+    IRatingDatabase ratingDb,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IEloAdderService _eloService = eloService;
+    private readonly IRatingDatabase _ratingDb = ratingDb;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(EloAdderViewModel);
+
+    [ObservableProperty]
+    private string _inputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _inputFileName = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select input and output PGN files";
+
+    [ObservableProperty]
+    private double _progressValue;
+    public void Initialize()
+    {
+        Title = "Elo Adder";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectInputFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            InputFilePath = file.Path;
+            InputFileName = file.Name;
+            StatusMessage = $"Selected input: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
+                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_rated.pgn";
+                OutputFilePath = Path.Combine(directory, suggestedName);
+                OutputFileName = Path.GetFileName(OutputFilePath);
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting input file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
+                ? "rated.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_rated.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var inputFullPath = Path.GetFullPath(InputFilePath);
+        var outputFullPath = Path.GetFullPath(OutputFilePath);
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "Input and output files must be different.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressValue = 0;
+            StatusMessage = "Adding Elo ratings...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<double>(p =>
+            {
+                ProgressValue = p;
+                StatusMessage = $"Adding Elo ratings... {p:0}%";
+                StatusDetail = BuildProgressDetail(p);
+            });
+
+            await _eloService.AddElosAsync(
+                InputFilePath,
+                OutputFilePath,
+                _ratingDb,
+                progress,
+                _cancellationTokenSource.Token);
+
+            StatusMessage = "Elo ratings added.";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100);
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Elo adder cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(InputFilePath) &&
+        File.Exists(InputFilePath) &&
+        !string.IsNullOrWhiteSpace(OutputFilePath);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+    partial void OnInputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        if (IsRunning || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
+        {
+            InputFileName = Path.GetFileName(InputFilePath);
+    }
+        else
+        {
+            InputFilePath = string.Empty;
+            InputFileName = string.Empty;
+    }
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\EloAdderViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\EloAdderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.EloAdderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Elo Adder" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Add historical Elo ratings based on the configured ratings database."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- File Selection -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\EloAdderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\EloAdderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Elo Adder tool.
+/// </summary>
+public sealed partial class EloAdderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public EloAdderViewModel ViewModel { get; }
+
+    public EloAdderPage() : this(App.GetService<EloAdderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public EloAdderPage(EloAdderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            ViewModel.Dispose();
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\EloAdderPage.xaml.cs =====
+

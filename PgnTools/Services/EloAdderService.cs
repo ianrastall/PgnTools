@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using PgnTools.Helpers;
 
@@ -45,6 +46,7 @@ public class EloAdderService : IEloAdderService
         IProgress<double>? progress = null,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
             throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
@@ -80,7 +82,6 @@ public class EloAdderService : IEloAdderService
         }
 
         var processed = 0L;
-        var added = 0L;
         var lastProgressReport = DateTime.MinValue;
 
         try
@@ -105,19 +106,19 @@ public class EloAdderService : IEloAdderService
 
                 progress?.Report(0);
 
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, ct))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, ct).ConfigureAwait(false))
                 {
                     ct.ThrowIfCancellationRequested();
                     processed++;
 
-                    added += AddRatings(game, db);
+                    AddRatings(game, db);
 
                     if (!firstOutput)
                     {
-                        await writer.WriteLineAsync();
+                        await writer.WriteLineAsync().ConfigureAwait(false);
                     }
 
-                    await _pgnWriter.WriteGameAsync(writer, game, ct);
+                    await _pgnWriter.WriteGameAsync(writer, game, ct).ConfigureAwait(false);
                     firstOutput = false;
 
                     if (ShouldReportProgress(processed, ref lastProgressReport))
@@ -126,7 +127,7 @@ public class EloAdderService : IEloAdderService
                     }
                 }
 
-                await writer.FlushAsync();
+                await writer.FlushAsync().ConfigureAwait(false);
             }
 
             if (processed == 0)
@@ -140,7 +141,8 @@ public class EloAdderService : IEloAdderService
                 return;
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            ct.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, ct).ConfigureAwait(false);
             progress?.Report(100);
         }
         catch
@@ -161,16 +163,16 @@ public class EloAdderService : IEloAdderService
 
     private static int AddRatings(PgnGame game, IRatingDatabase db)
     {
-        if (!TryParseDate(game.Headers.TryGetValue("Date", out var date) ? date : null, out var year, out var month))
+        if (!TryParseDate(game.Headers.GetHeaderValueOrDefault("Date"), out var year, out var month))
         {
             return 0;
         }
 
         var added = 0;
 
-        if (game.Headers.TryGetValue("White", out var white))
+        if (game.Headers.TryGetHeaderValue("White", out var white))
         {
-            if (!game.Headers.ContainsKey("WhiteElo"))
+            if (!game.Headers.TryGetHeaderValue("WhiteElo", out _))
             {
                 var elo = db.Lookup(white, year, month);
                 if (elo.HasValue)
@@ -181,9 +183,9 @@ public class EloAdderService : IEloAdderService
             }
         }
 
-        if (game.Headers.TryGetValue("Black", out var black))
+        if (game.Headers.TryGetHeaderValue("Black", out var black))
         {
-            if (!game.Headers.ContainsKey("BlackElo"))
+            if (!game.Headers.TryGetHeaderValue("BlackElo", out _))
             {
                 var elo = db.Lookup(black, year, month);
                 if (elo.HasValue)
@@ -207,7 +209,8 @@ public class EloAdderService : IEloAdderService
             return false;
         }
 
-        var parts = date.Split('.');
+        var normalized = date.Replace('/', '.').Replace('-', '.');
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2)
         {
             return false;
@@ -249,13 +252,10 @@ public class EloAdderService : IEloAdderService
             return false;
         }
 
-        if (games != 1 && games % ProgressGameInterval != 0)
-        {
-            return false;
-        }
-
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval)
+        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
+        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        if (!gameIntervalMet && !timeIntervalMet)
         {
             return false;
         }

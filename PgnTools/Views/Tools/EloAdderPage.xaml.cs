@@ -28,10 +28,7 @@ public sealed partial class EloAdderPage : Page
             {
                 ViewModel.CancelCommand.Execute(null);
             }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.Dispose();
         }
     }
 }

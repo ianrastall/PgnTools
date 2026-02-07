@@ -613,7 +613,7 @@ public sealed class EmbeddedRatingsDatabase : IRatingDatabase
             return 0.0;
         }
 
-        var matchDistance = Math.Max(a.Length, b.Length) / 2 - 1;
+        var matchDistance = Math.Max(0, Math.Max(a.Length, b.Length) / 2 - 1);
         var aMatches = new bool[a.Length];
         var bMatches = new bool[b.Length];
 
