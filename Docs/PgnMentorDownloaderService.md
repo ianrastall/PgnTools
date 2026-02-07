@@ -2,14 +2,14 @@
 
 ## Service Implementation: PgnMentorDownloaderService
 
-**Version:** Current implementation (updated 2026-02-05)  
+**Version:** Current implementation (updated 2026-02-07)  
 **Layer:** Service Layer (Domain Logic)  
-**Dependencies:** `HttpClient`, `FileReplacementHelper`  
-**Thread Safety:** Safe for concurrent calls (uses `Random.Shared`; shared `HttpClient` is thread-safe). Avoid concurrent calls that target the same output path.
+**Dependencies:** `HttpClient`, `FileReplacementHelper`, `System.IO.Compression`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
 
 ## 1. Objective
 
-Download all PGN Mentor archives referenced on the public file listing page, extract PGNs, and combine them into a single output file. The combined file is written in the same order the site provides.
+Download all PGN Mentor archives listed on the public file index and combine them into a single PGN file.
 
 ## 2. Public API (Actual)
 
@@ -20,77 +20,28 @@ public interface IPgnMentorDownloaderService
 }
 ```
 
-### 2.1 Parameter Semantics
-- `outputFile`: Destination PGN file path. Required.
-- `status`: Status messages (phase + current file).
-- `ct`: Cancels download, extraction, or writing.
-
 ## 3. High-Level Pipeline (Actual)
-1. **Validate output path** and compute full paths.
-2. **Fetch file list** from `https://www.pgnmentor.com/files.html`.
-3. **Extract file links** for `.zip` and `.pgn` using regex.
-4. **Download + append** each file in site order.
-5. **Replace final output** using `FileReplacementHelper.ReplaceFile`.
-6. **Cleanup** temp folder and temp output in `finally`.
 
-## 4. Workflow Details
+1. **Fetch file list** from `https://www.pgnmentor.com/files.html`.
+2. **Extract links** for `.zip` and `.pgn` via regex.
+3. **Download + append** each file in site order:
+   - `.zip`: append all `.pgn` entries
+   - `.pgn`: append file contents
+4. **Replace output** via `FileReplacementHelper.ReplaceFileAsync`.
+5. **Cleanup** temp downloads and temp output file.
 
-### 4.1 Link Discovery
-- URL: `https://www.pgnmentor.com/files.html`
-- Regex: `href="...(.zip|.pgn)"`
-- Links are de‑duplicated with a case‑insensitive set and returned **in site order**.
+## 4. Rate Limiting & Retries
 
-### 4.2 Download Loop
-For each link:
-- Wait **2–4 seconds** between downloads (random jitter).
-- Download to a temp folder via `DownloadWithRetryAsync`:
-  - Up to 3 attempts.
-  - Exponential backoff: 2s, 4s.
-  - On failure after 3 attempts, exception is caught in the loop and logged via `status`.
+- Random delay **2–4 seconds** between downloads.
+- Up to **3 attempts** per file with exponential backoff.
 
-### 4.3 Append Strategy
-- Output is written to a **single temp file** with `StreamWriter` (UTF‑8, no BOM).
-- **`.zip`**: Each `.pgn` entry is streamed and appended.
-- **`.pgn`**: File contents are streamed and appended.
-- Two blank lines are inserted between appended sources.
-- **No sorting** or de‑duplication is performed. Output order is the website order.
+## 5. Output Behavior
 
-### 4.4 Completion Rules
-- If **no valid PGN content** is appended, the method reports `"No valid PGN data collected."` and exits without replacing the destination file.
-- If content exists, the temp output replaces the destination file atomically.
+- Output preserves the site order (no sorting).
+- Two blank lines are inserted between sources.
+- UTF‑8 output (no BOM).
 
-## 5. Error Handling & Cleanup
+## 6. Limitations
 
-| Scenario | Behavior |
-| --- | --- |
-| Download failure | Status reports `"Failed <file>"`, continues with next link |
-| Extraction error | Returns false for that file; continues |
-| Cancellation | Throws `OperationCanceledException`, cleanup runs |
-| Temp cleanup | Always deletes temp folder and temp output file in `finally` |
-
-## 6. Key Constraints & Constants
-
-- **BufferSize:** 64KB (`65536`)
-- **BaseUri:** `https://www.pgnmentor.com/`
-- **FilesUri:** `https://www.pgnmentor.com/files.html`
-- **Rate Limit:** 2–4 seconds between downloads
-
-## 7. Usage Example (ViewModel Context)
-
-```csharp
-var progress = new Progress<string>(message =>
-{
-    StatusMessage = message;
-    StatusDetail = BuildProgressDetail();
-});
-
-await _pgnMentorDownloaderService.DownloadAndCombineAsync(
-    OutputFilePath,
-    progress,
-    _cancellationTokenSource.Token);
-```
-
-## 8. Limitations (Current Implementation)
-- Output is **not sorted** or normalized.
-- Order is **site order** only; no filtering by category or source.
-- Regex link extraction only supports `.zip` and `.pgn` links on the file list page.
+- No category filtering or deduplication.
+- Link extraction only covers `.zip` and `.pgn` on the file list page.
