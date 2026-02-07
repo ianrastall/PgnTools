@@ -16,6 +16,7 @@ public partial class StockfishNormalizerViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeLockOnRelease;
     private const string SettingsPrefix = nameof(StockfishNormalizerViewModel);
 
     [ObservableProperty]
@@ -176,7 +177,18 @@ public partial class StockfishNormalizerViewModel(
             IsRunning = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
@@ -217,6 +229,11 @@ public partial class StockfishNormalizerViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsRunning || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()

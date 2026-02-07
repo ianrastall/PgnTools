@@ -41,4 +41,4 @@ Reports every ~200 games with count of tags updated.
 
 - Only normalizes `White` and `Black` headers.
 - Date mapping table is static in code.
-- Uses synchronous `ReplaceFile` at the end.
+- File replacement uses synchronous filesystem calls (wrapped in an async retry loop).

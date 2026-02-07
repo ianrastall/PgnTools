@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -32,8 +33,8 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
         new("Stockfish 1.3.1", new DateOnly(2009, 5, 3), new DateOnly(2009, 7, 4)),
         new("Stockfish 1.4", new DateOnly(2009, 7, 5), new DateOnly(2009, 10, 3)),
         new("Stockfish 1.5", new DateOnly(2009, 10, 4), new DateOnly(2009, 10, 10)),
-        new("Stockfish 1.5.1", new DateOnly(2009, 10, 11), new DateOnly(2009, 12, 24)),
-        new("Stockfish 1.6", new DateOnly(2009, 12, 24), new DateOnly(2009, 12, 25)),
+        new("Stockfish 1.5.1", new DateOnly(2009, 10, 11), new DateOnly(2009, 12, 23)),
+        new("Stockfish 1.6", new DateOnly(2009, 12, 24), new DateOnly(2009, 12, 24)),
         new("Stockfish 1.6.1", new DateOnly(2009, 12, 25), new DateOnly(2009, 12, 30)),
         new("Stockfish 1.6.2", new DateOnly(2009, 12, 31), new DateOnly(2010, 2, 1)),
         new("Stockfish 1.6.3", new DateOnly(2010, 2, 2), new DateOnly(2010, 4, 7)),
@@ -104,6 +105,13 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
+
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
@@ -141,38 +149,43 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
             {
                 var firstOutput = true;
 
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     processed++;
 
-                    var headers = new Dictionary<string, string>(game.Headers.Count, StringComparer.OrdinalIgnoreCase);
+                    var updates = new List<KeyValuePair<string, string>>();
 
                     foreach (var header in game.Headers)
                     {
+                        var headerValue = header.Value ?? string.Empty;
                         if (IsPlayerHeader(header.Key) &&
-                            header.Value.Contains("Stockfish", StringComparison.OrdinalIgnoreCase))
+                            headerValue.Contains("Stockfish", StringComparison.OrdinalIgnoreCase))
                         {
-                            var normalized = NormalizeStockfishName(header.Value);
-                            if (!string.Equals(header.Value, normalized, StringComparison.Ordinal))
+                            var normalized = NormalizeStockfishName(headerValue);
+                            if (!string.Equals(headerValue, normalized, StringComparison.Ordinal))
                             {
                                 tagsUpdated++;
+                                updates.Add(new KeyValuePair<string, string>(header.Key, normalized));
                             }
-
-                            headers[header.Key] = normalized;
                         }
-                        else
+                        else if (!string.Equals(headerValue, header.Value, StringComparison.Ordinal))
                         {
-                            headers[header.Key] = header.Value;
+                            updates.Add(new KeyValuePair<string, string>(header.Key, headerValue));
                         }
+                    }
+
+                    foreach (var update in updates)
+                    {
+                        game.Headers[update.Key] = update.Value;
                     }
 
                     if (!firstOutput)
                     {
-                        await writer.WriteLineAsync();
+                        await writer.WriteLineAsync().ConfigureAwait(false);
                     }
 
-                    await _pgnWriter.WriteGameAsync(writer, new PgnGame(headers, game.MoveText), cancellationToken);
+                    await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
                     firstOutput = false;
 
                     if (ShouldReportProgress(processed, ref lastProgressReport))
@@ -181,7 +194,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                     }
                 }
 
-                await writer.FlushAsync();
+                await writer.FlushAsync().ConfigureAwait(false);
             }
 
             if (processed == 0)
@@ -195,7 +208,9 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
                 return new StockfishNormalizeResult(0, 0);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                .ConfigureAwait(false);
             progress?.Report((processed, $"Normalized {tagsUpdated:N0} tag(s) across {processed:N0} games."));
 
             return new StockfishNormalizeResult(processed, tagsUpdated);
@@ -249,7 +264,7 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
     {
         date = default;
         var minYear = 2008;
-        var maxYear = DateTime.Now.Year + 1;
+        var maxYear = DateTime.UtcNow.Year + 1;
 
         if (digits.Length == 8)
         {
@@ -308,13 +323,10 @@ public partial class StockfishNormalizerService : IStockfishNormalizerService
             return false;
         }
 
-        if (games != 1 && games % ProgressGameInterval != 0)
-        {
-            return false;
-        }
-
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval)
+        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
+        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        if (!gameIntervalMet && !timeIntervalMet)
         {
             return false;
         }

@@ -1,0 +1,1317 @@
+# Context Dump: Stockfish Normalizer
+# Date: 2026-02-07 13:08:16
+# File Count: 9
+
+===== BEGIN: Docs\StockfishNormalizerService.md =====
+# StockfishNormalizerService.md
+
+## Service Implementation: StockfishNormalizerService
+
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `PgnReader`, `PgnWriter`, `FileReplacementHelper`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
+
+## 1. Objective
+
+Normalize Stockfish engine names in player headers (`White`, `Black`) to canonical versions based on build date.
+
+## 2. Public API (Actual)
+
+```csharp
+public sealed record StockfishNormalizeResult(long Processed, long TagsUpdated);
+
+public interface IStockfishNormalizerService
+{
+    Task<StockfishNormalizeResult> NormalizeAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+```
+
+## 3. High-Level Pipeline (Actual)
+
+1. Stream games from input.
+2. For each `White`/`Black` header containing “Stockfish”, extract a build date (YYYYMMDD or YYMMDD).
+3. Map date to a canonical Stockfish version name using a fixed date range table.
+4. Write output to a temp file and replace destination.
+
+## 4. Progress Reporting
+
+Reports every ~200 games with count of tags updated.
+
+## 5. Limitations
+
+- Only normalizes `White` and `Black` headers.
+- Date mapping table is static in code.
+- Uses synchronous `ReplaceFile` at the end.
+===== END: Docs\StockfishNormalizerService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\StockfishNormalizerService.cs =====
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace PgnTools.Services;
+
+public sealed record StockfishNormalizeResult(long Processed, long TagsUpdated);
+
+public interface IStockfishNormalizerService
+{
+    Task<StockfishNormalizeResult> NormalizeAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+
+public partial class StockfishNormalizerService : IStockfishNormalizerService
+{
+    private const int BufferSize = 65536;
+    private const int ProgressGameInterval = 200;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
+
+    private static readonly IReadOnlyList<VersionRange> Mappings =
+    [
+        new("Stockfish 1.0", new DateOnly(2008, 11, 2), new DateOnly(2008, 11, 2)),
+        new("Stockfish 1.01", new DateOnly(2008, 11, 3), new DateOnly(2008, 12, 5)),
+        new("Stockfish 1.1", new DateOnly(2008, 12, 6), new DateOnly(2008, 12, 7)),
+        new("Stockfish 1.1a", new DateOnly(2008, 12, 8), new DateOnly(2008, 12, 28)),
+        new("Stockfish 1.2", new DateOnly(2008, 12, 29), new DateOnly(2009, 5, 1)),
+        new("Stockfish 1.3", new DateOnly(2009, 5, 2), new DateOnly(2009, 5, 2)),
+        new("Stockfish 1.3.1", new DateOnly(2009, 5, 3), new DateOnly(2009, 7, 4)),
+        new("Stockfish 1.4", new DateOnly(2009, 7, 5), new DateOnly(2009, 10, 3)),
+        new("Stockfish 1.5", new DateOnly(2009, 10, 4), new DateOnly(2009, 10, 10)),
+        new("Stockfish 1.5.1", new DateOnly(2009, 10, 11), new DateOnly(2009, 12, 24)),
+        new("Stockfish 1.6", new DateOnly(2009, 12, 24), new DateOnly(2009, 12, 25)),
+        new("Stockfish 1.6.1", new DateOnly(2009, 12, 25), new DateOnly(2009, 12, 30)),
+        new("Stockfish 1.6.2", new DateOnly(2009, 12, 31), new DateOnly(2010, 2, 1)),
+        new("Stockfish 1.6.3", new DateOnly(2010, 2, 2), new DateOnly(2010, 4, 7)),
+        new("Stockfish 1.7", new DateOnly(2010, 4, 8), new DateOnly(2010, 4, 9)),
+        new("Stockfish 1.7.1", new DateOnly(2010, 4, 10), new DateOnly(2010, 7, 1)),
+        new("Stockfish 1.8", new DateOnly(2010, 7, 2), new DateOnly(2010, 10, 1)),
+        new("Stockfish 1.9", new DateOnly(2010, 10, 2), new DateOnly(2010, 10, 4)),
+        new("Stockfish 1.9.1", new DateOnly(2010, 10, 5), new DateOnly(2010, 12, 31)),
+        new("Stockfish 2.0", new DateOnly(2011, 1, 1), new DateOnly(2011, 1, 3)),
+        new("Stockfish 2.0.1", new DateOnly(2011, 1, 4), new DateOnly(2011, 5, 3)),
+        new("Stockfish 2.1", new DateOnly(2011, 5, 4), new DateOnly(2011, 5, 7)),
+        new("Stockfish 2.1.1", new DateOnly(2011, 5, 8), new DateOnly(2011, 12, 28)),
+        new("Stockfish 2.2", new DateOnly(2011, 12, 29), new DateOnly(2012, 1, 5)),
+        new("Stockfish 2.2.1", new DateOnly(2012, 1, 6), new DateOnly(2012, 1, 13)),
+        new("Stockfish 2.2.2", new DateOnly(2012, 1, 14), new DateOnly(2012, 9, 14)),
+        new("Stockfish 2.3", new DateOnly(2012, 9, 15), new DateOnly(2012, 9, 21)),
+        new("Stockfish 2.3.1", new DateOnly(2012, 9, 22), new DateOnly(2013, 4, 29)),
+        new("Stockfish 3", new DateOnly(2013, 4, 30), new DateOnly(2013, 8, 19)),
+        new("Stockfish 4", new DateOnly(2013, 8, 20), new DateOnly(2013, 11, 28)),
+        new("Stockfish DD", new DateOnly(2013, 11, 29), new DateOnly(2014, 5, 30)),
+        new("Stockfish 5", new DateOnly(2014, 5, 31), new DateOnly(2015, 1, 26)),
+        new("Stockfish 6", new DateOnly(2015, 1, 27), new DateOnly(2016, 1, 1)),
+        new("Stockfish 7", new DateOnly(2016, 1, 2), new DateOnly(2016, 10, 31)),
+        new("Stockfish 8", new DateOnly(2016, 11, 1), new DateOnly(2018, 1, 31)),
+        new("Stockfish 9", new DateOnly(2018, 2, 1), new DateOnly(2018, 11, 28)),
+        new("Stockfish 10", new DateOnly(2018, 11, 29), new DateOnly(2020, 1, 14)),
+        new("Stockfish 11", new DateOnly(2020, 1, 15), new DateOnly(2020, 9, 1)),
+        new("Stockfish 12", new DateOnly(2020, 9, 2), new DateOnly(2021, 2, 18)),
+        new("Stockfish 13", new DateOnly(2021, 2, 19), new DateOnly(2021, 7, 1)),
+        new("Stockfish 14", new DateOnly(2021, 7, 2), new DateOnly(2021, 10, 27)),
+        new("Stockfish 14.1", new DateOnly(2021, 10, 28), new DateOnly(2022, 4, 17)),
+        new("Stockfish 15", new DateOnly(2022, 4, 18), new DateOnly(2022, 12, 3)),
+        new("Stockfish 15.1", new DateOnly(2022, 12, 4), new DateOnly(2023, 6, 29)),
+        new("Stockfish 16", new DateOnly(2023, 6, 30), new DateOnly(2024, 2, 23)),
+        new("Stockfish 16.1", new DateOnly(2024, 2, 24), new DateOnly(2024, 9, 5)),
+        new("Stockfish 17", new DateOnly(2024, 9, 6), new DateOnly(2025, 3, 29)),
+        new("Stockfish 17.1", new DateOnly(2025, 3, 30), new DateOnly(2026, 1, 30)),
+        new("Stockfish 18", new DateOnly(2026, 1, 31), new DateOnly(9999, 12, 31)),
+    ];
+
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    public StockfishNormalizerService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    [GeneratedRegex(@"(?i)Stockfish.*?(\b\d{6}\b|\b\d{8}\b)")]
+    private static partial Regex StockfishVersionRegex();
+
+    public async Task<StockfishNormalizeResult> NormalizeAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
+        var inputFullPath = Path.GetFullPath(inputFilePath);
+        var outputFullPath = Path.GetFullPath(outputFilePath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (!File.Exists(inputFullPath))
+        {
+            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+        }
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Input and output files must be different. To modify in-place, use a temporary output file first.");
+        }
+
+        var processed = 0L;
+        var tagsUpdated = 0L;
+        var lastProgressReport = DateTime.MinValue;
+
+        try
+        {
+            await using (var inputStream = new FileStream(
+                inputFullPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            await using (var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
+            {
+                var firstOutput = true;
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    processed++;
+
+                    var headers = new Dictionary<string, string>(game.Headers.Count, StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var header in game.Headers)
+                    {
+                        if (IsPlayerHeader(header.Key) &&
+                            header.Value.Contains("Stockfish", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var normalized = NormalizeStockfishName(header.Value);
+                            if (!string.Equals(header.Value, normalized, StringComparison.Ordinal))
+                            {
+                                tagsUpdated++;
+                            }
+
+                            headers[header.Key] = normalized;
+                        }
+                        else
+                        {
+                            headers[header.Key] = header.Value;
+                        }
+                    }
+
+                    if (!firstOutput)
+                    {
+                        await writer.WriteLineAsync();
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, new PgnGame(headers, game.MoveText), cancellationToken);
+                    firstOutput = false;
+
+                    if (ShouldReportProgress(processed, ref lastProgressReport))
+                    {
+                        progress?.Report((processed, $"Processing Game {processed:N0}... ({tagsUpdated:N0} tags updated)"));
+                    }
+                }
+
+                await writer.FlushAsync();
+            }
+
+            if (processed == 0)
+            {
+                if (File.Exists(tempOutputPath))
+                {
+                    File.Delete(tempOutputPath);
+                }
+
+                progress?.Report((0, "No games found."));
+                return new StockfishNormalizeResult(0, 0);
+            }
+
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            progress?.Report((processed, $"Normalized {tagsUpdated:N0} tag(s) across {processed:N0} games."));
+
+            return new StockfishNormalizeResult(processed, tagsUpdated);
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+            throw;
+        }
+    }
+
+    private static bool IsPlayerHeader(string headerKey) =>
+        string.Equals(headerKey, "White", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(headerKey, "Black", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeStockfishName(string originalName)
+    {
+        var match = StockfishVersionRegex().Match(originalName);
+        if (!match.Success)
+        {
+            return originalName;
+        }
+
+        var dateStr = match.Groups[1].Value;
+        if (!TryParseDate(dateStr, out var date))
+        {
+            return originalName;
+        }
+
+        foreach (var mapping in Mappings)
+        {
+            if (date >= mapping.Start && date <= mapping.End)
+            {
+                return mapping.Name;
+            }
+        }
+
+        return originalName;
+    }
+
+    private static bool TryParseDate(string digits, out DateOnly date)
+    {
+        date = default;
+        var minYear = 2008;
+        var maxYear = DateTime.Now.Year + 1;
+
+        if (digits.Length == 8)
+        {
+            if (!DateOnly.TryParseExact(
+                digits,
+                "yyyyMMdd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsed))
+            {
+                return false;
+            }
+
+            if (parsed.Year < minYear || parsed.Year > maxYear)
+            {
+                return false;
+            }
+
+            date = parsed;
+            return true;
+        }
+
+        if (digits.Length == 6)
+        {
+            if (!int.TryParse(digits[..2], out var yearPart) ||
+                !int.TryParse(digits.Substring(2, 2), out var month) ||
+                !int.TryParse(digits.Substring(4, 2), out var day))
+            {
+                return false;
+            }
+
+            var year = 2000 + yearPart;
+            if (year < minYear || year > maxYear)
+            {
+                return false;
+            }
+
+            try
+            {
+                date = new DateOnly(year, month, day);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    {
+        if (games <= 0)
+        {
+            return false;
+        }
+
+        if (games != 1 && games % ProgressGameInterval != 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc < ProgressTimeInterval)
+        {
+            return false;
+        }
+
+        lastReportUtc = now;
+        return true;
+    }
+
+    private sealed record VersionRange(string Name, DateOnly Start, DateOnly End);
+}
+===== END: PgnTools\Services\StockfishNormalizerService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\StockfishNormalizerViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Stockfish Normalizer tool.
+/// </summary>
+public partial class StockfishNormalizerViewModel(
+    IStockfishNormalizerService stockfishNormalizerService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IStockfishNormalizerService _stockfishNormalizerService = stockfishNormalizerService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(StockfishNormalizerViewModel);
+
+    [ObservableProperty]
+    private string _inputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _inputFileName = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select input and output PGN files";
+
+    [ObservableProperty]
+    private long _progressGames;
+    public void Initialize()
+    {
+        Title = "Stockfish Normalizer";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectInputFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            InputFilePath = file.Path;
+            InputFileName = file.Name;
+            StatusMessage = $"Selected input: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting input file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
+                ? "stockfish_normalized.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_stockfish_normalized.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var inputFullPath = Path.GetFullPath(InputFilePath);
+        var outputFullPath = Path.GetFullPath(OutputFilePath);
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "Input and output files must be different.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressGames = 0;
+            StatusMessage = "Normalizing Stockfish names...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(null, 0, null, "games");
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<(long games, string message)>(p =>
+            {
+                ProgressGames = p.games;
+                StatusMessage = p.message;
+                StatusDetail = BuildProgressDetail(null, p.games, null, "games");
+            });
+
+            var result = await _stockfishNormalizerService.NormalizeAsync(
+                InputFilePath,
+                OutputFilePath,
+                progress,
+                _cancellationTokenSource.Token);
+
+            StatusMessage = result.Processed == 0
+                ? "No games found."
+                : $"Normalization complete: {result.TagsUpdated:N0} tag(s) updated across {result.Processed:N0} games";
+            StatusSeverity = result.Processed == 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, result.Processed, null, "games");
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Stockfish normalization cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(InputFilePath) &&
+        File.Exists(InputFilePath) &&
+        !string.IsNullOrWhiteSpace(OutputFilePath);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+    partial void OnInputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
+        {
+            InputFileName = Path.GetFileName(InputFilePath);
+    }
+        else
+        {
+            InputFilePath = string.Empty;
+            InputFileName = string.Empty;
+    }
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\StockfishNormalizerViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\StockfishNormalizerPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.StockfishNormalizerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Stockfish Normalizer" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Normalize Stockfish engine names in White/Black tags using build-date ranges."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- File Selection -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+                
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+                
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+                
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status Section -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="True"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\StockfishNormalizerPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\StockfishNormalizerPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Stockfish Normalizer tool.
+/// </summary>
+public sealed partial class StockfishNormalizerPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public StockfishNormalizerViewModel ViewModel { get; }
+
+    public StockfishNormalizerPage() : this(App.GetService<StockfishNormalizerViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public StockfishNormalizerPage(StockfishNormalizerViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\StockfishNormalizerPage.xaml.cs =====
+
