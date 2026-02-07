@@ -204,7 +204,9 @@ public sealed class EleganceService : IEleganceService
                 return new EleganceTaggerResult(0, 0, 0, 0, 0, 0);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                .ConfigureAwait(false);
             progress?.Report(100);
 
             return new EleganceTaggerResult(
@@ -761,30 +763,38 @@ public sealed class EleganceService : IEleganceService
             return false;
         }
 
-        var markerIndex = commentText.IndexOf("eval:", StringComparison.OrdinalIgnoreCase);
+        var markerIndex = commentText.IndexOf("[%eval", StringComparison.OrdinalIgnoreCase);
         if (markerIndex < 0)
         {
             return false;
         }
 
-        var valuePart = commentText[(markerIndex + 5)..].Trim();
-        if (valuePart.Length == 0)
+        var index = markerIndex + 6;
+        while (index < commentText.Length && char.IsWhiteSpace(commentText[index]))
+        {
+            index++;
+        }
+
+        if (index >= commentText.Length)
         {
             return false;
         }
 
-        var stopIndex = 0;
-        while (stopIndex < valuePart.Length && !char.IsWhiteSpace(valuePart[stopIndex]))
+        var start = index;
+        while (index < commentText.Length &&
+               !char.IsWhiteSpace(commentText[index]) &&
+               commentText[index] != ']' &&
+               commentText[index] != ',')
         {
-            stopIndex++;
+            index++;
         }
 
-        if (stopIndex <= 0)
+        if (index <= start)
         {
             return false;
         }
 
-        var evalToken = valuePart[..stopIndex];
+        var evalToken = commentText[start..index];
         return TryParseEvalToken(evalToken, out evalCp);
     }
 

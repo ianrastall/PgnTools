@@ -2,7 +2,7 @@
 param(
     [string]$OutputPath = "..\Context\Analyzer_Context.txt",
     [string]$ExtraManifestPath = "",
-    [string[]]$Tags = @("ANALYZER"),
+    [string[]]$Tags = @("ANALYZER", "ELEGANCE"),
     [switch]$TaggedOnly,
     [switch]$IncludeUntagged
 )
@@ -38,12 +38,18 @@ Write-Host "Repo Root detected as: $RepoRoot" -ForegroundColor Cyan
 # 2. Build File List (Topic Slice)
 # These paths are relative to the Repo Root
 $manualFiles = @(
+    "Docs\ChessAnalyzerService.md",
     "PgnTools\Services\ChessAnalyzerService.cs",
+    "PgnTools\Services\EleganceService.cs",
+    "PgnTools\Services\EleganceGoldenValidationService.cs",
     "PgnTools\Services\EleganceScoreCalculator.cs",
     "PgnTools\Services\StockfishDownloaderService.cs",
     "PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs",
     "PgnTools\Views\Tools\ChessAnalyzerPage.xaml",
     "PgnTools\Views\Tools\ChessAnalyzerPage.xaml.cs",
+    "PgnTools\ViewModels\Tools\EleganceViewModel.cs",
+    "PgnTools\Views\Tools\ElegancePage.xaml",
+    "PgnTools\Views\Tools\ElegancePage.xaml.cs",
     "PgnTools\Helpers\FileReplacementHelper.cs",
     "PgnTools\Helpers\FileValidationHelper.cs",
     "PgnTools\Helpers\FilePickerHelper.cs",
@@ -53,9 +59,13 @@ $manualFiles = @(
 # Auto-discover all Analyzer-named files in the primary folders
 $autoPatterns = @(
     "PgnTools\Services\*Analyzer*.cs",
+    "PgnTools\Services\*Elegance*.cs",
     "PgnTools\ViewModels\Tools\*Analyzer*.cs",
+    "PgnTools\ViewModels\Tools\*Elegance*.cs",
     "PgnTools\Views\Tools\*Analyzer*.xaml",
-    "PgnTools\Views\Tools\*Analyzer*.xaml.cs"
+    "PgnTools\Views\Tools\*Analyzer*.xaml.cs",
+    "PgnTools\Views\Tools\*Elegance*.xaml",
+    "PgnTools\Views\Tools\*Elegance*.xaml.cs"
 )
 
 $autoFiles = foreach ($pattern in $autoPatterns) {
@@ -97,7 +107,7 @@ $writer = [System.IO.StreamWriter]::new($OutputFullPath, $false, $utf8)
 
 try {
     # Write Header
-    $writer.WriteLine("# Context Dump: Analyzer")
+    $writer.WriteLine("# Context Dump: Analyzer + Elegance")
     $writer.WriteLine("# Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
     $writer.WriteLine("# File Count: $($targetFiles.Count)")
     $writer.WriteLine()

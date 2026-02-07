@@ -178,27 +178,27 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                         processedGames++;
                         var currentEngine = engine ?? throw new InvalidOperationException("UCI engine is not initialized.");
                         var waitForReady = needsReadyAfterNewGame;
+                        var originalMoveText = game.MoveText;
+                        var originalHeaders = new Dictionary<string, string>(game.Headers, game.Headers.Comparer);
+                        var originalHeaderOrder = new List<string>(game.HeaderOrder);
 
                         try
                         {
-                            await Task.Run(async () =>
+                            await currentEngine.NewGameAsync(cancellationToken, waitForReady).ConfigureAwait(false);
+                            var analysis = await AnalyzeGameAsync(game, currentEngine, depth, addEleganceTags, cancellationToken)
+                                .ConfigureAwait(false);
+
+                            game.MoveText = analysis.MoveText;
+                            cancellationToken.ThrowIfCancellationRequested();
+                            game.Headers["Annotator"] = "PgnTools";
+                            game.Headers["AnalysisDepth"] = depth.ToString(CultureInfo.InvariantCulture);
+
+                            if (addEleganceTags && analysis.Elegance.HasValue)
                             {
-                                await currentEngine.NewGameAsync(cancellationToken, waitForReady).ConfigureAwait(false);
-                                var analysis = await AnalyzeGameAsync(game, currentEngine, depth, addEleganceTags, cancellationToken)
-                                    .ConfigureAwait(false);
-
-                                game.MoveText = analysis.MoveText;
-                                cancellationToken.ThrowIfCancellationRequested();
-                                game.Headers["Annotator"] = "PgnTools";
-                                game.Headers["AnalysisDepth"] = depth.ToString(CultureInfo.InvariantCulture);
-
-                                if (addEleganceTags && analysis.Elegance.HasValue)
-                                {
-                                    var elegance = analysis.Elegance.Value;
-                                    game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
-                                    game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
-                                }
-                            }, cancellationToken).ConfigureAwait(false);
+                                var elegance = analysis.Elegance.Value;
+                                game.Headers["Elegance"] = elegance.Score.ToString(CultureInfo.InvariantCulture);
+                                game.Headers["EleganceDetails"] = EleganceScoreCalculator.FormatDetails(elegance);
+                            }
 
                             if (waitForReady)
                             {
@@ -213,10 +213,25 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                         }
                         catch (Exception ex)
                         {
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                throw new OperationCanceledException("Analysis cancelled.", ex, cancellationToken);
+                            }
+
                             failedGames++;
                             firstFailureMessage ??= $"Game #{processedGames}: {ex.GetType().Name}: {ex.Message}";
 
-                            if (engine != null && engine.HasExited)
+                            game.MoveText = originalMoveText;
+                            game.Headers.Clear();
+                            foreach (var header in originalHeaders)
+                            {
+                                game.Headers[header.Key] = header.Value;
+                            }
+
+                            game.HeaderOrder.Clear();
+                            game.HeaderOrder.AddRange(originalHeaderOrder);
+
+                            if (engine != null && (engine.HasExited || ex is TimeoutException))
                             {
                                 engine.Dispose();
                                 engine = await StartEngineAsync().ConfigureAwait(false);
@@ -250,7 +265,9 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
                         $"No games could be analyzed. First failure: {firstFailureMessage ?? "Unknown move parsing error."}");
                 }
 
-                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+                cancellationToken.ThrowIfCancellationRequested();
+                await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                    .ConfigureAwait(false);
                 progress?.Report(new AnalyzerProgress(processedGames, totalGames, 100));
             }
             finally
@@ -333,8 +350,9 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
             ComputeMaterialTotalsCp(fenBefore, out whiteMaterialBefore, out blackMaterialBefore);
         }
 
-        foreach (var token in tokens)
+        for (var tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
         {
+            var token = tokens[tokenIndex];
             cancellationToken.ThrowIfCancellationRequested();
 
             var tokenSpan = moveText.AsSpan(token.Start, token.Length);
@@ -383,6 +401,18 @@ public sealed class ChessAnalyzerService : IChessAnalyzerService
 
             var annotatedMove = BuildAnnotatedMove(tokenText, nag, evalText);
             builder.Append(annotatedMove);
+            if (tokenIndex + 1 < tokens.Count)
+            {
+                var nextToken = tokens[tokenIndex + 1];
+                if (nextToken.Length > 0)
+                {
+                    var nextChar = moveText[nextToken.Start];
+                    if (!char.IsWhiteSpace(nextChar))
+                    {
+                        builder.Append(' ');
+                    }
+                }
+            }
 
             if (addEleganceTags)
             {
@@ -1380,7 +1410,14 @@ internal sealed class UciEngine : IDisposable
 
     private async Task<string?> ReadLineWithTimeoutAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
-        if (_stdoutChannel.Reader.Completion.IsCompleted)
+        var completion = _stdoutChannel.Reader.Completion;
+        if (completion.IsFaulted)
+        {
+            throw completion.Exception?.GetBaseException()
+                ?? new InvalidOperationException("Engine output reader faulted.");
+        }
+
+        if (completion.IsCompleted)
         {
             return null;
         }
@@ -1477,34 +1514,50 @@ internal sealed class UciEngine : IDisposable
 
         if (timedOut)
         {
-            await StopSearchAndDrainAsync(cancellationToken).ConfigureAwait(false);
+            var drained = await StopSearchAndDrainAsync(cancellationToken).ConfigureAwait(false);
+            if (!drained)
+            {
+                RequestAbort();
+                throw new TimeoutException("Timed out waiting for engine bestmove.");
+            }
         }
 
         // Return the best score we saw before timing out.
         return bestScore;
     }
 
-    private async Task StopSearchAndDrainAsync(CancellationToken cancellationToken)
+    private async Task<bool> StopSearchAndDrainAsync(CancellationToken cancellationToken)
     {
         try
         {
             await SendAsync("stop", cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch
         {
-            return;
+            return false;
         }
 
         try
         {
-            await WaitForTokenAsync("bestmove", TimeSpan.FromMilliseconds(500), cancellationToken)
+            await WaitForTokenAsync("bestmove", TimeSpan.FromSeconds(2), cancellationToken)
                 .ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (TimeoutException)
         {
+            return false;
         }
         catch (InvalidOperationException)
         {
+            return false;
         }
     }
 
