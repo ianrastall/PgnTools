@@ -15,6 +15,7 @@ public partial class EcoTaggerViewModel(
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
     private bool _disposed;
     private const string SettingsPrefix = nameof(EcoTaggerViewModel);
 
@@ -146,7 +147,7 @@ public partial class EcoTaggerViewModel(
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RunAsync()
     {
-        if (string.IsNullOrWhiteSpace(InputFilePath) ||
+        if (_disposed || string.IsNullOrWhiteSpace(InputFilePath) ||
             string.IsNullOrWhiteSpace(OutputFilePath) ||
             string.IsNullOrWhiteSpace(EcoReferenceFilePath))
         {
@@ -212,18 +213,29 @@ public partial class EcoTaggerViewModel(
             IsRunning = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
 
     private bool CanRun() =>
+        !_disposed &&
         !IsRunning &&
         !string.IsNullOrWhiteSpace(InputFilePath) &&
         !string.IsNullOrWhiteSpace(OutputFilePath) &&
         !string.IsNullOrWhiteSpace(EcoReferenceFilePath) &&
-        File.Exists(InputFilePath) &&
-        File.Exists(EcoReferenceFilePath);
+        File.Exists(InputFilePath);
 
     [RelayCommand]
     private void Cancel()
@@ -260,6 +272,11 @@ public partial class EcoTaggerViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsRunning || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()

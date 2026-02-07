@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using PgnTools.Helpers;
 
@@ -29,6 +30,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
 
     private EcoTrieNode? _trieRoot;
     private string? _trieSourcePath;
+    private EcoFileStamp _trieSourceStamp;
 
     public EcoTaggerService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
@@ -43,6 +45,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
             throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
@@ -60,6 +63,12 @@ public sealed class EcoTaggerService : IEcoTaggerService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
         var resolvedEcoPath = ResolveEcoReferencePath(ecoReferenceFilePath);
 
@@ -78,13 +87,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
             throw new InvalidOperationException("Input and output files must be different.");
         }
 
-        var outputDirectory = Path.GetDirectoryName(outputFullPath);
-        if (!string.IsNullOrWhiteSpace(outputDirectory))
-        {
-            Directory.CreateDirectory(outputDirectory);
-        }
-
-        var trie = await GetTrieAsync(resolvedEcoPath, cancellationToken);
+        var trie = await GetTrieAsync(resolvedEcoPath, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -111,7 +114,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
                 FileOptions.SequentialScan | FileOptions.Asynchronous))
             using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
             {
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     processedGames++;
@@ -143,7 +146,8 @@ public sealed class EcoTaggerService : IEcoTaggerService
                 await writer.FlushAsync().ConfigureAwait(false);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken).ConfigureAwait(false);
             progress?.Report(100);
         }
         catch
@@ -165,8 +169,11 @@ public sealed class EcoTaggerService : IEcoTaggerService
 
     private async Task<EcoTrieNode> GetTrieAsync(string ecoPath, CancellationToken cancellationToken)
     {
+        var stamp = GetEcoFileStamp(ecoPath);
+
         if (_trieRoot != null &&
-            string.Equals(_trieSourcePath, ecoPath, StringComparison.OrdinalIgnoreCase))
+            string.Equals(_trieSourcePath, ecoPath, StringComparison.OrdinalIgnoreCase) &&
+            _trieSourceStamp == stamp)
         {
             return _trieRoot;
         }
@@ -176,13 +183,15 @@ public sealed class EcoTaggerService : IEcoTaggerService
         try
         {
             if (_trieRoot != null &&
-                string.Equals(_trieSourcePath, ecoPath, StringComparison.OrdinalIgnoreCase))
+                string.Equals(_trieSourcePath, ecoPath, StringComparison.OrdinalIgnoreCase) &&
+                _trieSourceStamp == stamp)
             {
                 return _trieRoot;
             }
 
             _trieRoot = await BuildTrieAsync(ecoPath, cancellationToken).ConfigureAwait(false);
             _trieSourcePath = ecoPath;
+            _trieSourceStamp = stamp;
             return _trieRoot;
         }
         finally
@@ -195,7 +204,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
     {
         var root = new EcoTrieNode();
 
-        await foreach (var game in _pgnReader.ReadGamesAsync(ecoPath, cancellationToken))
+        await foreach (var game in _pgnReader.ReadGamesAsync(ecoPath, cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -259,17 +268,17 @@ public sealed class EcoTaggerService : IEcoTaggerService
     {
         if (!string.IsNullOrWhiteSpace(match.Eco))
         {
-            game.Headers["ECO"] = match.Eco;
+            SetHeaderCaseInsensitive(game.Headers, "ECO", match.Eco);
         }
 
         if (!string.IsNullOrWhiteSpace(match.Opening))
         {
-            game.Headers["Opening"] = match.Opening;
+            SetHeaderCaseInsensitive(game.Headers, "Opening", match.Opening);
         }
 
         if (!string.IsNullOrWhiteSpace(match.Variation))
         {
-            game.Headers["Variation"] = match.Variation;
+            SetHeaderCaseInsensitive(game.Headers, "Variation", match.Variation);
         }
     }
 
@@ -333,6 +342,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
         var token = new StringBuilder();
         var inBraceComment = false;
         var inLineComment = false;
+        var inBracketComment = false;
         var variationDepth = 0;
 
         for (var i = 0; i < moveText.Length; i++)
@@ -359,17 +369,32 @@ public sealed class EcoTaggerService : IEcoTaggerService
                 continue;
             }
 
-            if (variationDepth > 0)
+            if (inBracketComment)
             {
-                if (c == '(')
+                if (c == ']')
                 {
-                    variationDepth++;
+                    inBracketComment = false;
                 }
-                else if (c == ')')
+                continue;
+            }
+
+            if (c == ';')
+            {
+                if (token.Length > 0)
                 {
-                    variationDepth--;
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
                 }
 
+                inLineComment = true;
                 continue;
             }
 
@@ -393,7 +418,7 @@ public sealed class EcoTaggerService : IEcoTaggerService
                 continue;
             }
 
-            if (c == ';')
+            if (c == '[')
             {
                 if (token.Length > 0)
                 {
@@ -409,7 +434,21 @@ public sealed class EcoTaggerService : IEcoTaggerService
                     }
                 }
 
-                inLineComment = true;
+                inBracketComment = true;
+                continue;
+            }
+
+            if (variationDepth > 0)
+            {
+                if (c == '(')
+                {
+                    variationDepth++;
+                }
+                else if (c == ')')
+                {
+                    variationDepth--;
+                }
+
                 continue;
             }
 
@@ -654,13 +693,10 @@ public sealed class EcoTaggerService : IEcoTaggerService
             return false;
         }
 
-        if (games != 1 && games % ProgressGameInterval != 0)
-        {
-            return false;
-        }
-
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval)
+        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
+        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        if (!gameIntervalMet && !timeIntervalMet)
         {
             return false;
         }
@@ -668,6 +704,40 @@ public sealed class EcoTaggerService : IEcoTaggerService
         lastReportUtc = now;
         return true;
     }
+
+    private static void SetHeaderCaseInsensitive(IDictionary<string, string> headers, string key, string value)
+    {
+        if (headers is Dictionary<string, string> dict && dict.Comparer == StringComparer.OrdinalIgnoreCase)
+        {
+            dict[key] = value;
+            return;
+        }
+
+        string? existingKey = null;
+        foreach (var headerKey in headers.Keys)
+        {
+            if (string.Equals(headerKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                existingKey = headerKey;
+                break;
+            }
+        }
+
+        if (existingKey != null && !string.Equals(existingKey, key, StringComparison.Ordinal))
+        {
+            headers.Remove(existingKey);
+        }
+
+        headers[key] = value;
+    }
+
+    private static EcoFileStamp GetEcoFileStamp(string ecoPath)
+    {
+        var info = new FileInfo(ecoPath);
+        return new EcoFileStamp(info.LastWriteTimeUtc.Ticks, info.Length);
+    }
+
+    private readonly record struct EcoFileStamp(long LastWriteUtcTicks, long Length);
 
     private sealed class EcoTrieNode
     {
