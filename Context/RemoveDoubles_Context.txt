@@ -1,0 +1,1479 @@
+# Context Dump: Remove Doubles
+# Date: 2026-02-07 04:24:39
+# File Count: 9
+
+===== BEGIN: Docs\RemoveDoublesService.md =====
+# RemoveDoublesService.md
+
+## Service Implementation: RemoveDoublesService
+
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `PgnReader`, `PgnWriter`, `FileReplacementHelper`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
+
+## 1. Objective
+
+Deduplicate games by hashing normalized headers and move text.
+
+## 2. Public API (Actual)
+
+```csharp
+public sealed record RemoveDoublesResult(long Processed, long Kept, long Removed);
+
+public interface IRemoveDoublesService
+{
+    Task<RemoveDoublesResult> DeduplicateAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+```
+
+## 3. High-Level Pipeline (Actual)
+
+1. Stream games from input.
+2. Compute a SHA‑256 hash:
+   - Headers are case‑insensitively sorted.
+   - Move text is normalized (comments/variations/NAGs removed).
+3. Write only the first occurrence of each hash.
+4. Replace output file.
+
+## 4. Progress Reporting
+
+Reports every ~200 games with kept/removed counts.
+
+## 5. Limitations
+
+- Hashing is text‑based; no semantic normalization beyond token filtering.
+- Uses synchronous `ReplaceFile` at the end.
+===== END: Docs\RemoveDoublesService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\RemoveDoublesService.cs =====
+using System.Security.Cryptography;
+using System.Text;
+
+namespace PgnTools.Services;
+
+public sealed record RemoveDoublesResult(long Processed, long Kept, long Removed);
+
+public interface IRemoveDoublesService
+{
+    Task<RemoveDoublesResult> DeduplicateAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+
+public class RemoveDoublesService : IRemoveDoublesService
+{
+    private const int BufferSize = 65536;
+    private const int ProgressGameInterval = 200;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly char[] AnnotationTrimChars = ['+', '#', '!', '?'];
+    private readonly PgnReader _pgnReader;
+    private readonly PgnWriter _pgnWriter;
+
+    public RemoveDoublesService(PgnReader pgnReader, PgnWriter pgnWriter)
+    {
+        _pgnReader = pgnReader;
+        _pgnWriter = pgnWriter;
+    }
+
+    public async Task<RemoveDoublesResult> DeduplicateAsync(
+        string inputFilePath,
+        string outputFilePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
+        var inputFullPath = Path.GetFullPath(inputFilePath);
+        var outputFullPath = Path.GetFullPath(outputFilePath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
+        if (!File.Exists(inputFullPath))
+        {
+            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+        }
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Input and output files must be different. To modify in-place, use a temporary output file first.");
+        }
+
+        var seenHashes = new HashSet<string>(StringComparer.Ordinal);
+        var processed = 0L;
+        var kept = 0L;
+        var removed = 0L;
+        var lastProgressReport = DateTime.MinValue;
+
+        try
+        {
+            await using (var inputStream = new FileStream(
+                inputFullPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            await using (var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
+            {
+                var firstOutput = true;
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    processed++;
+
+                    var hash = ComputeGameHash(game);
+                    if (seenHashes.Add(hash))
+                    {
+                        if (!firstOutput)
+                        {
+                            await writer.WriteLineAsync();
+                        }
+
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        firstOutput = false;
+                        kept++;
+                    }
+                    else
+                    {
+                        removed++;
+                    }
+
+                    if (ShouldReportProgress(processed, ref lastProgressReport))
+                    {
+                        progress?.Report((processed, $"Processing Game {processed:N0}... (kept {kept:N0}, removed {removed:N0})"));
+                    }
+                }
+
+                await writer.FlushAsync();
+            }
+
+            if (processed == 0)
+            {
+                if (File.Exists(tempOutputPath))
+                {
+                    File.Delete(tempOutputPath);
+                }
+
+                progress?.Report((0, "No games found."));
+                return new RemoveDoublesResult(0, 0, 0);
+            }
+
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            progress?.Report((processed, $"Saved {kept:N0} unique games ({removed:N0} removed)."));
+
+            return new RemoveDoublesResult(processed, kept, removed);
+        }
+        catch
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                try
+                {
+                    File.Delete(tempOutputPath);
+                }
+                catch
+                {
+                }
+            }
+            throw;
+        }
+    }
+
+    private static string ComputeGameHash(PgnGame game)
+    {
+        var headerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in game.Headers)
+        {
+            headerMap[header.Key] = header.Value;
+        }
+
+        var sortedHeaders = headerMap
+            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => $"{kvp.Key}:{kvp.Value}");
+
+        var normalizedMoves = NormalizeMoveText(game.MoveText);
+        var blob = string.Concat(string.Join("|", sortedHeaders), "||", normalizedMoves);
+
+        var bytes = Encoding.UTF8.GetBytes(blob);
+        var hashBytes = SHA256.HashData(bytes);
+        return Convert.ToHexString(hashBytes);
+    }
+
+    private static string NormalizeMoveText(string moveText)
+    {
+        if (string.IsNullOrWhiteSpace(moveText))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(moveText.Length);
+        foreach (var move in TokenizeMoves(moveText))
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(move);
+        }
+
+        return builder.ToString();
+    }
+
+    private static IEnumerable<string> TokenizeMoves(string moveText)
+    {
+        if (string.IsNullOrWhiteSpace(moveText))
+        {
+            yield break;
+        }
+
+        var token = new StringBuilder();
+        var inBraceComment = false;
+        var inLineComment = false;
+        var variationDepth = 0;
+
+        for (var i = 0; i < moveText.Length; i++)
+        {
+            var c = moveText[i];
+
+            if (inLineComment)
+            {
+                if (c is '\n' or '\r')
+                {
+                    inLineComment = false;
+                }
+
+                continue;
+            }
+
+            if (inBraceComment)
+            {
+                if (c == '}')
+                {
+                    inBraceComment = false;
+                }
+
+                continue;
+            }
+
+            if (variationDepth > 0)
+            {
+                if (c == '(')
+                {
+                    variationDepth++;
+                }
+                else if (c == ')')
+                {
+                    variationDepth--;
+                }
+
+                continue;
+            }
+
+            if (c == '{')
+            {
+                if (token.Length > 0)
+                {
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
+                }
+
+                inBraceComment = true;
+                continue;
+            }
+
+            if (c == ';')
+            {
+                if (token.Length > 0)
+                {
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
+                }
+
+                inLineComment = true;
+                continue;
+            }
+
+            if (c == '(')
+            {
+                if (token.Length > 0)
+                {
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
+                }
+
+                variationDepth = 1;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c))
+            {
+                if (token.Length > 0)
+                {
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
+                }
+
+                continue;
+            }
+
+            token.Append(c);
+        }
+
+        if (token.Length > 0)
+        {
+            var raw = token.ToString();
+            if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+            {
+                yield return move!;
+            }
+        }
+    }
+
+    private static bool TryNormalizeMoveToken(string raw, out string? move, out bool isResult)
+    {
+        move = null;
+        isResult = false;
+
+        var token = raw.Trim();
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        if (token[0] == '$' && token.Skip(1).All(char.IsDigit))
+        {
+            return false;
+        }
+
+        if (token.All(c => c == '.'))
+        {
+            return false;
+        }
+
+        if (TryStripMoveNumberPrefix(token, out var stripped))
+        {
+            token = stripped;
+        }
+
+        token = token.TrimStart('.');
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        if (token.All(c => c is '!' or '?' or '+' or '#'))
+        {
+            return false;
+        }
+
+        if (IsResultToken(token))
+        {
+            isResult = true;
+            return false;
+        }
+
+        token = token.TrimEnd(AnnotationTrimChars);
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        token = StripTrailingNag(token);
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        if (IsResultToken(token))
+        {
+            isResult = true;
+            return false;
+        }
+
+        if (token.Equals("e.p.", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("ep", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        token = NormalizeCastling(token);
+        move = token;
+        return true;
+    }
+
+    private static string StripTrailingNag(string token)
+    {
+        var index = token.LastIndexOf('$');
+        if (index < 0 || index == token.Length - 1)
+        {
+            return token;
+        }
+
+        var digits = token[(index + 1)..];
+        return digits.All(char.IsDigit) ? token[..index] : token;
+    }
+
+    private static bool TryStripMoveNumberPrefix(string token, out string stripped)
+    {
+        stripped = token;
+        var firstDot = token.IndexOf('.');
+        if (firstDot < 0)
+        {
+            return false;
+        }
+
+        var prefix = token[..firstDot];
+        if (prefix.Length == 0 || !prefix.All(char.IsDigit))
+        {
+            return false;
+        }
+
+        var lastDot = token.LastIndexOf('.');
+        if (lastDot >= token.Length - 1)
+        {
+            stripped = string.Empty;
+            return true;
+        }
+
+        stripped = token[(lastDot + 1)..];
+        return true;
+    }
+
+    private static bool IsResultToken(string token)
+    {
+        return token is "1-0" or "0-1" or "1/2-1/2" or "*";
+    }
+
+    private static string NormalizeCastling(string token)
+    {
+        if (token.Equals("0-0", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("o-o", StringComparison.OrdinalIgnoreCase))
+        {
+            return "O-O";
+        }
+
+        if (token.Equals("0-0-0", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("o-o-o", StringComparison.OrdinalIgnoreCase))
+        {
+            return "O-O-O";
+        }
+
+        return token;
+    }
+
+    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    {
+        if (games <= 0)
+        {
+            return false;
+        }
+
+        if (games != 1 && games % ProgressGameInterval != 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc < ProgressTimeInterval)
+        {
+            return false;
+        }
+
+        lastReportUtc = now;
+        return true;
+    }
+}
+===== END: PgnTools\Services\RemoveDoublesService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\RemoveDoublesViewModel.cs =====
+using System.IO;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Deduplicator tool.
+/// </summary>
+public partial class RemoveDoublesViewModel(
+    IRemoveDoublesService removeDoublesService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IRemoveDoublesService _removeDoublesService = removeDoublesService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(RemoveDoublesViewModel);
+
+    [ObservableProperty]
+    private string _inputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _inputFileName = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select input and output PGN files";
+
+    [ObservableProperty]
+    private long _progressGames;
+    public void Initialize()
+    {
+        Title = "Deduplicator";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectInputFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            InputFilePath = file.Path;
+            InputFileName = file.Name;
+            StatusMessage = $"Selected input: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting input file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
+                ? "deduplicated.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_deduplicated.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task RunAsync()
+    {
+        if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            return;
+    }
+        var inputFullPath = Path.GetFullPath(InputFilePath);
+        var outputFullPath = Path.GetFullPath(OutputFilePath);
+
+        if (string.Equals(inputFullPath, outputFullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "Input and output files must be different.";
+            StatusSeverity = InfoBarSeverity.Error;
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressGames = 0;
+            StatusMessage = "Removing duplicates...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(null, 0, null, "games");
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<(long games, string message)>(p =>
+            {
+                ProgressGames = p.games;
+                StatusMessage = p.message;
+                StatusDetail = BuildProgressDetail(null, p.games, null, "games");
+            });
+
+            var result = await _removeDoublesService.DeduplicateAsync(
+                InputFilePath,
+                OutputFilePath,
+                progress,
+                _cancellationTokenSource.Token);
+
+            StatusMessage = result.Processed == 0
+                ? "No games found."
+                : $"Deduplication complete: {result.Kept:N0} unique games saved ({result.Removed:N0} removed)";
+            StatusSeverity = result.Processed == 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, result.Processed, null, "games");
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Deduplication cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning &&
+        !string.IsNullOrWhiteSpace(InputFilePath) &&
+        File.Exists(InputFilePath) &&
+        !string.IsNullOrWhiteSpace(OutputFilePath);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+    partial void OnInputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnOutputFilePathChanged(string value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        InputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", string.Empty);
+        if (!string.IsNullOrWhiteSpace(InputFilePath) && File.Exists(InputFilePath))
+        {
+            InputFileName = Path.GetFileName(InputFilePath);
+    }
+        else
+        {
+            InputFilePath = string.Empty;
+            InputFileName = string.Empty;
+    }
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", string.Empty);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(InputFilePath)}", InputFilePath);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\RemoveDoublesViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\RemoveDoublesPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.RemoveDoublesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Deduplicator" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Remove duplicate games by hashing headers and normalized moves."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- File Selection -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Input File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select input PGN..."
+                         Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+                
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectInputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+                
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run"
+                        Command="{x:Bind ViewModel.RunCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+                
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status Section -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="True"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\RemoveDoublesPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\RemoveDoublesPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Deduplicator tool.
+/// </summary>
+public sealed partial class RemoveDoublesPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public RemoveDoublesViewModel ViewModel { get; }
+
+    public RemoveDoublesPage() : this(App.GetService<RemoveDoublesViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public RemoveDoublesPage(RemoveDoublesViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\RemoveDoublesPage.xaml.cs =====
+

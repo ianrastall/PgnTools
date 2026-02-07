@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -35,6 +36,7 @@ public class RemoveDoublesService : IRemoveDoublesService
         IProgress<(long games, string message)>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
             throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
@@ -47,6 +49,10 @@ public class RemoveDoublesService : IRemoveDoublesService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
+        if (Path.GetDirectoryName(outputFullPath) is { Length: > 0 } outputDirectory)
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
@@ -60,7 +66,7 @@ public class RemoveDoublesService : IRemoveDoublesService
                 "Input and output files must be different. To modify in-place, use a temporary output file first.");
         }
 
-        var seenHashes = new HashSet<string>(StringComparer.Ordinal);
+        var seenHashes = new HashSet<Hash256>();
         var processed = 0L;
         var kept = 0L;
         var removed = 0L;
@@ -86,7 +92,7 @@ public class RemoveDoublesService : IRemoveDoublesService
             {
                 var firstOutput = true;
 
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     processed++;
@@ -96,10 +102,10 @@ public class RemoveDoublesService : IRemoveDoublesService
                     {
                         if (!firstOutput)
                         {
-                            await writer.WriteLineAsync();
+                            await writer.WriteLineAsync().ConfigureAwait(false);
                         }
 
-                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
                         firstOutput = false;
                         kept++;
                     }
@@ -114,7 +120,7 @@ public class RemoveDoublesService : IRemoveDoublesService
                     }
                 }
 
-                await writer.FlushAsync();
+                await writer.FlushAsync().ConfigureAwait(false);
             }
 
             if (processed == 0)
@@ -128,7 +134,8 @@ public class RemoveDoublesService : IRemoveDoublesService
                 return new RemoveDoublesResult(0, 0, 0);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken).ConfigureAwait(false);
             progress?.Report((processed, $"Saved {kept:N0} unique games ({removed:N0} removed)."));
 
             return new RemoveDoublesResult(processed, kept, removed);
@@ -149,7 +156,7 @@ public class RemoveDoublesService : IRemoveDoublesService
         }
     }
 
-    private static string ComputeGameHash(PgnGame game)
+    private static Hash256 ComputeGameHash(PgnGame game)
     {
         var headerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var header in game.Headers)
@@ -166,7 +173,7 @@ public class RemoveDoublesService : IRemoveDoublesService
 
         var bytes = Encoding.UTF8.GetBytes(blob);
         var hashBytes = SHA256.HashData(bytes);
-        return Convert.ToHexString(hashBytes);
+        return new Hash256(hashBytes);
     }
 
     private static string NormalizeMoveText(string moveText)
@@ -200,6 +207,7 @@ public class RemoveDoublesService : IRemoveDoublesService
         var token = new StringBuilder();
         var inBraceComment = false;
         var inLineComment = false;
+        var inBracketComment = false;
         var variationDepth = 0;
 
         for (var i = 0; i < moveText.Length; i++)
@@ -226,17 +234,32 @@ public class RemoveDoublesService : IRemoveDoublesService
                 continue;
             }
 
-            if (variationDepth > 0)
+            if (inBracketComment)
             {
-                if (c == '(')
+                if (c == ']')
                 {
-                    variationDepth++;
+                    inBracketComment = false;
                 }
-                else if (c == ')')
+                continue;
+            }
+
+            if (c == ';')
+            {
+                if (token.Length > 0)
                 {
-                    variationDepth--;
+                    var raw = token.ToString();
+                    token.Clear();
+                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                    {
+                        yield return move!;
+                    }
+                    else if (isResult)
+                    {
+                        yield break;
+                    }
                 }
 
+                inLineComment = true;
                 continue;
             }
 
@@ -260,7 +283,7 @@ public class RemoveDoublesService : IRemoveDoublesService
                 continue;
             }
 
-            if (c == ';')
+            if (c == '[')
             {
                 if (token.Length > 0)
                 {
@@ -276,7 +299,21 @@ public class RemoveDoublesService : IRemoveDoublesService
                     }
                 }
 
-                inLineComment = true;
+                inBracketComment = true;
+                continue;
+            }
+
+            if (variationDepth > 0)
+            {
+                if (c == '(')
+                {
+                    variationDepth++;
+                }
+                else if (c == ')')
+                {
+                    variationDepth--;
+                }
+
                 continue;
             }
 
@@ -471,18 +508,27 @@ public class RemoveDoublesService : IRemoveDoublesService
             return false;
         }
 
-        if (games != 1 && games % ProgressGameInterval != 0)
-        {
-            return false;
-        }
-
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval)
+        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
+        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        if (!gameIntervalMet && !timeIntervalMet)
         {
             return false;
         }
 
         lastReportUtc = now;
         return true;
+    }
+
+    private readonly record struct Hash256(ulong A, ulong B, ulong C, ulong D)
+    {
+        public Hash256(ReadOnlySpan<byte> bytes)
+            : this(
+                BitConverter.ToUInt64(bytes[0..8]),
+                BitConverter.ToUInt64(bytes[8..16]),
+                BitConverter.ToUInt64(bytes[16..24]),
+                BitConverter.ToUInt64(bytes[24..32]))
+        {
+        }
     }
 }
