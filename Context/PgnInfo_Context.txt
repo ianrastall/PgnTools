@@ -1,0 +1,1645 @@
+# Context Dump: PGN Info
+# Date: 2026-02-06 21:49:27
+# File Count: 9
+
+===== BEGIN: Docs\PgnInfoService.md =====
+# PgnInfoService.md
+
+## Service Implementation: PgnInfoService
+
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `PgnReader`  
+**Thread Safety:** Safe for concurrent calls.
+
+## 1. Objective
+
+Analyze a PGN file and produce summary statistics (games, players, Elo, ECO, dates, plies, results).
+
+## 2. Public API (Actual)
+
+```csharp
+public interface IPgnInfoService
+{
+    Task<PgnStatistics> AnalyzeFileAsync(
+        string filePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+```
+
+## 3. High-Level Pipeline (Actual)
+
+1. Stream games with `PgnReader`.
+2. Count plies using SAN‑like token detection (ignoring comments/variations).
+3. Aggregate statistics into `PgnStatistics`.
+4. Report progress every ~200 games.
+
+## 4. Statistics Collected
+
+- Game counts and result breakdown.
+- Player count and tournament count.
+- Elo stats (avg/min/max, games with Elo).
+- Country count (based on federation headers).
+- ECO counts (letters and top codes).
+- Date range and missing dates.
+- Ply stats (min/max/avg, games with moves).
+
+## 5. Limitations
+
+- Ply counting is heuristic (text‑based).
+- Does not validate move legality.
+===== END: Docs\PgnInfoService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\PgnInfoService.cs =====
+using PgnTools.Models;
+
+namespace PgnTools.Services;
+
+/// <summary>
+/// Interface for PGN Info service.
+/// </summary>
+public interface IPgnInfoService
+{
+    Task<PgnStatistics> AnalyzeFileAsync(string filePath, IProgress<(long games, string message)>? progress = null, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Service for analyzing PGN files and gathering statistics.
+/// Ported from Rust pgn_info.rs
+/// </summary>
+public partial class PgnInfoService : IPgnInfoService
+{
+    private static readonly string[] CountryKeys = ["whitecountry", "blackcountry", "whitefederation", "blackfederation", "whitefed", "blackfed"];
+    private const int ProgressGameInterval = 200;
+    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
+
+    private readonly PgnReader _pgnReader;
+
+    public PgnInfoService(PgnReader pgnReader)
+    {
+        _pgnReader = pgnReader;
+    }
+
+    public async Task<PgnStatistics> AnalyzeFileAsync(
+        string filePath,
+        IProgress<(long games, string message)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var stats = new InternalStats();
+        var lastProgressReport = DateTime.MinValue;
+
+        await foreach (var game in _pgnReader.ReadGamesAsync(filePath, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var plyCount = CountPlies(game.MoveText);
+            ApplyGame(game.Headers, plyCount, stats);
+
+            if (ShouldReportProgress(stats.Games, ref lastProgressReport))
+            {
+                progress?.Report((stats.Games, $"Processing game {stats.Games}..."));
+            }
+        }
+
+        return stats.ToStatistics();
+    }
+
+    private static int CountPlies(string moveText)
+    {
+        // Simple ply counting: count SAN moves (words that look like moves)
+        var count = 0;
+        var inComment = false;
+        var inLineComment = false;
+        var depth = 0;
+        var wordStart = -1;
+
+        for (var i = 0; i < moveText.Length; i++)
+        {
+            var c = moveText[i];
+
+            if (inLineComment)
+            {
+                if (c == '\n' || c == '\r')
+                {
+                    inLineComment = false;
+                }
+                continue;
+            }
+
+            switch (c)
+            {
+                case '{':
+                    if (wordStart >= 0)
+                    {
+                        var word = moveText[wordStart..i];
+                        if (IsSanMove(word))
+                        {
+                            count++;
+                        }
+                        wordStart = -1;
+                    }
+                    inComment = true;
+                    continue;
+                case '}':
+                    inComment = false;
+                    continue;
+                case '(':
+                    if (wordStart >= 0)
+                    {
+                        var word = moveText[wordStart..i];
+                        if (IsSanMove(word))
+                        {
+                            count++;
+                        }
+                        wordStart = -1;
+                    }
+                    depth++;
+                    continue;
+                case ')':
+                    depth = Math.Max(0, depth - 1);
+                    continue;
+                case ';':
+                    if (!inComment && depth == 0)
+                    {
+                        if (wordStart >= 0)
+                        {
+                            var word = moveText[wordStart..i];
+                            if (IsSanMove(word))
+                            {
+                                count++;
+                            }
+                            wordStart = -1;
+                        }
+                        inLineComment = true;
+                        continue;
+                    }
+                    break;
+            }
+
+            if (inComment || depth > 0)
+            {
+                continue;
+            }
+
+            if (char.IsLetterOrDigit(c) || c == '-' || c == '+' || c == '#' || c == '=')
+            {
+                if (wordStart < 0) wordStart = i;
+            }
+            else if (wordStart >= 0)
+            {
+                var word = moveText[wordStart..i];
+                if (IsSanMove(word))
+                {
+                    count++;
+                }
+                wordStart = -1;
+            }
+        }
+
+        // Check last word
+        if (wordStart >= 0)
+        {
+            var word = moveText[wordStart..];
+            if (IsSanMove(word))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static bool IsSanMove(string word)
+    {
+        if (string.IsNullOrEmpty(word) || word.Length < 2)
+            return false;
+
+        // Skip move numbers
+        if (word.All(c => char.IsDigit(c) || c == '.'))
+            return false;
+
+        // Skip results
+        if (word is "1-0" or "0-1" or "1/2-1/2" or "*")
+            return false;
+
+        // Skip NAGs
+        if (word.StartsWith('$'))
+            return false;
+
+        // Skip annotations
+        if (word is "!!" or "??" or "!?" or "?!" or "!" or "?")
+            return false;
+
+        // Basic SAN check: starts with piece letter or file letter
+        var first = word[0];
+        return char.IsUpper(first) || (first >= 'a' && first <= 'h') || word.StartsWith("O-O");
+    }
+
+    private static void ApplyGame(IReadOnlyDictionary<string, string> headers, int plyCount, InternalStats stats)
+    {
+        stats.Games++;
+
+        // Players
+        if (headers.TryGetHeaderValue("White", out var white) && NormalizePlayer(white) is { } normalizedWhite)
+        {
+            stats.Players.Add(normalizedWhite);
+        }
+        if (headers.TryGetHeaderValue("Black", out var black) && NormalizePlayer(black) is { } normalizedBlack)
+        {
+            stats.Players.Add(normalizedBlack);
+        }
+
+        // Tournament
+        var tourKey = GetTournamentKey(headers);
+        if (!stats.Tournaments.TryGetValue(tourKey, out var tourStats))
+        {
+            tourStats = new TournamentStats();
+            stats.Tournaments[tourKey] = tourStats;
+        }
+        tourStats.Games++;
+
+        // Result
+        var result = headers.GetHeaderValueOrDefault("Result", "")?.Replace(" ", "") ?? "";
+        var incomplete = false;
+        switch (result)
+        {
+            case "1-0":
+                stats.WhiteWins++;
+                break;
+            case "0-1":
+                stats.BlackWins++;
+                break;
+            case "1/2-1/2":
+                stats.Draws++;
+                break;
+            case "*":
+                stats.StarResults++;
+                incomplete = true;
+                break;
+            case "":
+                stats.MissingResults++;
+                incomplete = true;
+                break;
+            default:
+                stats.OtherResults++;
+                break;
+        }
+
+        if (incomplete)
+        {
+            stats.IncompleteGames++;
+            tourStats.IncompleteGames++;
+        }
+
+        // Elo
+        var whiteElo = ParseElo(headers, "WhiteElo");
+        var blackElo = ParseElo(headers, "BlackElo");
+        var anyElo = false;
+
+        if (whiteElo.HasValue)
+        {
+            stats.AddElo(whiteElo.Value);
+            anyElo = true;
+        }
+        if (blackElo.HasValue)
+        {
+            stats.AddElo(blackElo.Value);
+            anyElo = true;
+        }
+
+        if (anyElo) stats.GamesWithAnyElo++;
+        if (whiteElo.HasValue && blackElo.HasValue) stats.GamesWithBothElo++;
+
+        // Countries
+        foreach (var key in CountryKeys)
+        {
+            if (headers.TryGetHeaderValue(key, out var country) && NormalizeCountry(country) is { } normalizedCountry)
+            {
+                stats.Countries.Add(normalizedCountry);
+            }
+        }
+
+        // ECO
+        if (headers.TryGetHeaderValue("ECO", out var eco))
+        {
+            stats.AddEco(eco);
+        }
+        else
+        {
+            stats.EcoMissing++;
+        }
+
+        // Date
+        var date = ParseDate(headers);
+        if (date.HasValue)
+        {
+            stats.UpdateDateRange(date.Value);
+        }
+        else
+        {
+            stats.DateMissing++;
+        }
+
+        // Plies
+        if (plyCount == 0)
+        {
+            stats.GamesWithoutMoves++;
+        }
+        else
+        {
+            stats.GamesWithMoves++;
+            stats.TotalPlies += plyCount;
+            stats.MinPlies = stats.MinPlies.HasValue ? Math.Min(stats.MinPlies.Value, plyCount) : plyCount;
+            stats.MaxPlies = stats.MaxPlies.HasValue ? Math.Max(stats.MaxPlies.Value, plyCount) : plyCount;
+        }
+    }
+
+    private static string? NormalizePlayer(string value)
+    {
+        var trimmed = value.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        var lower = trimmed.ToLowerInvariant();
+        return lower is "?" or "unknown" ? null : trimmed;
+    }
+
+    private static string? NormalizeCountry(string value)
+    {
+        var trimmed = value.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        var lower = trimmed.ToLowerInvariant();
+        return lower is "?" or "unknown" ? null : trimmed.ToUpperInvariant();
+    }
+
+    private static int? ParseElo(IReadOnlyDictionary<string, string> headers, string key)
+    {
+        if (!headers.TryGetHeaderValue(key, out var raw)) return null;
+        var trimmed = raw.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        if (!int.TryParse(trimmed, out var value) || value <= 0) return null;
+        return value;
+    }
+
+    private static string GetTournamentKey(IReadOnlyDictionary<string, string> headers)
+    {
+        var eventName = headers.GetHeaderValueOrDefault("Event", "?");
+        var site = headers.GetHeaderValueOrDefault("Site", "?");
+        var date = headers.GetHeaderValueOrDefault("Date") ?? headers.GetHeaderValueOrDefault("EventDate") ?? "????";
+        var year = date.Length >= 4 && date[..4].All(char.IsDigit) ? date[..4] : "????";
+        return $"{eventName}|{site}|{year}";
+    }
+
+    private static DateTime? ParseDate(IReadOnlyDictionary<string, string> headers)
+    {
+        var raw = headers.GetHeaderValueOrDefault("Date") ?? headers.GetHeaderValueOrDefault("EventDate");
+        if (string.IsNullOrEmpty(raw)) return null;
+
+        // Replace ?? with 01 for parsing
+        var normalized = raw.Replace("??", "01");
+        var parts = normalized.Split('.');
+        if (parts.Length < 3) return null;
+
+        if (!int.TryParse(parts[0], out var year) ||
+            !int.TryParse(parts[1], out var month) ||
+            !int.TryParse(parts[2], out var day))
+        {
+            return null;
+        }
+
+        if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new DateTime(year, month, Math.Min(day, DateTime.DaysInMonth(year, month)));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private class TournamentStats
+    {
+        public long Games { get; set; }
+        public long IncompleteGames { get; set; }
+    }
+
+    private class InternalStats
+    {
+        public long Games { get; set; }
+        public HashSet<string> Players { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, TournamentStats> Tournaments { get; } = new();
+        public long IncompleteGames { get; set; }
+        public long WhiteWins { get; set; }
+        public long BlackWins { get; set; }
+        public long Draws { get; set; }
+        public long StarResults { get; set; }
+        public long MissingResults { get; set; }
+        public long OtherResults { get; set; }
+        public long EloSum { get; set; }
+        public long EloCount { get; set; }
+        public int? EloMin { get; set; }
+        public int? EloMax { get; set; }
+        public long GamesWithAnyElo { get; set; }
+        public long GamesWithBothElo { get; set; }
+        public HashSet<string> Countries { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<char, long> EcoLetterCounts { get; } = new();
+        public Dictionary<string, long> EcoCounts { get; } = new();
+        public long EcoMissing { get; set; }
+        public long EcoInvalid { get; set; }
+        public DateTime? MinDate { get; set; }
+        public DateTime? MaxDate { get; set; }
+        public long DateMissing { get; set; }
+        public long TotalPlies { get; set; }
+        public int? MinPlies { get; set; }
+        public int? MaxPlies { get; set; }
+        public long GamesWithMoves { get; set; }
+        public long GamesWithoutMoves { get; set; }
+
+        public void AddElo(int elo)
+        {
+            EloSum += elo;
+            EloCount++;
+            EloMin = EloMin.HasValue ? Math.Min(EloMin.Value, elo) : elo;
+            EloMax = EloMax.HasValue ? Math.Max(EloMax.Value, elo) : elo;
+        }
+
+        public void AddEco(string ecoRaw)
+        {
+            var eco = ecoRaw.Trim();
+            if (string.IsNullOrEmpty(eco))
+            {
+                EcoMissing++;
+                return;
+            }
+
+            var upper = eco.ToUpperInvariant();
+            if (upper.Length < 1)
+            {
+                EcoInvalid++;
+                return;
+            }
+
+            var letter = upper[0];
+            if (letter < 'A' || letter > 'E')
+            {
+                EcoInvalid++;
+                return;
+            }
+
+            EcoLetterCounts.TryGetValue(letter, out var count);
+            EcoLetterCounts[letter] = count + 1;
+
+            if (upper.Length >= 3 && char.IsDigit(upper[1]) && char.IsDigit(upper[2]))
+            {
+                var code = upper[..3];
+                EcoCounts.TryGetValue(code, out var codeCount);
+                EcoCounts[code] = codeCount + 1;
+            }
+            else
+            {
+                EcoInvalid++;
+            }
+        }
+
+        public void UpdateDateRange(DateTime date)
+        {
+            if (!MinDate.HasValue || date < MinDate.Value)
+                MinDate = date;
+            if (!MaxDate.HasValue || date > MaxDate.Value)
+                MaxDate = date;
+        }
+
+        public PgnStatistics ToStatistics()
+        {
+            var topEco = EcoCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Take(10)
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+            return new PgnStatistics
+            {
+                Games = Games,
+                PlayerCount = Players.Count,
+                TournamentCount = Tournaments.Count,
+                TournamentsWithIncompleteGames = Tournaments.Values.Count(t => t.IncompleteGames > 0),
+                IncompleteGames = IncompleteGames,
+                WhiteWins = WhiteWins,
+                BlackWins = BlackWins,
+                Draws = Draws,
+                StarResults = StarResults,
+                MissingResults = MissingResults,
+                OtherResults = OtherResults,
+                AverageElo = EloCount > 0 ? (double)EloSum / EloCount : null,
+                HighestElo = EloMax,
+                LowestElo = EloMin,
+                GamesWithAnyElo = GamesWithAnyElo,
+                GamesWithBothElo = GamesWithBothElo,
+                CountryCount = Countries.Count,
+                MinDate = MinDate,
+                MaxDate = MaxDate,
+                DateMissing = DateMissing,
+                EcoLetterCounts = new Dictionary<char, long>(EcoLetterCounts),
+                TopEcoCodes = topEco,
+                EcoMissing = EcoMissing,
+                EcoInvalid = EcoInvalid,
+                AveragePlies = GamesWithMoves > 0 ? (double)TotalPlies / GamesWithMoves : null,
+                MinPlies = MinPlies,
+                MaxPlies = MaxPlies,
+                GamesWithMoves = GamesWithMoves,
+                GamesWithoutMoves = GamesWithoutMoves
+            };
+        }
+    }
+
+    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    {
+        if (games <= 0)
+        {
+            return false;
+        }
+
+        if (games != 1 && games % ProgressGameInterval != 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now - lastReportUtc < ProgressTimeInterval)
+        {
+            return false;
+        }
+
+        lastReportUtc = now;
+        return true;
+    }
+}
+===== END: PgnTools\Services\PgnInfoService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\PgnInfoViewModel.cs =====
+using PgnTools.Models;
+using Windows.Storage;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the PGN Info tool.
+/// </summary>
+public partial class PgnInfoViewModel(
+    IPgnInfoService pgnInfoService,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IPgnInfoService _pgnInfoService = pgnInfoService;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(PgnInfoViewModel);
+
+    [ObservableProperty]
+    private string _selectedFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _selectedFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isAnalyzing;
+
+    [ObservableProperty]
+    private string _statusMessage = "Select a PGN file to analyze";
+
+    [ObservableProperty]
+    private PgnStatistics? _statistics;
+
+    [ObservableProperty]
+    private bool _hasResults;
+
+    [ObservableProperty]
+    private long _progressGames;
+    public void Initialize()
+    {
+        Title = "PGN Info";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectFileAsync()
+    {
+        try
+        {
+            var file = await FilePickerHelper.PickSingleFileAsync(
+                _windowService.WindowHandle,
+                $"{SettingsPrefix}.Picker.Input",
+                ".pgn");
+            if (file == null)
+            {
+                return;
+    }
+            var validation = await FileValidationHelper.ValidateReadableFileAsync(file);
+            if (!validation.Success)
+            {
+                StatusMessage = $"Cannot access file: {validation.ErrorMessage}";
+                StatusSeverity = InfoBarSeverity.Error;
+                return;
+    }
+            SelectedFilePath = file.Path;
+            SelectedFileName = file.Name;
+            StatusMessage = $"Ready to analyze: {file.Name}";
+            StatusSeverity = InfoBarSeverity.Informational;
+            HasResults = false;
+            Statistics = null;
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanAnalyze))]
+    private async Task AnalyzeAsync()
+    {
+        if (string.IsNullOrEmpty(SelectedFilePath))
+        {
+            return;
+    }
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsAnalyzing = true;
+            HasResults = false;
+            ProgressGames = 0;
+            StatusMessage = "Analyzing...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(null, 0, null, "games");
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var progress = new Progress<(long games, string message)>(p =>
+            {
+                ProgressGames = p.games;
+                StatusMessage = p.message;
+                StatusDetail = BuildProgressDetail(null, p.games, null, "games");
+            });
+
+            Statistics = await _pgnInfoService.AnalyzeFileAsync(
+                SelectedFilePath,
+                progress,
+                _cancellationTokenSource.Token);
+
+            HasResults = true;
+            StatusMessage = $"Analysis complete: {Statistics.Games:N0} games processed";
+            StatusSeverity = InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, Statistics.Games, null, "games");
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Analysis cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+        finally
+        {
+            IsAnalyzing = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanAnalyze() =>
+        !string.IsNullOrWhiteSpace(SelectedFilePath) &&
+        File.Exists(SelectedFilePath) &&
+        !IsAnalyzing;
+
+    [RelayCommand]
+    private void CancelAnalysis()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+    }
+    partial void OnSelectedFilePathChanged(string value)
+    {
+        AnalyzeCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsAnalyzingChanged(bool value)
+    {
+        AnalyzeCommand.NotifyCanExecuteChanged();
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        SelectedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedFilePath)}", SelectedFilePath);
+        if (!string.IsNullOrWhiteSpace(SelectedFilePath) && File.Exists(SelectedFilePath))
+        {
+            SelectedFileName = Path.GetFileName(SelectedFilePath);
+    }
+        else
+        {
+            SelectedFilePath = string.Empty;
+            SelectedFileName = string.Empty;
+    }
+    }
+
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedFilePath)}", SelectedFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\PgnInfoViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\PgnInfoPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.PgnInfoPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="PGN Info" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Analyze a PGN file to see summary statistics including game count, Elo ranges, ECO distribution, and more."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- File Selection -->
+        <Grid Grid.Row="1" Margin="0,0,0,24">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBox Grid.Column="0"
+                     PlaceholderText="No file selected..."
+                     Text="{x:Bind ViewModel.SelectedFilePath, Mode=OneWay}"
+                     IsReadOnly="True"
+                     Margin="0,0,12,0"/>
+            
+            <Button Grid.Column="1"
+                    Content="Browse..."
+                    Command="{x:Bind ViewModel.SelectFileCommand}"
+                    Style="{StaticResource Action}"
+                    Margin="0,0,12,0"/>
+            
+            <Button Grid.Column="2"
+                    Content="Analyze"
+                    Command="{x:Bind ViewModel.AnalyzeCommand}"
+                    Style="{StaticResource PrimaryAction}"/>
+        </Grid>
+
+        <!-- Results Section -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- Status/Progress -->
+                <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                        StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
+                                        IsIndeterminate="True"/>
+
+                <!-- Statistics Display -->
+                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay}"
+                            Margin="0,24,0,0"
+                            Spacing="24">
+                    
+                    <!-- Overview Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Overview" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Games:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.Games), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Players:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.PlayerCount), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Tournaments:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatTournamentStats(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Countries:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.CountryCount), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Incomplete:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.IncompleteGames), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="Date Range:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="{x:Bind FormatDateRange(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Elo Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Elo Statistics" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Average:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatElo(ViewModel.Statistics.AverageElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Highest:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatEloInt(ViewModel.Statistics.HighestElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Lowest:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatEloInt(ViewModel.Statistics.LowestElo), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Games with Elo:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatEloGames(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Results Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Results" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind FormatResults(ViewModel.Statistics), Mode=OneWay}" FontFamily="Consolas"/>
+                    </StackPanel>
+
+                    <!-- ECO Section -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="ECO Distribution" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind FormatEcoSpread(ViewModel.Statistics), Mode=OneWay}" FontFamily="Consolas"/>
+                        <ItemsRepeater ItemsSource="{x:Bind GetTopEco(ViewModel.Statistics), Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <StackLayout Spacing="4"/>
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontFamily="Consolas"/>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+
+                    <!-- Move Statistics -->
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Move Statistics" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                        <Grid ColumnSpacing="48" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Average Plies:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind FormatPlies(ViewModel.Statistics.AveragePlies), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Min/Max Plies:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{x:Bind FormatPlyRange(ViewModel.Statistics), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="With Moves:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind FormatNumber(ViewModel.Statistics.GamesWithMoves), Mode=OneWay}" FontWeight="SemiBold"/>
+                            
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Without Moves:" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{x:Bind FormatNumber(ViewModel.Statistics.GamesWithoutMoves), Mode=OneWay}" FontWeight="SemiBold"/>
+                        </Grid>
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\PgnInfoPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\PgnInfoPage.xaml.cs =====
+using PgnTools.Models;
+
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the PGN Info tool.
+/// </summary>
+public sealed partial class PgnInfoPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public PgnInfoViewModel ViewModel { get; }
+
+    public PgnInfoPage() : this(App.GetService<PgnInfoViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public PgnInfoPage(PgnInfoViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsAnalyzing)
+            {
+                ViewModel.CancelAnalysisCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+
+    // Formatting helpers for x:Bind - must be instance methods for WinUI 3 x:Bind function binding
+    public string FormatNumber(long value) => value.ToString("N0");
+    public string FormatNumber(int value) => value.ToString("N0");
+
+    public string FormatTournamentStats(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        return $"{stats.TournamentCount:N0} (incomplete games: {stats.TournamentsWithIncompleteGames:N0})";
+    }
+
+    public string FormatDateRange(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        if (!stats.MinDate.HasValue || !stats.MaxDate.HasValue)
+        {
+            return $"N/A (missing dates: {stats.DateMissing:N0})";
+        }
+        return $"{stats.MinDate:yyyy-MM-dd} to {stats.MaxDate:yyyy-MM-dd} (missing dates: {stats.DateMissing:N0})";
+    }
+
+    public string FormatElo(double? value)
+    {
+        return value.HasValue ? value.Value.ToString("F1") : "N/A";
+    }
+
+    public string FormatEloInt(int? value)
+    {
+        return value.HasValue ? value.Value.ToString("N0") : "N/A";
+    }
+
+    public string FormatEloGames(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        return $"{stats.GamesWithAnyElo:N0} (both players: {stats.GamesWithBothElo:N0})";
+    }
+
+    public string FormatResults(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        return $"White wins (1-0): {stats.WhiteWins:N0} | Black wins (0-1): {stats.BlackWins:N0} | Draws (1/2-1/2): {stats.Draws:N0} | Unfinished (*): {stats.StarResults:N0} | Missing result: {stats.MissingResults:N0} | Other result: {stats.OtherResults:N0}";
+    }
+
+    public string FormatEcoSpread(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        var counts = stats.EcoLetterCounts ?? new Dictionary<char, long>();
+        var a = counts.GetValueOrDefault('A', 0);
+        var b = counts.GetValueOrDefault('B', 0);
+        var c = counts.GetValueOrDefault('C', 0);
+        var d = counts.GetValueOrDefault('D', 0);
+        var e = counts.GetValueOrDefault('E', 0);
+        return $"ECO A: {a:N0} | ECO B: {b:N0} | ECO C: {c:N0} | ECO D: {d:N0} | ECO E: {e:N0} (missing ECO: {stats.EcoMissing:N0}, invalid ECO: {stats.EcoInvalid:N0})";
+    }
+
+    public IEnumerable<string> GetTopEco(PgnStatistics? stats)
+    {
+        if (stats?.TopEcoCodes == null || stats.TopEcoCodes.Count == 0)
+            return Enumerable.Empty<string>();
+
+        return stats.TopEcoCodes.Select(kvp => $"  {kvp.Key}: {kvp.Value:N0}");
+    }
+
+    public string FormatPlies(double? value)
+    {
+        return value.HasValue ? value.Value.ToString("F1") : "N/A";
+    }
+
+    public string FormatPlyRange(PgnStatistics? stats)
+    {
+        if (stats == null) return "N/A";
+        if (!stats.MinPlies.HasValue || !stats.MaxPlies.HasValue)
+            return "N/A";
+        return $"{stats.MinPlies:N0} / {stats.MaxPlies:N0}";
+    }
+}
+
+===== END: PgnTools\Views\Tools\PgnInfoPage.xaml.cs =====
+

@@ -56,12 +56,12 @@
                 <!-- Status/Progress -->
                 <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
                                         StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
-                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
-                                    IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
+                                        StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                        IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
                                         IsIndeterminate="True"/>
 
                 <!-- Statistics Display -->
-                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay}"
+                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}"
                             Margin="0,24,0,0"
                             Spacing="24">
                     

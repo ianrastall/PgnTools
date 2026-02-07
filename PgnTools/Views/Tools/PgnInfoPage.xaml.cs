@@ -30,10 +30,7 @@ public sealed partial class PgnInfoPage : Page
             {
                 ViewModel.CancelAnalysisCommand.Execute(null);
             }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.Dispose();
         }
     }
 

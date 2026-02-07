@@ -53,16 +53,22 @@ public partial class PgnInfoService : IPgnInfoService
 
     private static int CountPlies(string moveText)
     {
+        if (string.IsNullOrEmpty(moveText))
+        {
+            return 0;
+        }
+
         // Simple ply counting: count SAN moves (words that look like moves)
         var count = 0;
         var inComment = false;
         var inLineComment = false;
         var depth = 0;
         var wordStart = -1;
+        var span = moveText.AsSpan();
 
-        for (var i = 0; i < moveText.Length; i++)
+        for (var i = 0; i < span.Length; i++)
         {
-            var c = moveText[i];
+            var c = span[i];
 
             if (inLineComment)
             {
@@ -78,7 +84,7 @@ public partial class PgnInfoService : IPgnInfoService
                 case '{':
                     if (wordStart >= 0)
                     {
-                        var word = moveText[wordStart..i];
+                        var word = span.Slice(wordStart, i - wordStart);
                         if (IsSanMove(word))
                         {
                             count++;
@@ -93,7 +99,7 @@ public partial class PgnInfoService : IPgnInfoService
                 case '(':
                     if (wordStart >= 0)
                     {
-                        var word = moveText[wordStart..i];
+                        var word = span.Slice(wordStart, i - wordStart);
                         if (IsSanMove(word))
                         {
                             count++;
@@ -110,7 +116,7 @@ public partial class PgnInfoService : IPgnInfoService
                     {
                         if (wordStart >= 0)
                         {
-                            var word = moveText[wordStart..i];
+                            var word = span.Slice(wordStart, i - wordStart);
                             if (IsSanMove(word))
                             {
                                 count++;
@@ -134,7 +140,7 @@ public partial class PgnInfoService : IPgnInfoService
             }
             else if (wordStart >= 0)
             {
-                var word = moveText[wordStart..i];
+                var word = span.Slice(wordStart, i - wordStart);
                 if (IsSanMove(word))
                 {
                     count++;
@@ -146,7 +152,7 @@ public partial class PgnInfoService : IPgnInfoService
         // Check last word
         if (wordStart >= 0)
         {
-            var word = moveText[wordStart..];
+            var word = span.Slice(wordStart);
             if (IsSanMove(word))
             {
                 count++;
@@ -156,34 +162,62 @@ public partial class PgnInfoService : IPgnInfoService
         return count;
     }
 
-    private static bool IsSanMove(string word)
+    private static bool IsSanMove(ReadOnlySpan<char> word)
     {
-        if (string.IsNullOrEmpty(word) || word.Length < 2)
+        if (word.IsEmpty || word.Length < 2)
             return false;
 
         // Skip move numbers
-        if (word.All(c => char.IsDigit(c) || c == '.'))
+        var allDigitsOrDots = true;
+        for (var i = 0; i < word.Length; i++)
+        {
+            var c = word[i];
+            if (!char.IsDigit(c) && c != '.')
+            {
+                allDigitsOrDots = false;
+                break;
+            }
+        }
+        if (allDigitsOrDots)
             return false;
 
         // Skip results
-        if (word is "1-0" or "0-1" or "1/2-1/2" or "*")
+        if (word.Length == 1 && word[0] == '*')
+            return false;
+        if (word.SequenceEqual("1-0".AsSpan()) ||
+            word.SequenceEqual("0-1".AsSpan()) ||
+            word.SequenceEqual("1/2-1/2".AsSpan()))
             return false;
 
         // Skip NAGs
-        if (word.StartsWith('$'))
+        if (word[0] == '$')
             return false;
 
         // Skip annotations
-        if (word is "!!" or "??" or "!?" or "?!" or "!" or "?")
+        if (word.Length == 1 && (word[0] == '!' || word[0] == '?'))
             return false;
+        if (word.Length == 2)
+        {
+            if ((word[0] == '!' && word[1] == '!') ||
+                (word[0] == '?' && word[1] == '?') ||
+                (word[0] == '!' && word[1] == '?') ||
+                (word[0] == '?' && word[1] == '!'))
+            {
+                return false;
+            }
+        }
 
         // Basic SAN check: starts with piece letter or file letter
         var first = word[0];
-        return char.IsUpper(first) || (first >= 'a' && first <= 'h') || word.StartsWith("O-O");
+        return char.IsUpper(first) ||
+               (first >= 'a' && first <= 'h') ||
+               word.StartsWith("O-O".AsSpan(), StringComparison.OrdinalIgnoreCase) ||
+               word.StartsWith("0-0".AsSpan(), StringComparison.Ordinal);
     }
 
     private static void ApplyGame(IReadOnlyDictionary<string, string> headers, int plyCount, InternalStats stats)
     {
+        headers = EnsureCaseInsensitive(headers);
         stats.Games++;
 
         // Players
@@ -338,12 +372,12 @@ public partial class PgnInfoService : IPgnInfoService
     private static DateTime? ParseDate(IReadOnlyDictionary<string, string> headers)
     {
         var raw = headers.GetHeaderValueOrDefault("Date") ?? headers.GetHeaderValueOrDefault("EventDate");
-        if (string.IsNullOrEmpty(raw)) return null;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (raw.IndexOf('?', StringComparison.Ordinal) >= 0) return null;
 
-        // Replace ?? with 01 for parsing
-        var normalized = raw.Replace("??", "01");
-        var parts = normalized.Split('.');
-        if (parts.Length < 3) return null;
+        var normalized = raw.Replace('/', '.').Replace('-', '.');
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3) return null;
 
         if (!int.TryParse(parts[0], out var year) ||
             !int.TryParse(parts[1], out var month) ||
@@ -357,14 +391,9 @@ public partial class PgnInfoService : IPgnInfoService
             return null;
         }
 
-        try
-        {
-            return new DateTime(year, month, Math.Min(day, DateTime.DaysInMonth(year, month)));
-        }
-        catch
-        {
-            return null;
-        }
+        if (day > DateTime.DaysInMonth(year, month)) return null;
+
+        return new DateTime(year, month, day);
     }
 
     private class TournamentStats
@@ -522,5 +551,15 @@ public partial class PgnInfoService : IPgnInfoService
 
         lastReportUtc = now;
         return true;
+    }
+
+    private static IReadOnlyDictionary<string, string> EnsureCaseInsensitive(IReadOnlyDictionary<string, string> headers)
+    {
+        if (headers is Dictionary<string, string> dict && dict.Comparer == StringComparer.OrdinalIgnoreCase)
+        {
+            return dict;
+        }
+
+        return new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
     }
 }

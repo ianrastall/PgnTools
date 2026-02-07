@@ -16,6 +16,7 @@ public partial class PgnInfoViewModel(
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
     private bool _disposed;
     private const string SettingsPrefix = nameof(PgnInfoViewModel);
 
@@ -32,7 +33,7 @@ public partial class PgnInfoViewModel(
     private string _statusMessage = "Select a PGN file to analyze";
 
     [ObservableProperty]
-    private PgnStatistics? _statistics;
+    private PgnStatistics _statistics = new();
 
     [ObservableProperty]
     private bool _hasResults;
@@ -70,7 +71,7 @@ public partial class PgnInfoViewModel(
             StatusMessage = $"Ready to analyze: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
             HasResults = false;
-            Statistics = null;
+            Statistics = new PgnStatistics();
     }
         catch (Exception ex)
         {
@@ -82,7 +83,7 @@ public partial class PgnInfoViewModel(
     [RelayCommand(CanExecute = nameof(CanAnalyze))]
     private async Task AnalyzeAsync()
     {
-        if (string.IsNullOrEmpty(SelectedFilePath))
+        if (_disposed || string.IsNullOrEmpty(SelectedFilePath))
         {
             return;
     }
@@ -94,6 +95,7 @@ public partial class PgnInfoViewModel(
         {
             IsAnalyzing = true;
             HasResults = false;
+            Statistics = new PgnStatistics();
             ProgressGames = 0;
             StatusMessage = "Analyzing...";
             StatusSeverity = InfoBarSeverity.Informational;
@@ -136,7 +138,18 @@ public partial class PgnInfoViewModel(
             IsAnalyzing = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
@@ -172,6 +185,11 @@ public partial class PgnInfoViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsAnalyzing || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()
