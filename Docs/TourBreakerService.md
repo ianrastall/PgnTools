@@ -39,15 +39,17 @@ public interface ITourBreakerService
 
 Files are named:
 ```
-<minDate>-<maxDate>-<event-name>.pgn
+<minDate>-<maxDate>-<event>-<site>-<year>-<keyhash>.pgn
 ```
-where dates are `YYYYMMDD` (unknown digits replaced with `0`), and event name is sanitized to lowercase hyphenated text.
+where dates are `YYYYMMDD` (unknown or missing dates become `00000000`). Event/site are sanitized to lowercase hyphenated text and trimmed to safe lengths. A short key hash is appended to avoid collisions.
 
 ## 5. Progress Reporting
 
-Reports percent based on games processed in pass 2.
+Reports percent based on games processed in pass 2 (denominator is total games from pass 1). Updates are throttled (every ~200 games or 100ms) to avoid UI flooding.
 
 ## 6. Limitations
 
 - Tournament key uses `Event|Site|Year`.
-- Writes are append‑based (no temp file per tournament).
+- Only full dates (`yyyy.MM.dd`, `yyyy-MM-dd`, `yyyy/MM/dd`) are used for min/max; unknown/partial dates are ignored and yield `00000000` in filenames.
+- Elo filter treats missing/invalid Elo as unknown (does not fail the threshold); only parsed Elos below `minElo` fail the tournament.
+- Writes are direct to final output files (overwriting on first write per run); no temp‑file replacement per tournament, so cancelling mid‑run can leave partial outputs.
