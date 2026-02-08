@@ -1,4 +1,5 @@
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -200,6 +201,14 @@ public partial class PgnMentorDownloaderViewModel(
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                OutputFilePath = Path.Combine(defaultFolder, "pgnmentor_collection.pgn");
+            }
+        }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
     private void SaveState()

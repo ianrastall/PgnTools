@@ -1,4 +1,5 @@
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -282,6 +283,14 @@ public partial class TwicDownloaderViewModel(
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                OutputFilePath = Path.Combine(defaultFolder, "twic_collection.pgn");
+            }
+        }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
 
         SelectedModeIndex = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedModeIndex)}", SelectedModeIndex);

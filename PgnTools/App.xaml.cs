@@ -1,7 +1,9 @@
 using System.Net.Http;
 using Microsoft.Extensions.Hosting;
+using PgnTools.Helpers;
 using PgnTools.Models;
 using PgnTools.ViewModels;
+using PgnTools.Views;
 
 namespace PgnTools;
 
@@ -78,6 +80,10 @@ public partial class App : Application
         var navigationService = Services.GetRequiredService<INavigationService>();
         RegisterPages(navigationService);
 
+        // Apply saved accent color selection
+        var settingsService = Services.GetRequiredService<IAppSettingsService>();
+        AccentColorManager.ApplySavedAccent(settingsService);
+
         _window.Activate();
     }
 
@@ -92,6 +98,8 @@ public partial class App : Application
             {
                 navService.RegisterPage(tool.Key, tool.PageType);
             }
+
+            navService.RegisterPage("Settings", typeof(SettingsPage));
         }
     }
 
@@ -145,6 +153,7 @@ public partial class App : Application
     {
         services.AddTransient<MainViewModel>();
         services.AddTransient<ShellViewModel>();
+        services.AddTransient<SettingsViewModel>();
         services.AddTransient<WelcomeViewModel>();
 
         services.AddTransient<CategoryTaggerViewModel>();

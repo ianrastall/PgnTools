@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using PgnTools.Helpers;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -330,6 +331,17 @@ public partial class ChesscomDownloaderViewModel(
     {
         Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                var suggestedName = string.IsNullOrWhiteSpace(Username)
+                    ? "chesscom_games.pgn"
+                    : $"{SanitizeFileNamePart(Username)}_games.pgn";
+                OutputFilePath = Path.Combine(defaultFolder, suggestedName);
+            }
+        }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
     private void SaveState()

@@ -1,4 +1,5 @@
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -212,6 +213,17 @@ public partial class LichessDownloaderViewModel(
     {
         Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                var suggestedName = string.IsNullOrWhiteSpace(Username)
+                    ? "lichess_games.pgn"
+                    : $"{Username}_lichess.pgn";
+                OutputFilePath = Path.Combine(defaultFolder, suggestedName);
+            }
+        }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
         MaxGames = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
     }

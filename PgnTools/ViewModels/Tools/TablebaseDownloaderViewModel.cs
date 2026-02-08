@@ -1,5 +1,6 @@
 // PGNTOOLS-TABLEBASES-BEGIN
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -271,6 +272,14 @@ public partial class TablebaseDownloaderViewModel(
     private void LoadState()
     {
         TargetFolder = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetFolder)}", TargetFolder);
+        if (string.IsNullOrWhiteSpace(TargetFolder))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.TablebasesFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                TargetFolder = defaultFolder;
+            }
+        }
         Download345 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download345)}", Download345);
         Download6 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download6)}", Download6);
         Download7 = _settings.GetValue($"{SettingsPrefix}.{nameof(Download7)}", Download7);

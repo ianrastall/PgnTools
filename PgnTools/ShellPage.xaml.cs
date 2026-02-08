@@ -1,4 +1,5 @@
 using PgnTools.Models;
+using PgnTools.Views;
 
 namespace PgnTools;
 
@@ -37,7 +38,7 @@ public sealed partial class ShellPage : Page
     {
         if (args.IsSettingsSelected)
         {
-            // Navigate to settings page when implemented
+            _navigationService.NavigateTo(typeof(SettingsPage));
             return;
         }
     }
@@ -46,7 +47,7 @@ public sealed partial class ShellPage : Page
     {
         if (args.IsSettingsInvoked)
         {
-            // Navigate to settings page when implemented
+            _navigationService.NavigateTo(typeof(SettingsPage));
             return;
         }
 

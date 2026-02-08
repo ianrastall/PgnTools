@@ -1,4 +1,5 @@
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -500,6 +501,14 @@ public partial class ChessAnalyzerViewModel(
         AddEleganceTags = _settings.GetValue($"{SettingsPrefix}.{nameof(AddEleganceTags)}", AddEleganceTags);
         UseTablebases = _settings.GetValue($"{SettingsPrefix}.{nameof(UseTablebases)}", UseTablebases);
         TablebasePath = _settings.GetValue($"{SettingsPrefix}.{nameof(TablebasePath)}", TablebasePath);
+        if (string.IsNullOrWhiteSpace(TablebasePath))
+        {
+            var defaultTablebases = _settings.GetValue(AppSettingsKeys.TablebasesFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultTablebases))
+            {
+                TablebasePath = defaultTablebases;
+            }
+        }
         if (!string.IsNullOrWhiteSpace(TablebasePath) && !Directory.Exists(TablebasePath))
         {
             TablebasePath = string.Empty;

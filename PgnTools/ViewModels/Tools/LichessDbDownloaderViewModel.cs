@@ -1,3 +1,5 @@
+using PgnTools.Services;
+
 namespace PgnTools.ViewModels.Tools;
 
 /// <summary>
@@ -349,6 +351,11 @@ public partial class LichessDbDownloaderViewModel(
         {
             return _lastOutputFolder;
     }
+        var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+        if (!string.IsNullOrWhiteSpace(defaultFolder))
+        {
+            return defaultFolder;
+        }
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
     private string GetSuggestedFileName()

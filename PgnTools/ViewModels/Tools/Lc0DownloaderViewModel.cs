@@ -1,5 +1,6 @@
 // PGNTOOLS-LC0-BEGIN
 using System.Globalization;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -380,6 +381,11 @@ public partial class Lc0DownloaderViewModel(
         {
             return _lastOutputFolder;
     }
+        var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+        if (!string.IsNullOrWhiteSpace(defaultFolder))
+        {
+            return defaultFolder;
+        }
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
     private string GetSuggestedFileName()
