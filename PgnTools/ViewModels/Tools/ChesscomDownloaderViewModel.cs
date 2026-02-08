@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using PgnTools.Helpers;
 
 namespace PgnTools.ViewModels.Tools;
@@ -16,6 +17,7 @@ public partial class ChesscomDownloaderViewModel(
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
     private bool _disposed;
     private const string SettingsPrefix = nameof(ChesscomDownloaderViewModel);
     private const int BufferSize = 65536;
@@ -50,7 +52,7 @@ public partial class ChesscomDownloaderViewModel(
         {
             var suggestedName = string.IsNullOrWhiteSpace(Username)
                 ? "chesscom_games.pgn"
-                : $"{Username}_games.pgn";
+                : $"{SanitizeFileNamePart(Username)}_games.pgn";
 
             var file = await FilePickerHelper.PickSaveFileAsync(
                 _windowService.WindowHandle,
@@ -79,7 +81,7 @@ public partial class ChesscomDownloaderViewModel(
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task DownloadAllAsync()
     {
-        if (string.IsNullOrWhiteSpace(Username))
+        if (_disposed || string.IsNullOrWhiteSpace(Username))
         {
             return;
     }
@@ -88,6 +90,8 @@ public partial class ChesscomDownloaderViewModel(
             await SelectOutputFileAsync();
             if (string.IsNullOrWhiteSpace(OutputFilePath))
             {
+                StatusMessage = "Output file is required.";
+                StatusSeverity = InfoBarSeverity.Warning;
                 return;
     }
         }
@@ -116,16 +120,26 @@ public partial class ChesscomDownloaderViewModel(
                 return;
     }
             var outputFullPath = Path.GetFullPath(OutputFilePath);
-            var tempOutputPath = outputFullPath + ".tmp";
-            var completedWrite = false;
-
-            if (Path.GetDirectoryName(outputFullPath) is { } directory)
+            var outputDirectory = Path.GetDirectoryName(outputFullPath);
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
             {
-                Directory.CreateDirectory(directory);
-    }
+                Directory.CreateDirectory(outputDirectory);
+                var validation = await FileValidationHelper.ValidateWritableFolderAsync(outputDirectory);
+                if (!validation.Success)
+                {
+                    StatusMessage = $"Cannot write to folder: {validation.ErrorMessage}";
+                    StatusSeverity = InfoBarSeverity.Error;
+                    StatusDetail = BuildProgressDetail(0, 0, 0, "archives");
+                    return;
+                }
+            }
+
+            var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+            var completedWrite = false;
             var completed = 0;
             var failed = 0;
             var firstOutput = true;
+            string? lastErrorMessage = null;
 
             try
             {
@@ -155,25 +169,30 @@ public partial class ChesscomDownloaderViewModel(
                             if (!firstOutput)
                             {
                                 await writer.WriteLineAsync();
-                                await writer.WriteLineAsync();
     }
                             if (!string.IsNullOrWhiteSpace(pgn))
                             {
                                 await writer.WriteLineAsync(pgn.TrimEnd());
+                                firstOutput = false;
     }
-                            firstOutput = false;
                             completed++;
     }
-                        catch
+                        catch (Exception ex)
                         {
                             failed++;
+                            lastErrorMessage = $"{year}/{month:D2}: {ex.GetType().Name} - {ex.Message}";
     }
                         ProgressValue = (i + 1) / (double)archives.Count * 100.0;
-                        StatusDetail = BuildProgressDetail(ProgressValue, i + 1, archives.Count, "archives");
+                        var detail = BuildProgressDetail(ProgressValue, i + 1, archives.Count, "archives");
+                        if (!string.IsNullOrWhiteSpace(lastErrorMessage))
+                        {
+                            detail = $"{detail} | Last error: {lastErrorMessage}";
+                        }
+                        StatusDetail = detail;
     }
                     await writer.FlushAsync();
     }
-                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+                await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, _cancellationTokenSource.Token);
                 completedWrite = true;
     }
             finally
@@ -192,7 +211,12 @@ public partial class ChesscomDownloaderViewModel(
 
             StatusMessage = $"Download complete. {completed:N0} archive(s) saved{(failed > 0 ? $", {failed:N0} failed." : ".")}";
             StatusSeverity = failed > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
-            StatusDetail = BuildProgressDetail(100, completed + failed, archives.Count, "archives");
+            var completionDetail = BuildProgressDetail(100, completed + failed, archives.Count, "archives");
+            if (!string.IsNullOrWhiteSpace(lastErrorMessage))
+            {
+                completionDetail = $"{completionDetail} | Last error: {lastErrorMessage}";
+            }
+            StatusDetail = completionDetail;
     }
         catch (OperationCanceledException)
         {
@@ -212,13 +236,24 @@ public partial class ChesscomDownloaderViewModel(
             IsRunning = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
 
     private bool CanRun() =>
-        !IsRunning && !string.IsNullOrWhiteSpace(Username);
+        !_disposed && !IsRunning && !string.IsNullOrWhiteSpace(Username);
 
     [RelayCommand]
     private void Cancel()
@@ -245,12 +280,33 @@ public partial class ChesscomDownloaderViewModel(
         {
             return false;
     }
-        var parts = archiveUrl.TrimEnd('/').Split('/');
-        if (parts.Length < 2)
+        if (!Uri.TryCreate(archiveUrl, UriKind.Absolute, out var uri))
         {
             return false;
-    }
-        return int.TryParse(parts[^2], out year) && int.TryParse(parts[^1], out month);
+        }
+
+        var segments = uri.Segments;
+        if (segments.Length < 2)
+        {
+            return false;
+        }
+
+        var yearSegment = segments[^2].Trim('/');
+        var monthSegment = segments[^1].Trim('/');
+
+        if (!int.TryParse(yearSegment, out year) || year < 2000)
+        {
+            year = 0;
+            return false;
+        }
+
+        if (!int.TryParse(monthSegment, out month) || month is < 1 or > 12)
+        {
+            month = 0;
+            return false;
+        }
+
+        return true;
     }
     public void Dispose()
     {
@@ -263,6 +319,11 @@ public partial class ChesscomDownloaderViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsRunning || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()
@@ -275,6 +336,33 @@ public partial class ChesscomDownloaderViewModel(
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+
+    private static string SanitizeFileNamePart(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "chesscom";
+        }
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var builder = new StringBuilder(value.Length);
+        foreach (var c in value)
+        {
+            if (Array.IndexOf(invalid, c) >= 0)
+            {
+                continue;
+            }
+            builder.Append(c);
+        }
+
+        var sanitized = builder.ToString().Trim();
+        if (string.IsNullOrWhiteSpace(sanitized))
+        {
+            return "chesscom";
+        }
+
+        return sanitized.Length > 64 ? sanitized[..64] : sanitized;
     }
 }
 

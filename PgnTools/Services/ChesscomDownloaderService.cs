@@ -12,7 +12,8 @@ public interface IChesscomDownloaderService
 public class ChesscomDownloaderService : IChesscomDownloaderService
 {
     private static readonly HttpClient HttpClient = CreateClient();
-    private static readonly Random RandomJitter = new();
+    private const int RateLimitMinMs = 800;
+    private const int RateLimitMaxMs = 1400;
 
     public async Task<List<string>> GetArchivesAsync(string username, CancellationToken ct = default)
     {
@@ -21,11 +22,16 @@ public class ChesscomDownloaderService : IChesscomDownloaderService
             throw new ArgumentException("Username is required.", nameof(username));
         }
 
-        var url = $"https://api.chess.com/pub/player/{username}/games/archives";
-        await ApplyRateLimitAsync(ct);
+        var safeUser = Uri.EscapeDataString(username.Trim());
+        var url = $"https://api.chess.com/pub/player/{safeUser}/games/archives";
+        await ApplyRateLimitAsync(ct).ConfigureAwait(false);
 
-        var response = await HttpClient.GetFromJsonAsync<ArchiveResponse>(url, cancellationToken: ct);
-        return response?.Archives ?? new List<string>();
+        using var response = await HttpClient.GetAsync(url, ct).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var payload = await response.Content.ReadFromJsonAsync<ArchiveResponse>(cancellationToken: ct)
+            .ConfigureAwait(false);
+        return payload?.Archives ?? new List<string>();
     }
 
     public async Task<string> DownloadPlayerGamesPgnAsync(string username, int year, int month, CancellationToken ct = default)
@@ -35,9 +41,18 @@ public class ChesscomDownloaderService : IChesscomDownloaderService
             throw new ArgumentException("Username is required.", nameof(username));
         }
 
-        var url = $"https://api.chess.com/pub/player/{username}/games/{year}/{month:D2}/pgn";
-        await ApplyRateLimitAsync(ct);
-        return await HttpClient.GetStringAsync(url, ct);
+        if (month is < 1 or > 12)
+        {
+            throw new ArgumentOutOfRangeException(nameof(month), "Month must be between 1 and 12.");
+        }
+
+        var safeUser = Uri.EscapeDataString(username.Trim());
+        var url = $"https://api.chess.com/pub/player/{safeUser}/games/{year}/{month:D2}/pgn";
+        await ApplyRateLimitAsync(ct).ConfigureAwait(false);
+
+        using var response = await HttpClient.GetAsync(url, ct).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
     }
 
     private static HttpClient CreateClient()
@@ -49,7 +64,7 @@ public class ChesscomDownloaderService : IChesscomDownloaderService
 
     private static Task ApplyRateLimitAsync(CancellationToken ct)
     {
-        var delayMs = RandomJitter.Next(800, 1400);
+        var delayMs = Random.Shared.Next(RateLimitMinMs, RateLimitMaxMs);
         return Task.Delay(delayMs, ct);
     }
 

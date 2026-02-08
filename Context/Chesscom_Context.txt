@@ -1,0 +1,1077 @@
+# Context Dump: Chess.com
+# Date: 2026-02-07 18:18:51
+# File Count: 9
+
+===== BEGIN: Docs\ChesscomDownloaderService.md =====
+# ChesscomDownloaderService.md
+
+## Service Implementation: ChesscomDownloaderService
+
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `HttpClient`  
+**Thread Safety:** Not safe for concurrent calls (uses a shared `Random` instance).
+
+## 1. Objective
+
+Download all Chess.com monthly archives for a user and combine them into a single PGN file.
+
+## 2. Public API (Actual)
+
+```csharp
+public interface IChesscomDownloaderService
+{
+    Task<List<string>> GetArchivesAsync(string username, CancellationToken ct = default);
+    Task<string> DownloadPlayerGamesPgnAsync(string username, int year, int month, CancellationToken ct = default);
+}
+```
+
+## 3. High-Level Pipeline (Actual)
+
+1. **Fetch archives list** from `https://api.chess.com/pub/player/{username}/games/archives`.
+2. **Iterate archives** in returned order.
+3. **Download PGN** for each `year/month` from:
+   - `https://api.chess.com/pub/player/{username}/games/{year}/{month}/pgn`
+4. **Append** each monthly PGN to a temp output file with a blank‑line separator.
+5. **Replace output** via `FileReplacementHelper.ReplaceFile`.
+
+## 4. Rate Limiting
+
+Each request is delayed by **800–1400 ms** to be polite to the API.
+
+## 5. UI Integration Notes (Actual)
+
+The ViewModel:
+- Parses archive URLs into `(year, month)`.
+- Writes to `{output}.tmp` and replaces on success.
+- Reports progress by archive count.
+
+## 6. Limitations
+
+- No retry logic per archive download (failures are counted and skipped).
+- Output order matches the Chess.com API archive order.
+===== END: Docs\ChesscomDownloaderService.md =====
+
+===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helper class for file/folder pickers in WinUI 3 Unpackaged apps.
+/// Handles the IInitializeWithWindow pattern required for unpackaged apps.
+/// </summary>
+public static class FilePickerHelper
+{
+    /// <summary>
+    /// Opens a file picker to select a single file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSingleFileAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        // Initialize with window handle for unpackaged apps
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickSingleFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to select multiple files.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <param name="fileTypeFilters">File type filters (e.g., ".pgn", ".txt").</param>
+    /// <returns>The selected StorageFiles, or empty if cancelled.</returns>
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
+        nint windowHandle,
+        string? settingsIdentifier,
+        params string[] fileTypeFilters)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileOpenPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
+        {
+            picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
+        }
+
+        if (!addedFilter)
+        {
+            picker.FileTypeFilter.Add("*");
+        }
+
+        return await picker.PickMultipleFilesAsync();
+    }
+
+    /// <summary>
+    /// Opens a file picker to save a file.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="suggestedFileName">Suggested file name.</param>
+    /// <param name="fileTypeChoices">Dictionary of file type descriptions to extensions.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFile, or null if cancelled.</returns>
+    public static async Task<StorageFile?> PickSaveFileAsync(
+        nint windowHandle,
+        string suggestedFileName,
+        Dictionary<string, IList<string>> fileTypeChoices,
+        string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FileSavePicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.SuggestedFileName = suggestedFileName;
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
+        foreach (var choice in fileTypeChoices)
+        {
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
+        }
+
+        return await picker.PickSaveFileAsync();
+    }
+
+    /// <summary>
+    /// Opens a folder picker to select a folder.
+    /// </summary>
+    /// <param name="windowHandle">The HWND of the main window.</param>
+    /// <param name="settingsIdentifier">Identifier to persist picker location and view settings.</param>
+    /// <returns>The selected StorageFolder, or null if cancelled.</returns>
+    public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
+    {
+        ValidateWindowHandle(windowHandle);
+        var picker = new FolderPicker();
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+        picker.ViewMode = PickerViewMode.List;
+        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+        picker.FileTypeFilter.Add("*");
+        if (!string.IsNullOrWhiteSpace(settingsIdentifier))
+        {
+            picker.SettingsIdentifier = settingsIdentifier;
+        }
+
+        return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+}
+===== END: PgnTools\Helpers\FilePickerHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileReplacementHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+
+namespace PgnTools.Helpers;
+
+public static class FileReplacementHelper
+{
+    private const int MaxReplaceAttempts = 6;
+
+    public static string CreateTempFilePath(string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return Path.Combine(directory, tempName);
+    }
+
+    public static void ReplaceFile(string tempFilePath, string destinationPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                Thread.Sleep(attempt * 100);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    public static async Task ReplaceFileAsync(string tempFilePath, string destinationPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tempFilePath))
+        {
+            throw new ArgumentException("Temp file path is required.", nameof(tempFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
+        }
+
+        if (!File.Exists(tempFilePath))
+        {
+            throw new FileNotFoundException("Temp file not found.", tempFilePath);
+        }
+
+        if (Path.GetDirectoryName(destinationPath) is { Length: > 0 } directory)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= MaxReplaceAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var backupPath = CreateBackupPath(destinationPath);
+                try
+                {
+                    File.Replace(tempFilePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+                    TryDeleteBackup(backupPath);
+                    return;
+                }
+                catch (FileNotFoundException)
+                {
+                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    return;
+                }
+            }
+            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
+            {
+                lastError = ex;
+                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException(
+            $"Failed to replace '{destinationPath}' after {MaxReplaceAttempts} attempts. The file may be locked by another process.",
+            lastError);
+    }
+
+    private static string CreateBackupPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Path.GetTempPath();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "output";
+        }
+
+        var backupName = $".{fileName}.{Guid.NewGuid():N}.bak";
+        return Path.Combine(directory, backupName);
+    }
+
+    private static void TryDeleteBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch
+        {
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileReplacementHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\FileValidationHelper.cs =====
+// PGNTOOLS-TABLEBASES-BEGIN
+using System.IO;
+using Windows.Storage;
+
+namespace PgnTools.Helpers;
+
+/// <summary>
+/// Helpers for validating file and folder access selected via pickers.
+/// </summary>
+public static class FileValidationHelper
+{
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateReadableFileAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public static async Task<(bool Success, string? ErrorMessage)> ValidateWritableFolderAsync(string folderPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return (false, "Folder path is empty.");
+            }
+
+            Directory.CreateDirectory(folderPath);
+
+            var testFile = Path.Combine(folderPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(testFile, "test");
+            File.Delete(testFile);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+}
+// PGNTOOLS-TABLEBASES-END
+===== END: PgnTools\Helpers\FileValidationHelper.cs =====
+
+===== BEGIN: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+namespace PgnTools.Helpers;
+
+public static class PgnHeaderExtensions
+{
+    public static bool TryGetHeaderValue(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        if (headers.TryGetValue(key, out var found))
+        {
+            value = found ?? string.Empty;
+            return true;
+        }
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyDictionary<string, string> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+
+    public static bool TryGetHeaderValue(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        out string value)
+    {
+        if (headers == null)
+        {
+            throw new ArgumentNullException(nameof(headers));
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        for (var i = headers.Count - 1; i >= 0; i--)
+        {
+            var header = headers[i];
+            if (string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    public static string? GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : null;
+    }
+
+    public static string GetHeaderValueOrDefault(
+        this IReadOnlyList<KeyValuePair<string, string>> headers,
+        string key,
+        string defaultValue)
+    {
+        return headers.TryGetHeaderValue(key, out var value) ? value : defaultValue;
+    }
+}
+===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
+
+===== BEGIN: PgnTools\Services\ChesscomDownloaderService.cs =====
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+
+namespace PgnTools.Services;
+
+public interface IChesscomDownloaderService
+{
+    Task<List<string>> GetArchivesAsync(string username, CancellationToken ct = default);
+    Task<string> DownloadPlayerGamesPgnAsync(string username, int year, int month, CancellationToken ct = default);
+}
+
+public class ChesscomDownloaderService : IChesscomDownloaderService
+{
+    private static readonly HttpClient HttpClient = CreateClient();
+    private static readonly Random RandomJitter = new();
+
+    public async Task<List<string>> GetArchivesAsync(string username, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            throw new ArgumentException("Username is required.", nameof(username));
+        }
+
+        var url = $"https://api.chess.com/pub/player/{username}/games/archives";
+        await ApplyRateLimitAsync(ct);
+
+        var response = await HttpClient.GetFromJsonAsync<ArchiveResponse>(url, cancellationToken: ct);
+        return response?.Archives ?? new List<string>();
+    }
+
+    public async Task<string> DownloadPlayerGamesPgnAsync(string username, int year, int month, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            throw new ArgumentException("Username is required.", nameof(username));
+        }
+
+        var url = $"https://api.chess.com/pub/player/{username}/games/{year}/{month:D2}/pgn";
+        await ApplyRateLimitAsync(ct);
+        return await HttpClient.GetStringAsync(url, ct);
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
+    }
+
+    private static Task ApplyRateLimitAsync(CancellationToken ct)
+    {
+        var delayMs = RandomJitter.Next(800, 1400);
+        return Task.Delay(delayMs, ct);
+    }
+
+    private sealed class ArchiveResponse
+    {
+        [JsonPropertyName("archives")]
+        public List<string> Archives { get; set; } = new();
+    }
+}
+===== END: PgnTools\Services\ChesscomDownloaderService.cs =====
+
+===== BEGIN: PgnTools\ViewModels\Tools\ChesscomDownloaderViewModel.cs =====
+using System.IO;
+using PgnTools.Helpers;
+
+namespace PgnTools.ViewModels.Tools;
+
+/// <summary>
+/// ViewModel for the Chess.com Downloader tool.
+/// </summary>
+public partial class ChesscomDownloaderViewModel(
+    IChesscomDownloaderService service,
+    IWindowService windowService,
+    IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
+{
+    private readonly IChesscomDownloaderService _service = service;
+    private readonly IAppSettingsService _settings = settings;
+    private readonly IWindowService _windowService = windowService;
+    private CancellationTokenSource? _cancellationTokenSource;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposed;
+    private const string SettingsPrefix = nameof(ChesscomDownloaderViewModel);
+    private const int BufferSize = 65536;
+
+    [ObservableProperty]
+    private string _username = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _outputFileName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRunning;
+
+    [ObservableProperty]
+    private string _statusMessage = "Enter a Chess.com username";
+
+    [ObservableProperty]
+    private double _progressValue;
+    public void Initialize()
+    {
+        Title = "Chess.com Downloader";
+        StatusSeverity = InfoBarSeverity.Informational;
+        LoadState();
+    }
+    [RelayCommand]
+    private async Task SelectOutputFileAsync()
+    {
+        try
+        {
+            var suggestedName = string.IsNullOrWhiteSpace(Username)
+                ? "chesscom_games.pgn"
+                : $"{Username}_games.pgn";
+
+            var file = await FilePickerHelper.PickSaveFileAsync(
+                _windowService.WindowHandle,
+                suggestedName,
+                new Dictionary<string, IList<string>>
+                {
+                    { "PGN Files", [".pgn"] }
+                },
+                $"{SettingsPrefix}.Picker.Output");
+
+            if (file != null)
+            {
+                OutputFilePath = file.Path;
+                OutputFileName = file.Name;
+                StatusMessage = $"Selected output: {file.Name}";
+                StatusSeverity = InfoBarSeverity.Informational;
+    }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error selecting output file: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+    }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRun))]
+    private async Task DownloadAllAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Username))
+        {
+            return;
+    }
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            await SelectOutputFileAsync();
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                return;
+    }
+        }
+
+        if (!await _executionLock.WaitAsync(0))
+        {
+            return;
+    }
+        try
+        {
+            IsRunning = true;
+            ProgressValue = 0;
+            StatusMessage = "Fetching archives...";
+            StatusSeverity = InfoBarSeverity.Informational;
+            StartProgressTimer();
+            StatusDetail = BuildProgressDetail(0);
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            var archives = await _service.GetArchivesAsync(Username, _cancellationTokenSource.Token);
+            if (archives.Count == 0)
+            {
+                StatusMessage = "No archives found for this user.";
+                StatusSeverity = InfoBarSeverity.Warning;
+                StatusDetail = BuildProgressDetail(0, 0, 0, "archives");
+                return;
+    }
+            var outputFullPath = Path.GetFullPath(OutputFilePath);
+            var tempOutputPath = outputFullPath + ".tmp";
+            var completedWrite = false;
+
+            if (Path.GetDirectoryName(outputFullPath) is { } directory)
+            {
+                Directory.CreateDirectory(directory);
+    }
+            var completed = 0;
+            var failed = 0;
+            var firstOutput = true;
+
+            try
+            {
+                await using (var outputStream = new FileStream(
+                    tempOutputPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    BufferSize,
+                    FileOptions.SequentialScan | FileOptions.Asynchronous))
+                using (var writer = new StreamWriter(outputStream, new System.Text.UTF8Encoding(false), BufferSize, leaveOpen: true))
+                {
+                    for (var i = 0; i < archives.Count; i++)
+                    {
+                        _cancellationTokenSource.Token.ThrowIfCancellationRequested();
+
+                        if (!TryParseArchive(archives[i], out var year, out var month))
+                        {
+                            failed++;
+                            continue;
+    }
+                        StatusMessage = $"Downloading {year}/{month:D2} ({i + 1}/{archives.Count})...";
+
+                        try
+                        {
+                            var pgn = await _service.DownloadPlayerGamesPgnAsync(Username, year, month, _cancellationTokenSource.Token);
+                            if (!firstOutput)
+                            {
+                                await writer.WriteLineAsync();
+                                await writer.WriteLineAsync();
+    }
+                            if (!string.IsNullOrWhiteSpace(pgn))
+                            {
+                                await writer.WriteLineAsync(pgn.TrimEnd());
+    }
+                            firstOutput = false;
+                            completed++;
+    }
+                        catch
+                        {
+                            failed++;
+    }
+                        ProgressValue = (i + 1) / (double)archives.Count * 100.0;
+                        StatusDetail = BuildProgressDetail(ProgressValue, i + 1, archives.Count, "archives");
+    }
+                    await writer.FlushAsync();
+    }
+                FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+                completedWrite = true;
+    }
+            finally
+            {
+                if (!completedWrite && File.Exists(tempOutputPath))
+                {
+                    try
+                    {
+                        File.Delete(tempOutputPath);
+    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            StatusMessage = $"Download complete. {completed:N0} archive(s) saved{(failed > 0 ? $", {failed:N0} failed." : ".")}";
+            StatusSeverity = failed > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+            StatusDetail = BuildProgressDetail(100, completed + failed, archives.Count, "archives");
+    }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Download cancelled";
+            StatusSeverity = InfoBarSeverity.Warning;
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error: {ex.Message}";
+            StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+        finally
+        {
+            IsRunning = false;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            _executionLock.Release();
+            StopProgressTimer();
+    }
+    }
+
+    private bool CanRun() =>
+        !IsRunning && !string.IsNullOrWhiteSpace(Username);
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
+        StatusSeverity = InfoBarSeverity.Warning;
+        StatusDetail = BuildProgressDetail(ProgressValue);
+    }
+    partial void OnUsernameChanged(string value)
+    {
+        DownloadAllCommand.NotifyCanExecuteChanged();
+    }
+    partial void OnIsRunningChanged(bool value)
+    {
+        DownloadAllCommand.NotifyCanExecuteChanged();
+    }
+    private static bool TryParseArchive(string archiveUrl, out int year, out int month)
+    {
+        year = 0;
+        month = 0;
+
+        if (string.IsNullOrWhiteSpace(archiveUrl))
+        {
+            return false;
+    }
+        var parts = archiveUrl.TrimEnd('/').Split('/');
+        if (parts.Length < 2)
+        {
+            return false;
+    }
+        return int.TryParse(parts[^2], out year) && int.TryParse(parts[^1], out month);
+    }
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+    }
+        _disposed = true;
+        SaveState();
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _executionLock.Dispose();
+    }
+    private void LoadState()
+    {
+        Username = _settings.GetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
+        OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
+    }
+    private void SaveState()
+    {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+    }
+}
+
+
+
+
+
+
+===== END: PgnTools\ViewModels\Tools\ChesscomDownloaderViewModel.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\ChesscomDownloaderPage.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.ChesscomDownloaderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+            <TextBlock Text="Chess.com Downloader" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Download all monthly PGN archives for a Chess.com username."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <StackPanel Grid.Row="1" Spacing="12" Margin="0,0,0,24">
+            <TextBlock Text="Username"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBox PlaceholderText="e.g. Hikaru"
+                     Text="{x:Bind ViewModel.Username, Mode=TwoWay}"/>
+
+            <TextBlock Text="Output File"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox Grid.Column="0"
+                         PlaceholderText="Select output PGN..."
+                         Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}"
+                         IsReadOnly="True"
+                         Margin="0,0,12,0"/>
+
+                <Button Grid.Column="1"
+                        Content="Browse..."
+                        Command="{x:Bind ViewModel.SelectOutputFileCommand}"
+                        Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Download"
+                        Command="{x:Bind ViewModel.DownloadAllCommand}"
+                        Style="{StaticResource PrimaryAction}"/>
+
+                <Button Content="Cancel"
+                        Command="{x:Bind ViewModel.CancelCommand}"
+                        Style="{StaticResource Action}"
+                        IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Status -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+
+
+
+===== END: PgnTools\Views\Tools\ChesscomDownloaderPage.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\ChesscomDownloaderPage.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+/// <summary>
+/// Page for the Chess.com Downloader tool.
+/// </summary>
+public sealed partial class ChesscomDownloaderPage : Page
+{
+    private readonly bool _ownsViewModel;
+    public ChesscomDownloaderViewModel ViewModel { get; }
+
+    public ChesscomDownloaderPage() : this(App.GetService<ChesscomDownloaderViewModel>(), ownsViewModel: true)
+    {
+    }
+
+    public ChesscomDownloaderPage(ChesscomDownloaderViewModel viewModel, bool ownsViewModel = false)
+    {
+        ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
+        _ownsViewModel = ownsViewModel;
+        this.InitializeComponent();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        if (_ownsViewModel)
+        {
+            if (ViewModel.IsRunning)
+            {
+                ViewModel.CancelCommand.Execute(null);
+            }
+            else
+            {
+                ViewModel.Dispose();
+            }
+        }
+    }
+}
+
+===== END: PgnTools\Views\Tools\ChesscomDownloaderPage.xaml.cs =====
+

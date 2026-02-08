@@ -28,10 +28,7 @@ public sealed partial class ChesscomDownloaderPage : Page
             {
                 ViewModel.CancelCommand.Execute(null);
             }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.Dispose();
         }
     }
 }
