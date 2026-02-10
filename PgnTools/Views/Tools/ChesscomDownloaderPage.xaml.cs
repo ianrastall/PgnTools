@@ -6,13 +6,13 @@ namespace PgnTools.Views.Tools;
 public sealed partial class ChesscomDownloaderPage : Page
 {
     private readonly bool _ownsViewModel;
-    public ChesscomDownloaderViewModel ViewModel { get; }
+    public ChesscomToolsViewModel ViewModel { get; }
 
-    public ChesscomDownloaderPage() : this(App.GetService<ChesscomDownloaderViewModel>(), ownsViewModel: true)
+    public ChesscomDownloaderPage() : this(App.GetService<ChesscomToolsViewModel>(), ownsViewModel: true)
     {
     }
 
-    public ChesscomDownloaderPage(ChesscomDownloaderViewModel viewModel, bool ownsViewModel = false)
+    public ChesscomDownloaderPage(ChesscomToolsViewModel viewModel, bool ownsViewModel = false)
     {
         ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
         _ownsViewModel = ownsViewModel;
@@ -24,11 +24,22 @@ public sealed partial class ChesscomDownloaderPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            if (ViewModel.IsRunning)
+            if (ViewModel.UserDownloader.IsRunning || ViewModel.MonthlyDownloader.IsRunning)
             {
-                ViewModel.CancelCommand.Execute(null);
+                if (ViewModel.UserDownloader.IsRunning)
+                {
+                    ViewModel.UserDownloader.CancelCommand.Execute(null);
+                }
+
+                if (ViewModel.MonthlyDownloader.IsRunning)
+                {
+                    ViewModel.MonthlyDownloader.CancelCommand.Execute(null);
+                }
             }
-            ViewModel.Dispose();
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 }

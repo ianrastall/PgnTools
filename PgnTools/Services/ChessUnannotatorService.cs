@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using PgnTools.Helpers;
 
@@ -16,7 +17,7 @@ public interface IChessUnannotatorService
 }
 
 /// <summary>
-/// Service that removes comments, variations, and NAGs from PGN move text.
+/// Service that removes comments, variations, NAGs, and symbolic annotations from PGN move text.
 /// </summary>
 public class ChessUnannotatorService : IChessUnannotatorService
 {
@@ -28,8 +29,8 @@ public class ChessUnannotatorService : IChessUnannotatorService
 
     public ChessUnannotatorService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
-        _pgnReader = pgnReader;
-        _pgnWriter = pgnWriter;
+        _pgnReader = pgnReader ?? throw new ArgumentNullException(nameof(pgnReader));
+        _pgnWriter = pgnWriter ?? throw new ArgumentNullException(nameof(pgnWriter));
     }
 
     public async Task UnannotateAsync(
@@ -38,9 +39,18 @@ public class ChessUnannotatorService : IChessUnannotatorService
         IProgress<(long games, string message)>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(inputFilePath))
+        {
+            throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFilePath));
+        }
+
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
         {
@@ -53,50 +63,59 @@ public class ChessUnannotatorService : IChessUnannotatorService
                 "Input and output files must be different. To modify in-place, use a temporary output file first.");
         }
 
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
+
         long games = 0;
-        var lastProgressReport = DateTime.MinValue;
+        var lastProgressReportUtc = DateTime.MinValue;
+        var lastReportedGame = 0L;
 
         try
         {
-            await using (var inputStream = new FileStream(
+            await using var inputStream = new FileStream(
                 inputFullPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous))
-            await using (var outputStream = new FileStream(
+                FileOptions.SequentialScan | FileOptions.Asynchronous);
+            await using var outputStream = new FileStream(
                 tempOutputPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous))
-            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
+                FileOptions.SequentialScan | FileOptions.Asynchronous);
+            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+            await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
             {
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var cleanedMoveText = StripAnnotations(game.MoveText);
+                var cleanedGame = new PgnGame(game.Headers, cleanedMoveText);
+
+                if (games > 0)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var cleanedMoveText = StripAnnotations(game.MoveText);
-                    var cleanedGame = new PgnGame(game.Headers, cleanedMoveText);
-
-                    if (games > 0)
-                    {
-                        await writer.WriteLineAsync();
-                    }
-
-                    await _pgnWriter.WriteGameAsync(writer, cleanedGame, cancellationToken);
-                    games++;
-
-                    if (ShouldReportProgress(games, ref lastProgressReport))
-                    {
-                        progress?.Report((games, $"Processing Game {games:N0}..."));
-                    }
+                    await writer.WriteLineAsync().ConfigureAwait(false);
                 }
 
-                await writer.FlushAsync();
+                await _pgnWriter.WriteGameAsync(writer, cleanedGame, cancellationToken).ConfigureAwait(false);
+                games++;
+
+                if (ShouldReportProgress(games, ref lastProgressReportUtc, ref lastReportedGame))
+                {
+                    progress?.Report((games, $"Processing Game {games:N0}..."));
+                }
             }
+
+            await writer.FlushAsync().ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (games == 0)
             {
@@ -108,7 +127,9 @@ public class ChessUnannotatorService : IChessUnannotatorService
                 return;
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                .ConfigureAwait(false);
             progress?.Report((games, $"Saved {games:N0} games."));
         }
         catch
@@ -127,31 +148,34 @@ public class ChessUnannotatorService : IChessUnannotatorService
         }
     }
 
-    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc, ref long lastReportedGame)
     {
         if (games <= 0)
         {
             return false;
         }
 
-        if (games != 1 && games % ProgressGameInterval != 0)
+        if (games == lastReportedGame)
         {
             return false;
         }
 
         var now = DateTime.UtcNow;
-        if (now - lastReportUtc < ProgressTimeInterval)
+        var dueByCount = games == 1 || games % ProgressGameInterval == 0;
+        var dueByTime = now - lastReportUtc >= ProgressTimeInterval;
+        if (!dueByCount && !dueByTime)
         {
             return false;
         }
 
         lastReportUtc = now;
+        lastReportedGame = games;
         return true;
     }
 
     private static string StripAnnotations(string moveText)
     {
-        if (string.IsNullOrEmpty(moveText))
+        if (string.IsNullOrWhiteSpace(moveText))
         {
             return string.Empty;
         }
@@ -160,7 +184,8 @@ public class ChessUnannotatorService : IChessUnannotatorService
         var inBraceComment = false;
         var inLineComment = false;
         var variationDepth = 0;
-        var lastWasSpace = false;
+        var lastWasSpace = true;
+        var pendingSpace = false;
 
         for (var i = 0; i < moveText.Length; i++)
         {
@@ -171,7 +196,7 @@ public class ChessUnannotatorService : IChessUnannotatorService
                 if (c == '\n' || c == '\r')
                 {
                     inLineComment = false;
-                    Emit(builder, c, ref lastWasSpace);
+                    pendingSpace = true;
                 }
                 continue;
             }
@@ -181,70 +206,99 @@ public class ChessUnannotatorService : IChessUnannotatorService
                 if (c == '}')
                 {
                     inBraceComment = false;
-                }
-                continue;
-            }
-
-            if (c == '{')
-            {
-                inBraceComment = true;
-                continue;
-            }
-
-            if (c == ';')
-            {
-                inLineComment = true;
-                continue;
-            }
-
-            if (c == '(')
-            {
-                variationDepth++;
-                continue;
-            }
-
-            if (c == ')')
-            {
-                if (variationDepth > 0)
-                {
-                    variationDepth--;
+                    pendingSpace = true;
                 }
                 continue;
             }
 
             if (variationDepth > 0)
             {
+                if (c == '(')
+                {
+                    variationDepth++;
+                }
+                else if (c == ')')
+                {
+                    variationDepth--;
+                }
+
+                if (variationDepth == 0)
+                {
+                    pendingSpace = true;
+                }
+
+                continue;
+            }
+
+            if (c == '{')
+            {
+                inBraceComment = true;
+                pendingSpace = true;
+                continue;
+            }
+
+            if (c == ';')
+            {
+                inLineComment = true;
+                pendingSpace = true;
+                continue;
+            }
+
+            if (c == '(')
+            {
+                variationDepth = 1;
+                pendingSpace = true;
+                continue;
+            }
+
+            if (c == ')')
+            {
+                pendingSpace = true;
                 continue;
             }
 
             if (c == '$')
             {
-                while (i + 1 < moveText.Length && char.IsDigit(moveText[i + 1]))
+                if (i + 1 < moveText.Length && char.IsDigit(moveText[i + 1]))
+                {
+                    while (i + 1 < moveText.Length && char.IsDigit(moveText[i + 1]))
+                    {
+                        i++;
+                    }
+
+                    pendingSpace = true;
+                    continue;
+                }
+            }
+
+            if (c is '!' or '?')
+            {
+                while (i + 1 < moveText.Length && moveText[i + 1] is '!' or '?')
                 {
                     i++;
                 }
+
+                pendingSpace = true;
                 continue;
             }
 
-            Emit(builder, c, ref lastWasSpace);
-        }
+            if (char.IsWhiteSpace(c))
+            {
+                pendingSpace = true;
+                continue;
+            }
 
-        return builder.ToString().Trim();
-    }
-
-    private static void Emit(StringBuilder builder, char c, ref bool lastWasSpace)
-    {
-        if (char.IsWhiteSpace(c) && c != '\n' && c != '\r')
-        {
-            if (!lastWasSpace)
+            if (pendingSpace && !lastWasSpace && builder.Length > 0)
             {
                 builder.Append(' ');
                 lastWasSpace = true;
             }
-            return;
+
+            pendingSpace = false;
+            builder.Append(c);
+            lastWasSpace = false;
         }
 
-        builder.Append(c);
-        lastWasSpace = false;
+        return builder.ToString().Trim();
     }
 }

@@ -86,6 +86,8 @@
         <None Remove="Views\Tools\PgnSorterPage.xaml" />
         <None Remove="Views\Tools\EloAdderPage.xaml" />
         <None Remove="Views\Tools\ChesscomDownloaderPage.xaml" />
+        <None Remove="Views\Tools\ChesscomDownloaderView.xaml" />
+        <None Remove="Views\Tools\ChesscomMonthlyDownloaderView.xaml" />
         <None Remove="Views\Tools\LichessDownloaderPage.xaml" />
         <None Remove="Views\Tools\LichessDbDownloaderPage.xaml" />
         <None Remove="Views\Tools\LichessDownloaderView.xaml" />
@@ -184,6 +186,12 @@
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\ChesscomDownloaderPage.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\ChesscomDownloaderView.xaml">
+        <Generator>MSBuild:Compile</Generator>
+      </Page>
+      <Page Update="Views\Tools\ChesscomMonthlyDownloaderView.xaml">
         <Generator>MSBuild:Compile</Generator>
       </Page>
       <Page Update="Views\Tools\LichessDownloaderPage.xaml">

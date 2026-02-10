@@ -123,14 +123,31 @@ public partial class ChessUnannotatorViewModel(
         {
             StatusMessage = "Input and output files must be different.";
             StatusSeverity = InfoBarSeverity.Error;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
             return;
     }
         if (!await _executionLock.WaitAsync(0))
         {
+            StatusMessage = "Un-annotation already in progress.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
             return;
     }
         try
         {
+            var outputDirectory = Path.GetDirectoryName(outputFullPath);
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                var validation = await FileValidationHelper.ValidateWritableFolderAsync(outputDirectory);
+                if (!validation.Success)
+                {
+                    StatusMessage = $"Cannot write to output folder: {validation.ErrorMessage}";
+                    StatusSeverity = InfoBarSeverity.Error;
+                    StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+                    return;
+                }
+            }
+
             IsRunning = true;
             ProgressGames = 0;
             StatusMessage = "Un-annotating PGN...";

@@ -127,6 +127,7 @@ public partial class App : Application
         services.AddTransient<ICheckmateFilterService, CheckmateFilterService>();
         services.AddTransient<IChessAnalyzerService, ChessAnalyzerService>();
         services.AddTransient<IChesscomDownloaderService, ChesscomDownloaderService>();
+        services.AddTransient<IChesscomMonthlyDownloaderService, ChesscomMonthlyDownloaderService>();
         services.AddTransient<IChessUnannotatorService, ChessUnannotatorService>();
         services.AddTransient<IEcoTaggerService, EcoTaggerService>();
         services.AddTransient<IEleganceGoldenValidationService, EleganceGoldenValidationService>();
@@ -160,6 +161,8 @@ public partial class App : Application
         services.AddTransient<CheckmateFilterViewModel>();
         services.AddTransient<ChessAnalyzerViewModel>();
         services.AddTransient<ChesscomDownloaderViewModel>();
+        services.AddTransient<ChesscomMonthlyDownloaderViewModel>();
+        services.AddTransient<ChesscomToolsViewModel>();
         services.AddTransient<ChessUnannotatorViewModel>();
         services.AddTransient<EcoTaggerViewModel>();
         services.AddTransient<EleganceViewModel>();

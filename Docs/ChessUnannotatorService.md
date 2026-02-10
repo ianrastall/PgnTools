@@ -26,11 +26,11 @@ public interface IChessUnannotatorService
 
 ## 3. High-Level Pipeline (Actual)
 
-1. **Validate paths** and create a temp output file.
+1. **Validate paths**, ensure the output directory exists, and create a temp output file.
 2. Stream games from input with `PgnReader`.
 3. Strip annotations from `MoveText` using a custom scanner.
 4. Write cleaned games to temp output.
-5. Replace destination file with `FileReplacementHelper.ReplaceFile`.
+5. Replace destination file with `FileReplacementHelper.ReplaceFileAsync`.
 
 ## 4. Annotation Stripping Rules
 
@@ -39,14 +39,15 @@ The scanner removes:
 - `;` line comments  
 - Variations inside `(...)`  
 - NAGs like `$1`, `$6`, etc.  
+- Symbolic annotations like `!`, `?`, `!!`, `?!`  
 
-Whitespace is normalized to avoid repeated spaces.
+Whitespace is normalized to avoid repeated spaces and to prevent token merges.
 
 ## 5. Progress Reporting
 
-Progress is reported every ~200 games (or 100 ms), with a simple `"Processing Game N..."` message.
+Progress is reported on the first game and then every ~200 games or at least every 100 ms, with a simple `"Processing Game N..."` message.
 
 ## 6. Limitations
 
 - Does not validate move legality.
-- Uses synchronous `ReplaceFile` at the end.
+- Does not attempt to repair malformed PGN beyond stripping annotations.
