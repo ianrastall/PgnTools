@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -133,7 +134,8 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         long gamesKept = 0;
 
         var totalMatches = allMatches.Count;
-        var tempOutputPath = BuildTempOutputPath(outputPath);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputPath);
+        var preserveTempOutput = false;
 
         try
         {
@@ -200,11 +202,27 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 await outputStream.FlushAsync(ct).ConfigureAwait(false);
             }
 
-            ReplaceOutputFile(tempOutputPath, outputPath);
+            try
+            {
+                await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputPath, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                preserveTempOutput = true;
+                throw new IOException(
+                    $"Failed to finalize output file '{outputPath}'. " +
+                    $"The generated PGN was preserved at '{tempOutputPath}'. " +
+                    "Close any app using the destination file, then rename/move the preserved file manually.",
+                    ex);
+            }
         }
         catch
         {
-            TryDeleteFile(tempOutputPath);
+            if (!preserveTempOutput)
+            {
+                TryDeleteFile(tempOutputPath);
+            }
+
             throw;
         }
 
@@ -912,30 +930,6 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
         client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
         return client;
-    }
-
-    private static string BuildTempOutputPath(string outputPath)
-    {
-        var directory = Path.GetDirectoryName(outputPath);
-        var fileName = Path.GetFileName(outputPath);
-
-        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
-        {
-            throw new InvalidOperationException("Output file path must include a valid directory and file name.");
-        }
-
-        return Path.Combine(directory, $"{fileName}.{Guid.NewGuid():N}.tmp");
-    }
-
-    private static void ReplaceOutputFile(string tempPath, string outputPath)
-    {
-        if (File.Exists(outputPath))
-        {
-            File.Replace(tempPath, outputPath, null, ignoreMetadataErrors: true);
-            return;
-        }
-
-        File.Move(tempPath, outputPath, overwrite: true);
     }
 
     private static void TryDeleteFile(string? path)
