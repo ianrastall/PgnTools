@@ -69,6 +69,12 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
 
+                <NavigationViewItem Tag="Compiler" Content="Compiler">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="{StaticResource IconApp}"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+
                 <NavigationViewItem Tag="RemoveDoubles" Content="Deduplicator">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="{StaticResource IconDeduplicate}"/>

@@ -30,6 +30,7 @@ public static class ToolRegistry
         new("CategoryTagger", "Category Tagger", "Tag games by tournament category", "\uE8EC", typeof(CategoryTaggerPage)),
         new("ChessAnalyzer", "Chess Analyzer", "Engine analysis of games", "\uE9D9", typeof(ChessAnalyzerPage)),
         new("ChessComDownloader", "Chess.com", "Download via PubAPI", "\uE896", typeof(ChesscomDownloaderPage)),
+        new("Compiler", "Compiler", "Clone and compile Stockfish from source", "\uE943", typeof(CompilerPage)),
         new("RemoveDoubles", "Deduplicator", "Deduplicate games", "\uE8D4", typeof(RemoveDoublesPage)),
         new("EcoTagger", "ECO Tagger", "Tag games with ECO, Opening, and Variation", "\uE8EC", typeof(EcoTaggerPage)),
         new("EloAdder", "Elo Adder", "Add historical Elos", "\uE8D3", typeof(EloAdderPage)),

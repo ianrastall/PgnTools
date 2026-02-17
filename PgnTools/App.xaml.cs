@@ -133,6 +133,7 @@ public partial class App : Application
         services.AddTransient<IEleganceGoldenValidationService, EleganceGoldenValidationService>();
         services.AddTransient<IEleganceService, EleganceService>();
         services.AddTransient<IEloAdderService, EloAdderService>();
+        services.AddTransient<IStockfishCompilerService, StockfishCompilerService>();
         services.AddTransient<ILc0DownloaderService, Lc0DownloaderService>();
         services.AddTransient<ILichessDbDownloaderService, LichessDbDownloaderService>();
         services.AddTransient<ILichessDownloaderService, LichessDownloaderService>();
@@ -164,6 +165,7 @@ public partial class App : Application
         services.AddTransient<ChesscomMonthlyDownloaderViewModel>();
         services.AddTransient<ChesscomToolsViewModel>();
         services.AddTransient<ChessUnannotatorViewModel>();
+        services.AddTransient<CompilerViewModel>();
         services.AddTransient<EcoTaggerViewModel>();
         services.AddTransient<EleganceViewModel>();
         services.AddTransient<EloAdderViewModel>();

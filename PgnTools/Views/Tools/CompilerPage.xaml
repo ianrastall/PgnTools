@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.CompilerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="2*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="3*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,12">
+            <TextBlock Text="Compiler" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Clone Stockfish source from GitHub and compile locally with your selected build options."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Inputs -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="12" Margin="0,0,0,8">
+                <TextBlock Text="Engine" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <ComboBox ItemsSource="{x:Bind ViewModel.Engines}"
+                          SelectedItem="{x:Bind ViewModel.SelectedEngine, Mode=TwoWay}"/>
+
+                <TextBlock Text="Stockfish Version Preset" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <ComboBox Grid.Column="0"
+                              ItemsSource="{x:Bind ViewModel.AvailableSourceRefs}"
+                              DisplayMemberPath="DisplayName"
+                              SelectedValuePath="Ref"
+                              SelectedValue="{x:Bind ViewModel.SelectedSourceRef, Mode=TwoWay}"
+                              PlaceholderText="Loading available versions..."
+                              Margin="0,0,12,0"/>
+
+                    <Button Grid.Column="1"
+                            Content="Refresh List"
+                            Command="{x:Bind ViewModel.RefreshSourceRefsCommand}"
+                            Style="{StaticResource Action}"/>
+                </Grid>
+
+                <TextBlock Text="Source Ref (branch or tag)" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBox Text="{x:Bind ViewModel.SourceRef, Mode=TwoWay}"
+                         PlaceholderText="master"/>
+
+                <TextBlock Text="GitHub PAT (optional)" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <PasswordBox x:Name="GitHubPatBox"
+                             PasswordRevealMode="Peek"
+                             PlaceholderText="Optional token for authenticated GitHub access"
+                             PasswordChanged="GitHubPatBox_OnPasswordChanged"/>
+
+                <TextBlock Text="Workspace Folder" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox Grid.Column="0"
+                             PlaceholderText="Select workspace folder..."
+                             Text="{x:Bind ViewModel.WorkspaceFolder, Mode=OneWay}"
+                             IsReadOnly="True"
+                             MinHeight="38"
+                             VerticalAlignment="Center"
+                             Margin="0,0,12,0"/>
+
+                    <Button Grid.Column="1"
+                            Content="Browse..."
+                            Command="{x:Bind ViewModel.BrowseWorkspaceCommand}"
+                            MinHeight="38"
+                            VerticalAlignment="Center"
+                            Style="{StaticResource Action}"/>
+                </Grid>
+
+                <TextBlock Text="Compiler Toolchain" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind ViewModel.ToolchainSummary, Mode=OneWay}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="Recommended Compiler"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="{x:Bind ViewModel.RecommendedCompiler, Mode=OneWay}"/>
+                    <TextBlock Text="Active MSYS2 Root"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="{x:Bind ViewModel.ActiveMsysRoot, Mode=OneWay}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button Content="Detect Toolchain"
+                            Command="{x:Bind ViewModel.DetectToolchainCommand}"
+                            Style="{StaticResource Action}"/>
+                    <Button Content="Install/Repair Toolchain"
+                            Command="{x:Bind ViewModel.InstallOrRepairToolchainCommand}"
+                            Style="{StaticResource Action}"/>
+                </StackPanel>
+
+                <CheckBox Content="Automatically install missing compiler tools (MSYS2 + packages)"
+                          IsChecked="{x:Bind ViewModel.AutoInstallToolchain, Mode=TwoWay}"/>
+
+                <TextBlock Text="Build Options" Style="{StaticResource SubtitleTextBlockStyle}"/>
+
+                <Grid ColumnSpacing="12" RowSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
+                        <TextBlock Text="Build Target" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <ComboBox ItemsSource="{x:Bind ViewModel.AvailableBuildTargets}"
+                                  SelectedItem="{x:Bind ViewModel.SelectedBuildTarget, Mode=TwoWay}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
+                        <TextBlock Text="Compiler" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <ComboBox ItemsSource="{x:Bind ViewModel.AvailableCompilers}"
+                                  SelectedItem="{x:Bind ViewModel.SelectedCompiler, Mode=TwoWay}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="0" Spacing="4">
+                        <TextBlock Text="Architecture" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <ComboBox ItemsSource="{x:Bind ViewModel.AvailableArchitectures}"
+                                  SelectedItem="{x:Bind ViewModel.SelectedArchitecture, Mode=TwoWay}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                        <TextBlock Text="Parallel Jobs" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBox Text="{x:Bind ViewModel.ParallelJobs, Mode=TwoWay}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="16">
+                        <CheckBox Content="Run make net"
+                                  IsChecked="{x:Bind ViewModel.DownloadNetwork, Mode=TwoWay}"/>
+                        <CheckBox Content="Run make strip"
+                                  IsChecked="{x:Bind ViewModel.StripExecutable, Mode=TwoWay}"/>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Primary Actions -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12">
+            <Button Content="Start Compile"
+                    Command="{x:Bind ViewModel.StartCompileCommand}"
+                    Style="{StaticResource PrimaryAction}"/>
+
+            <Button Content="Cancel"
+                    Command="{x:Bind ViewModel.CancelCommand}"
+                    Style="{StaticResource Action}"
+                    IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+
+            <Button Content="Clear Output"
+                    Command="{x:Bind ViewModel.ClearOutputCommand}"
+                    Style="{StaticResource Action}"/>
+
+            <Button Content="Copy Log"
+                    Command="{x:Bind ViewModel.CopyOutputCommand}"
+                    Style="{StaticResource Action}"/>
+        </StackPanel>
+
+        <!-- Status and Output -->
+        <Grid Grid.Row="3" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <controls:ToolStatusBar Grid.Row="0"
+                                    StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+
+            <TextBlock Grid.Row="1"
+                       Text="Build Output"
+                       Style="{StaticResource SubtitleTextBlockStyle}"/>
+
+            <TextBox Grid.Row="2"
+                     Text="{x:Bind ViewModel.BuildOutput, Mode=OneWay}"
+                     IsReadOnly="True"
+                     TextWrapping="NoWrap"
+                     AcceptsReturn="True"
+                     FontFamily="Consolas"/>
+        </Grid>
+    </Grid>
+</Page>
