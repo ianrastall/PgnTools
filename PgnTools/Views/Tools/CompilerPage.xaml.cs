@@ -1,7 +1,7 @@
 namespace PgnTools.Views.Tools;
 
 /// <summary>
-/// Page for compiling Stockfish from source.
+/// Page for compiling chess engines from source.
 /// </summary>
 public sealed partial class CompilerPage : Page
 {

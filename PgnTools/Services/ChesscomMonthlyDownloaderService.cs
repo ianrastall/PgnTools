@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -12,7 +13,8 @@ public sealed record ChesscomMonthlyCrawlOptions(
     string SeedFilePath,
     string ProcessedFilePath,
     string OutputFilePath,
-    string? LogFilePath = null);
+    string? LogFilePath = null,
+    bool ExcludeBullet = false);
 
 public sealed record ChesscomMonthlyCrawlProgress(
     string Message,
@@ -156,6 +158,7 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                 await WriteLogAsync(logWriter, $"Started {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}").ConfigureAwait(false);
                 await WriteLogAsync(logWriter, $"Target month: {options.TargetMonth:yyyy-MM}").ConfigureAwait(false);
                 await WriteLogAsync(logWriter, $"Minimum Elo: {options.MinElo}").ConfigureAwait(false);
+                await WriteLogAsync(logWriter, $"Exclude bullet: {options.ExcludeBullet}").ConfigureAwait(false);
                 await WriteLogAsync(logWriter, $"Seed list: {seedPath}").ConfigureAwait(false);
                 await WriteLogAsync(logWriter, $"Processed list: {processedPath}").ConfigureAwait(false);
                 await WriteLogAsync(logWriter, $"Output file: {outputPath}").ConfigureAwait(false);
@@ -192,6 +195,13 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
             lockFiles.Add(AcquireLockFile(seedPath));
             lockFiles.Add(AcquireLockFile(processedPath));
             lockFiles.Add(AcquireLockFile(outputPath));
+            var seenGameKeys = await LoadExistingGameKeysAsync(outputPath, ct).ConfigureAwait(false);
+
+            if (logWriter != null)
+            {
+                await WriteLogAsync(logWriter, $"Existing games tracked: {seenGameKeys.Count:N0}").ConfigureAwait(false);
+                await logWriter.FlushAsync().ConfigureAwait(false);
+            }
 
             await using var outputStream = new FileStream(
                 outputPath,
@@ -241,6 +251,7 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                 var playerFailed = false;
                 var playerCompleted = false;
                 var playerCancelled = false;
+                var playerDuplicatesSkipped = 0;
                 var seedWritten = false;
                 var processedWritten = false;
                 Exception? playerError = null;
@@ -268,13 +279,37 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                         {
                             ct.ThrowIfCancellationRequested();
 
-                            if (!IsEligibleGame(game, options.MinElo))
+                            if (!IsEligibleGame(game, options.MinElo, options.ExcludeBullet))
                             {
                                 continue;
                             }
 
                             if (!string.IsNullOrWhiteSpace(game.Pgn))
                             {
+                                if (TryGetOpponent(normalizedPlayer, game, out var opponent) &&
+                                    await TryAddPlayerAsync(opponent, allPlayers, seedWriter).ConfigureAwait(false))
+                                {
+                                    newPlayers++;
+                                    playerNewPlayers++;
+                                    seedWritten = true;
+                                    discoveredPlayers?.Add(opponent);
+
+                                    if (!processedPlayers.Contains(opponent) && queuedPlayers.Add(opponent))
+                                    {
+                                        pending.Enqueue(opponent);
+                                        totalPlayers++;
+                                    }
+                                }
+
+                                var gameKeys = GetGameKeys(game);
+                                if (IsDuplicateGame(seenGameKeys, gameKeys))
+                                {
+                                    playerDuplicatesSkipped++;
+                                    continue;
+                                }
+
+                                RegisterGameKeys(seenGameKeys, gameKeys);
+
                                 if (needsSeparator)
                                 {
                                     await outputWriter.WriteLineAsync().ConfigureAwait(false);
@@ -291,21 +326,6 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                                     gamesSinceFlush = 0;
                                     await outputWriter.FlushAsync().ConfigureAwait(false);
                                     await outputStream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                                }
-
-                                if (TryGetOpponent(normalizedPlayer, game, out var opponent) &&
-                                    await TryAddPlayerAsync(opponent, allPlayers, seedWriter).ConfigureAwait(false))
-                                {
-                                    newPlayers++;
-                                    playerNewPlayers++;
-                                    seedWritten = true;
-                                    discoveredPlayers?.Add(opponent);
-
-                                    if (!processedPlayers.Contains(opponent) && queuedPlayers.Add(opponent))
-                                    {
-                                        pending.Enqueue(opponent);
-                                        totalPlayers++;
-                                    }
                                 }
                             }
                         }
@@ -368,9 +388,19 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                         }
                         else if (playerGames > 0)
                         {
+                            var duplicateDetail = playerDuplicatesSkipped > 0
+                                ? $" duplicates={playerDuplicatesSkipped:N0}"
+                                : string.Empty;
                             await WriteLogAsync(
                                     logWriter,
-                                    $"PLAYER done: {normalizedPlayer} games={playerGames:N0} newPlayers={playerNewPlayers:N0}")
+                                    $"PLAYER done: {normalizedPlayer} games={playerGames:N0} newPlayers={playerNewPlayers:N0}{duplicateDetail}")
+                                .ConfigureAwait(false);
+                        }
+                        else if (playerDuplicatesSkipped > 0 || playerNewPlayers > 0)
+                        {
+                            await WriteLogAsync(
+                                    logWriter,
+                                    $"PLAYER done: {normalizedPlayer} games=0 newPlayers={playerNewPlayers:N0} duplicates={playerDuplicatesSkipped:N0}")
                                 .ConfigureAwait(false);
                         }
                         else
@@ -394,13 +424,33 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
                     }
                 }
 
-                var message = playerFailed
-                    ? $"{normalizedPlayer}: error"
-                    : playerGames > 0
-                        ? playerNewPlayers > 0
-                            ? $"{normalizedPlayer}: {playerGames} games | +{playerNewPlayers} new players"
-                            : $"{normalizedPlayer}: {playerGames} games"
+                string message;
+                if (playerFailed)
+                {
+                    message = $"{normalizedPlayer}: error";
+                }
+                else
+                {
+                    var messageParts = new List<string>(3);
+                    if (playerGames > 0)
+                    {
+                        messageParts.Add($"{playerGames} games");
+                    }
+
+                    if (playerNewPlayers > 0)
+                    {
+                        messageParts.Add($"+{playerNewPlayers} new players");
+                    }
+
+                    if (playerDuplicatesSkipped > 0)
+                    {
+                        messageParts.Add($"{playerDuplicatesSkipped} duplicates skipped");
+                    }
+
+                    message = messageParts.Count > 0
+                        ? $"{normalizedPlayer}: {string.Join(" | ", messageParts)}"
                         : $"{normalizedPlayer}: no games";
+                }
 
                 progress?.Report(new ChesscomMonthlyCrawlProgress(
                     message,
@@ -561,9 +611,14 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
             lastError);
     }
 
-    private static bool IsEligibleGame(ChesscomMonthlyGame game, int minElo)
+    private static bool IsEligibleGame(ChesscomMonthlyGame game, int minElo, bool excludeBullet)
     {
         if (game.White == null || game.Black == null)
+        {
+            return false;
+        }
+
+        if (excludeBullet && IsBulletGame(game))
         {
             return false;
         }
@@ -636,6 +691,207 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
         }
 
         return username.Trim().ToLowerInvariant();
+    }
+
+    private static bool IsBulletGame(ChesscomMonthlyGame game)
+    {
+        if (!string.IsNullOrWhiteSpace(game.TimeClass))
+        {
+            return string.Equals(game.TimeClass.Trim(), "bullet", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return !string.IsNullOrWhiteSpace(game.TimeControl) &&
+               !game.TimeControl.Contains('/', StringComparison.Ordinal) &&
+               TryParseLeadingInt(game.TimeControl.AsSpan(), out var seconds) &&
+               seconds < 180;
+    }
+
+    private static bool TryParseLeadingInt(ReadOnlySpan<char> text, out int value)
+    {
+        value = 0;
+        var length = 0;
+        while (length < text.Length && char.IsDigit(text[length]))
+        {
+            length++;
+        }
+
+        if (length == 0)
+        {
+            return false;
+        }
+
+        return int.TryParse(text[..length], out value);
+    }
+
+    private static bool IsDuplicateGame(HashSet<string> seenGameKeys, IReadOnlyList<string> gameKeys)
+    {
+        for (var i = 0; i < gameKeys.Count; i++)
+        {
+            if (seenGameKeys.Contains(gameKeys[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void RegisterGameKeys(HashSet<string> seenGameKeys, IReadOnlyList<string> gameKeys)
+    {
+        for (var i = 0; i < gameKeys.Count; i++)
+        {
+            seenGameKeys.Add(gameKeys[i]);
+        }
+    }
+
+    private static List<string> GetGameKeys(ChesscomMonthlyGame game)
+    {
+        var keys = new List<string>(3);
+        AddGameKey(keys, BuildUuidGameKey(game.Uuid));
+        AddGameKey(keys, BuildUrlGameKey(game.Url));
+
+        if (keys.Count == 0 && TryExtractLinkFromPgn(game.Pgn, out var link))
+        {
+            AddGameKey(keys, BuildUrlGameKey(link));
+        }
+
+        if (keys.Count == 0 && !string.IsNullOrWhiteSpace(game.Pgn))
+        {
+            AddGameKey(keys, BuildPgnGameKey(game.Pgn));
+        }
+
+        return keys;
+    }
+
+    private static async Task<HashSet<string>> LoadExistingGameKeysAsync(string outputPath, CancellationToken ct)
+    {
+        var gameKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!File.Exists(outputPath))
+        {
+            return gameKeys;
+        }
+
+        await using var stream = new FileStream(
+            outputPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            FileOptions.SequentialScan | FileOptions.Asynchronous);
+        using var reader = new StreamReader(
+            stream,
+            new UTF8Encoding(false),
+            detectEncodingFromByteOrderMarks: true,
+            bufferSize: BufferSize,
+            leaveOpen: true);
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var line = await reader.ReadLineAsync().ConfigureAwait(false);
+            if (line == null)
+            {
+                break;
+            }
+
+            if (TryGetQuotedHeaderValue(line, "Link", out var link))
+            {
+                AddGameKey(gameKeys, BuildUrlGameKey(link));
+                continue;
+            }
+
+            if (TryGetQuotedHeaderValue(line, "UUID", out var uuid))
+            {
+                AddGameKey(gameKeys, BuildUuidGameKey(uuid));
+            }
+        }
+
+        return gameKeys;
+    }
+
+    private static void AddGameKey(ICollection<string> target, string? key)
+    {
+        if (!string.IsNullOrWhiteSpace(key))
+        {
+            target.Add(key);
+        }
+    }
+
+    private static string? BuildUuidGameKey(string? uuid)
+    {
+        if (string.IsNullOrWhiteSpace(uuid))
+        {
+            return null;
+        }
+
+        return $"uuid:{uuid.Trim().ToLowerInvariant()}";
+    }
+
+    private static string? BuildUrlGameKey(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        return $"url:{url.Trim().TrimEnd('/').ToLowerInvariant()}";
+    }
+
+    private static string BuildPgnGameKey(string pgn)
+    {
+        var normalized = pgn.Trim().Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        var bytes = Encoding.UTF8.GetBytes(normalized);
+        return $"pgn:{Convert.ToHexString(SHA256.HashData(bytes))}";
+    }
+
+    private static bool TryExtractLinkFromPgn(string? pgn, out string link)
+    {
+        link = string.Empty;
+        if (string.IsNullOrWhiteSpace(pgn))
+        {
+            return false;
+        }
+
+        using var reader = new StringReader(pgn);
+        string? line;
+        while ((line = reader.ReadLine()) != null)
+        {
+            if (TryGetQuotedHeaderValue(line, "Link", out link))
+            {
+                return true;
+            }
+        }
+
+        link = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetQuotedHeaderValue(string line, string headerName, out string value)
+    {
+        value = string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var trimmed = line.Trim();
+        var prefix = $"[{headerName} \"";
+        if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !trimmed.EndsWith("\"]", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rawValue = trimmed.Substring(prefix.Length, trimmed.Length - prefix.Length - 2).Trim();
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return false;
+        }
+
+        value = rawValue.Replace("\\\"", "\"", StringComparison.Ordinal)
+            .Replace("\\\\", "\\", StringComparison.Ordinal);
+        return true;
     }
 
     private static Task ApplyRateLimitAsync(CancellationToken ct)
@@ -726,8 +982,20 @@ public sealed class ChesscomMonthlyDownloaderService : IChesscomMonthlyDownloade
 
     private sealed class ChesscomMonthlyGame
     {
+        [JsonPropertyName("url")]
+        public string? Url { get; set; }
+
+        [JsonPropertyName("uuid")]
+        public string? Uuid { get; set; }
+
         [JsonPropertyName("pgn")]
         public string? Pgn { get; set; }
+
+        [JsonPropertyName("time_class")]
+        public string? TimeClass { get; set; }
+
+        [JsonPropertyName("time_control")]
+        public string? TimeControl { get; set; }
 
         [JsonPropertyName("white")]
         public ChesscomMonthlyPlayer? White { get; set; }

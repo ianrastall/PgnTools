@@ -19,7 +19,7 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,12">
             <TextBlock Text="Compiler" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Clone Stockfish source from GitHub and compile locally with your selected build options."
+            <TextBlock Text="Clone engine source from GitHub and compile locally with your selected build options."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -32,7 +32,7 @@
                 <ComboBox ItemsSource="{x:Bind ViewModel.Engines}"
                           SelectedItem="{x:Bind ViewModel.SelectedEngine, Mode=TwoWay}"/>
 
-                <TextBlock Text="Stockfish Version Preset" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBlock Text="Version Preset" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -55,7 +55,7 @@
 
                 <TextBlock Text="Source Ref (branch or tag)" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <TextBox Text="{x:Bind ViewModel.SourceRef, Mode=TwoWay}"
-                         PlaceholderText="master"/>
+                         PlaceholderText="master or main"/>
 
                 <TextBlock Text="GitHub PAT (optional)" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <PasswordBox x:Name="GitHubPatBox"

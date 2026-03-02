@@ -44,6 +44,9 @@ public partial class ChesscomMonthlyDownloaderViewModel(
     private int _minElo = 2500;
 
     [ObservableProperty]
+    private bool _excludeBullet;
+
+    [ObservableProperty]
     private string _seedFilePath = string.Empty;
 
     [ObservableProperty]
@@ -402,7 +405,8 @@ public partial class ChesscomMonthlyDownloaderViewModel(
                     seedFullPath,
                     processedFullPath,
                     outputFullPath,
-                    logFullPath),
+                    LogFilePath: logFullPath,
+                    ExcludeBullet: ExcludeBullet),
                 progress,
                 _cancellationTokenSource.Token);
 
@@ -597,6 +601,7 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         TargetYear = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetYear)}", defaultMonth.Year);
         TargetMonth = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetMonth)}", defaultMonth.Month);
         MinElo = _settings.GetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        ExcludeBullet = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
         SeedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(SeedFilePath)}", SeedFilePath);
         ProcessedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(ProcessedFilePath)}", ProcessedFilePath);
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -640,6 +645,7 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         _settings.SetValue($"{SettingsPrefix}.{nameof(TargetYear)}", TargetYear);
         _settings.SetValue($"{SettingsPrefix}.{nameof(TargetMonth)}", TargetMonth);
         _settings.SetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SeedFilePath)}", SeedFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(ProcessedFilePath)}", ProcessedFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);

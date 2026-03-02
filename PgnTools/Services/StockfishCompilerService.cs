@@ -317,14 +317,46 @@ public sealed partial class StockfishCompilerService : IStockfishCompilerService
             95));
 
         var builtBinaryPath = LocateBuiltBinary(sourceDirectory);
-        var outputFileName = BuildOutputFileName(sourceRef, architecture);
-        var outputBinaryPath = Path.Combine(workspaceFolder, outputFileName);
-        File.Copy(builtBinaryPath, outputBinaryPath, overwrite: true);
+        var versionSegment = ResolveStockfishVersionSegment(sourceRef);
+        var versionDirectory = EnginePackageLayout.BuildVersionDirectory(
+            workspaceFolder,
+            "stockfish",
+            versionSegment);
+        EnginePackageLayout.PrepareVersionDirectory(versionDirectory);
 
-        if (usesNnueEmbeddingWorkaround)
+        var outputBinaryPath = EnginePackageLayout.CopyPrimaryBinary(
+            builtBinaryPath,
+            versionDirectory,
+            output);
+        EnginePackageLayout.CopyRuntimeAssets(
+            sourceDirectory,
+            versionDirectory,
+            builtBinaryPath,
+            output);
+
+        if (usesNnueEmbeddingWorkaround &&
+            !Directory.EnumerateFiles(sourceDirectory, "nn-*.nnue", SearchOption.TopDirectoryOnly).Any())
         {
-            CopyNnueNetworksToWorkspace(sourceDirectory, workspaceFolder, output);
+            output?.Report(
+                "NNUE embedding was disabled for this build, but no nn-*.nnue files were found in the build folder. " +
+                "Place the required network file next to the compiled executable.");
         }
+
+        await TryRunBashCommandAsync(
+            preparedToolchain.Shell,
+            sourceDirectory,
+            $"set -euo pipefail; make clean ARCH={architecture} COMP={preparedToolchain.Compiler} COMPCXX={compilerOverride}",
+            output,
+            ct).ConfigureAwait(false);
+        await TryRunBashCommandAsync(
+            preparedToolchain.Shell,
+            sourceDirectory,
+            $"set -euo pipefail; make profileclean ARCH={architecture} COMP={preparedToolchain.Compiler} COMPCXX={compilerOverride}",
+            output,
+            ct).ConfigureAwait(false);
+
+        EnginePackageLayout.MoveRepositoryToSourceFolder(repositoryPath, versionDirectory, output);
+        SafeDeleteDirectory(buildRoot);
 
         output?.Report($"Output binary: {outputBinaryPath}");
 
@@ -335,7 +367,7 @@ public sealed partial class StockfishCompilerService : IStockfishCompilerService
 
         return new StockfishCompileResult(
             sourceRef,
-            repositoryPath,
+            Path.Combine(versionDirectory, "src"),
             outputBinaryPath,
             architecture,
             preparedToolchain.Compiler,
@@ -954,35 +986,24 @@ public sealed partial class StockfishCompilerService : IStockfishCompilerService
             ? " ENV_CXXFLAGS='-DNNUE_EMBEDDING_OFF'"
             : string.Empty;
 
+    private static string ResolveStockfishVersionSegment(string sourceRef)
+    {
+        if (sourceRef.Equals("master", StringComparison.OrdinalIgnoreCase))
+        {
+            return "dev";
+        }
+
+        if (sourceRef.StartsWith("sf_", StringComparison.OrdinalIgnoreCase))
+        {
+            return SanitizeFileSegment(sourceRef[3..].ToLowerInvariant());
+        }
+
+        return SanitizeFileSegment(sourceRef.ToLowerInvariant());
+    }
+
     private static bool RequiresNnueEmbeddingWorkaround(string sourceRef, string compiler) =>
         compiler.Equals("mingw", StringComparison.OrdinalIgnoreCase) &&
         sourceRef.Equals("sf_17", StringComparison.OrdinalIgnoreCase);
-
-    private static void CopyNnueNetworksToWorkspace(
-        string sourceDirectory,
-        string workspaceFolder,
-        IProgress<string>? output)
-    {
-        var nnueFiles = Directory
-            .EnumerateFiles(sourceDirectory, "nn-*.nnue", SearchOption.TopDirectoryOnly)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (nnueFiles.Count == 0)
-        {
-            output?.Report(
-                "NNUE embedding was disabled for this build, but no nn-*.nnue files were found in the build folder. " +
-                "Place the required network file next to the compiled executable.");
-            return;
-        }
-
-        foreach (var networkPath in nnueFiles)
-        {
-            var destinationPath = Path.Combine(workspaceFolder, Path.GetFileName(networkPath));
-            File.Copy(networkPath, destinationPath, overwrite: true);
-            output?.Report($"Copied NNUE network for non-embedded build: {destinationPath}");
-        }
-    }
 
     private static InvalidOperationException BuildToolchainException(
         string compiler,
@@ -1163,6 +1184,24 @@ public sealed partial class StockfishCompilerService : IStockfishCompilerService
             throw new InvalidOperationException($"Command failed with exit code {exitCode}: {command}");
         }
     }
+
+    private static async Task TryRunBashCommandAsync(
+        ShellEnvironment shell,
+        string workingDirectory,
+        string command,
+        IProgress<string>? output,
+        CancellationToken ct)
+    {
+        try
+        {
+            await RunBashCommandAsync(shell, workingDirectory, command, output, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            output?.Report($"Non-fatal command failure ignored: {ex.Message}");
+        }
+    }
+
     private static bool TryResolveMsysRoot(string bashPath, out string msysRoot)
     {
         msysRoot = string.Empty;
@@ -1318,14 +1357,6 @@ public sealed partial class StockfishCompilerService : IStockfishCompilerService
 
         throw new FileNotFoundException(
             $"Stockfish binary was not found in '{sourceDirectory}' after build.");
-    }
-
-    private static string BuildOutputFileName(string sourceRef, string architecture)
-    {
-        var extension = OperatingSystem.IsWindows() ? ".exe" : string.Empty;
-        var safeSourceRef = SanitizeFileSegment(sourceRef);
-        var safeArchitecture = SanitizeFileSegment(architecture);
-        return $"stockfish_{safeSourceRef}_{safeArchitecture}{extension}";
     }
 
     private static string SanitizeFileSegment(string value)

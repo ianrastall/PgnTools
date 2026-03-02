@@ -32,6 +32,11 @@
                            Value="{x:Bind ViewModel.MinElo, Mode=TwoWay}"/>
             </StackPanel>
 
+            <TextBlock Text="Filters"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Exclude bullet games"
+                      IsChecked="{x:Bind ViewModel.ExcludeBullet, Mode=TwoWay}"/>
+
             <TextBlock Text="Seed List"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <Grid>

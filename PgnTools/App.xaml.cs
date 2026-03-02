@@ -133,6 +133,7 @@ public partial class App : Application
         services.AddTransient<IEleganceGoldenValidationService, EleganceGoldenValidationService>();
         services.AddTransient<IEleganceService, EleganceService>();
         services.AddTransient<IEloAdderService, EloAdderService>();
+        services.AddTransient<IBerserkCompilerService, BerserkCompilerService>();
         services.AddTransient<IStockfishCompilerService, StockfishCompilerService>();
         services.AddTransient<ILc0DownloaderService, Lc0DownloaderService>();
         services.AddTransient<ILichessDbDownloaderService, LichessDbDownloaderService>();

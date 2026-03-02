@@ -9,7 +9,7 @@
 
 ## 1. Objective
 
-Crawl a specific month across a seed list of Chess.com players, keep only games where **both** players meet a minimum Elo threshold, and continuously expand the seed list with newly discovered opponents.
+Crawl a specific month across a seed list of Chess.com players, keep only games where **both** players meet a minimum Elo threshold, optionally exclude bullet games, and continuously expand the seed list with newly discovered opponents.
 
 The output is a single PGN file for the target month. Two sidecar lists are maintained:
 
@@ -24,6 +24,8 @@ The Monthly Crawl tab exposes:
   Default is the previous month. Example: if today is **February 8, 2026**, the default is **January 2026**.
 - **Minimum Elo (both players)**  
   A game is kept only if **both** players meet or exceed this threshold.
+- **Exclude bullet games**  
+  When enabled, games classified by Chess.com as bullet are skipped.
 - **Seed List (TXT)**  
   One username per line. Lines are trimmed and normalized to lowercase in memory.
 - **Processed List (TXT)**  
@@ -56,7 +58,8 @@ public sealed record ChesscomMonthlyCrawlOptions(
     string SeedFilePath,
     string ProcessedFilePath,
     string OutputFilePath,
-    string? LogFilePath = null);
+    string? LogFilePath = null,
+    bool ExcludeBullet = false);
 
 public sealed record ChesscomMonthlyCrawlProgress(
     string Message,
@@ -81,7 +84,7 @@ public sealed record ChesscomMonthlyCrawlResult(
 - **Monthly games JSON endpoint**  
   `https://api.chess.com/pub/player/{username}/games/{year}/{month:00}`
 
-The crawler reads the `pgn` field from each game entry in the response.
+The crawler reads the `pgn`, `url`, `uuid`, `time_class`, and player/rating fields from each game entry in the response.
 
 ## 5. High-Level Pipeline (Actual)
 
@@ -93,7 +96,8 @@ The crawler reads the `pgn` field from each game entry in the response.
    1. Fetch monthly games JSON for the selected month.
    2. For each game:
       - **Keep** if both white and black ratings meet the minimum Elo.
-      - **Append PGN** to output file, separating games with blank lines.
+      - **Skip** if bullet filtering is enabled and the game is classified as bullet.
+      - **Append PGN** to output file only if the game has not already been written.
       - **Discover opponent** and append to seed list if new.
    3. **Mark player processed** (always, even if the fetch failed).
 5. Flush output periodically and report progress after each player.
@@ -117,6 +121,7 @@ Opponents are discovered **only** from games that pass this filter and have a no
 ## 8. Output Write Strategy (Actual)
 
 - **Append-only**: The output PGN is opened in append mode and new games are added to the end.
+- **Per-game dedup**: existing output is scanned for Chess.com game ids first, and duplicate games are skipped during the crawl.
 - **Separators**: A blank line is inserted between games.
 - **Encoding**: UTF‑8 (no BOM).
 - **Flush cadence**: output is flushed at each player boundary (and when batches exceed ~50 games).
@@ -233,8 +238,7 @@ Key behaviors:
 
 ## 16. Limitations & Gotchas
 
-- **Duplicate games are possible** if multiple players in the queue include the same game.  
-  Use the Deduplicator tool if needed.
+- Existing duplicates already present in the output file are **not rewritten or cleaned up** during a crawl.  
+  The crawler only avoids appending new duplicates.
 - **Processed list is sticky**: failures are still marked as processed.
-- **No per‑game dedup**: output is a straight append.
-- **No variant filtering**: only Elo threshold is applied.
+- **No non-standard variant filtering**: aside from the optional bullet filter, other Chess.com variants are not excluded.

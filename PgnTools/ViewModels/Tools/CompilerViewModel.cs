@@ -7,10 +7,11 @@ using Windows.ApplicationModel.DataTransfer;
 namespace PgnTools.ViewModels.Tools;
 
 /// <summary>
-/// ViewModel for Stockfish source compilation.
+/// ViewModel for local chess engine source compilation.
 /// </summary>
 public partial class CompilerViewModel(
     IStockfishCompilerService compilerService,
+    IBerserkCompilerService berserkCompilerService,
     IWindowService windowService,
     IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
@@ -19,14 +20,16 @@ public partial class CompilerViewModel(
     private const int GitHubTagPageSize = 100;
     private const int GitHubTagPageLimit = 10;
     private static readonly Uri StockfishTagsApiBaseUri = new("https://api.github.com/repos/official-stockfish/Stockfish/tags");
+    private static readonly Uri BerserkTagsApiBaseUri = new("https://api.github.com/repos/jhonnold/berserk/tags");
     private static readonly HttpClient GitHubClient = CreateGitHubClient();
 
     private static readonly List<string> EngineOptions =
     [
-        "Stockfish"
+        "Stockfish",
+        "Berserk"
     ];
 
-    private static readonly List<string> FallbackSourceRefOptions =
+    private static readonly List<string> StockfishFallbackSourceRefOptions =
     [
         "master",
         "sf_18",
@@ -42,6 +45,23 @@ public partial class CompilerViewModel(
         "sf_12",
         "sf_11",
         "sf_10"
+    ];
+
+    private static readonly List<string> BerserkFallbackSourceRefOptions =
+    [
+        "main",
+        "13",
+        "12.1",
+        "12",
+        "11.1",
+        "11",
+        "10",
+        "9",
+        "8.5.1",
+        "8",
+        "7",
+        "6",
+        "5"
     ];
 
     private static readonly List<string> BuildTargetOptions =
@@ -93,6 +113,7 @@ public partial class CompilerViewModel(
     ];
 
     private readonly IStockfishCompilerService _compilerService = compilerService;
+    private readonly IBerserkCompilerService _berserkCompilerService = berserkCompilerService;
     private readonly IWindowService _windowService = windowService;
     private readonly IAppSettingsService _settings = settings;
     private readonly Queue<string> _logLines = new();
@@ -109,10 +130,10 @@ public partial class CompilerViewModel(
     private string _selectedEngine = EngineOptions[0];
 
     [ObservableProperty]
-    private List<SourceRefOption> _availableSourceRefs = BuildSourceRefOptions(FallbackSourceRefOptions);
+    private List<SourceRefOption> _availableSourceRefs = BuildSourceRefOptions(StockfishFallbackSourceRefOptions, EngineOptions[0]);
 
     [ObservableProperty]
-    private string _selectedSourceRef = FallbackSourceRefOptions[0];
+    private string _selectedSourceRef = StockfishFallbackSourceRefOptions[0];
 
     [ObservableProperty]
     private string _sourceRef = "master";
@@ -357,13 +378,13 @@ public partial class CompilerViewModel(
     {
         try
         {
-            var refs = await FetchStockfishSourceRefsAsync(CancellationToken.None);
+            var refs = await FetchSourceRefsAsync(SelectedEngine, CancellationToken.None);
             if (refs.Count == 0)
             {
-                refs = [.. FallbackSourceRefOptions];
+                refs = [.. GetFallbackSourceRefs(SelectedEngine)];
             }
 
-            var options = BuildSourceRefOptions(refs);
+            var options = BuildSourceRefOptions(refs, SelectedEngine);
             AvailableSourceRefs = options;
 
             var sourceRefMatch = options.FirstOrDefault(
@@ -378,7 +399,7 @@ public partial class CompilerViewModel(
 
             if (userInitiated)
             {
-                StatusMessage = $"Loaded {refs.Count:N0} Stockfish source refs.";
+                StatusMessage = $"Loaded {refs.Count:N0} {SelectedEngine} source refs.";
                 StatusSeverity = InfoBarSeverity.Success;
             }
         }
@@ -392,15 +413,17 @@ public partial class CompilerViewModel(
         }
         catch (Exception ex)
         {
-            AvailableSourceRefs = BuildSourceRefOptions(FallbackSourceRefOptions);
-            var sourceRefMatch = FallbackSourceRefOptions.FirstOrDefault(
+            var fallbackRefs = GetFallbackSourceRefs(SelectedEngine);
+            AvailableSourceRefs = BuildSourceRefOptions(fallbackRefs, SelectedEngine);
+            var sourceRefMatch = fallbackRefs.FirstOrDefault(
                 option => string.Equals(option, SourceRef, StringComparison.OrdinalIgnoreCase));
             SelectedSourceRef = sourceRefMatch ?? string.Empty;
 
-            AppendOutputLine($"Failed to refresh Stockfish tags from GitHub. Using fallback list. Error: {ex.Message}");
+            AppendOutputLine(
+                $"Failed to refresh {SelectedEngine} tags from GitHub. Using fallback list. Error: {ex.Message}");
             if (userInitiated)
             {
-                StatusMessage = "Could not refresh Stockfish tags. Using fallback version list.";
+                StatusMessage = $"Could not refresh {SelectedEngine} tags. Using fallback version list.";
                 StatusSeverity = InfoBarSeverity.Warning;
             }
         }
@@ -409,13 +432,6 @@ public partial class CompilerViewModel(
     [RelayCommand(CanExecute = nameof(CanCompile))]
     private async Task StartCompileAsync()
     {
-        if (!string.Equals(SelectedEngine, "Stockfish", StringComparison.OrdinalIgnoreCase))
-        {
-            StatusMessage = "Only Stockfish is currently supported.";
-            StatusSeverity = InfoBarSeverity.Warning;
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(WorkspaceFolder))
         {
             StatusMessage = "Please select a workspace folder.";
@@ -449,7 +465,7 @@ public partial class CompilerViewModel(
             IsRunning = true;
             IsIndeterminate = true;
             ProgressValue = 0;
-            StatusMessage = "Starting Stockfish compilation...";
+            StatusMessage = $"Starting {SelectedEngine} compilation...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail(0);
@@ -463,24 +479,23 @@ public partial class CompilerViewModel(
             var buildTarget = string.Equals(SelectedBuildTarget, "build", StringComparison.OrdinalIgnoreCase)
                 ? StockfishBuildTarget.Build
                 : StockfishBuildTarget.ProfileBuild;
+            var options = new StockfishCompileOptions(
+                WorkspaceFolder,
+                SourceRef,
+                SelectedArchitecture,
+                SelectedCompiler,
+                buildTarget,
+                jobs,
+                DownloadNetwork,
+                StripExecutable,
+                AutoInstallToolchain,
+                GitHubPat);
             AppendOutputLine(
-                $"Starting build: target={buildTarget}, arch={SelectedArchitecture}, compiler={SelectedCompiler}, jobs={jobs}, net={DownloadNetwork}, strip={StripExecutable}");
+                $"Starting build: engine={SelectedEngine}, target={buildTarget}, arch={SelectedArchitecture}, compiler={SelectedCompiler}, jobs={jobs}, net={DownloadNetwork}, strip={StripExecutable}");
 
-            var result = await _compilerService.CompileAsync(
-                new StockfishCompileOptions(
-                    WorkspaceFolder,
-                    SourceRef,
-                    SelectedArchitecture,
-                    SelectedCompiler,
-                    buildTarget,
-                    jobs,
-                    DownloadNetwork,
-                    StripExecutable,
-                    AutoInstallToolchain,
-                    GitHubPat),
-                progress,
-                output,
-                cts.Token);
+            var result = string.Equals(SelectedEngine, "Berserk", StringComparison.OrdinalIgnoreCase)
+                ? await _berserkCompilerService.CompileAsync(options, progress, output, cts.Token)
+                : await _compilerService.CompileAsync(options, progress, output, cts.Token);
 
             ProgressValue = 100;
             IsIndeterminate = false;
@@ -607,6 +622,42 @@ public partial class CompilerViewModel(
         }
     }
 
+    partial void OnSelectedEngineChanged(string value)
+    {
+        var fallback = ValidateSelection(value, EngineOptions, EngineOptions[0]);
+        if (!string.Equals(value, fallback, StringComparison.Ordinal))
+        {
+            SelectedEngine = fallback;
+            return;
+        }
+
+        var fallbackRefs = GetFallbackSourceRefs(fallback);
+        AvailableSourceRefs = BuildSourceRefOptions(fallbackRefs, fallback);
+
+        if (string.IsNullOrWhiteSpace(SourceRef))
+        {
+            SourceRef = fallbackRefs[0];
+            SelectedSourceRef = fallbackRefs[0];
+        }
+        else
+        {
+            var sourceRefMatch = fallbackRefs.FirstOrDefault(
+                option => string.Equals(option, SourceRef, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(sourceRefMatch))
+            {
+                SourceRef = fallbackRefs[0];
+                SelectedSourceRef = fallbackRefs[0];
+            }
+            else
+            {
+                SelectedSourceRef = sourceRefMatch;
+            }
+        }
+
+        _ = RefreshSourceRefsInternalAsync(userInitiated: false);
+        StartCompileCommand.NotifyCanExecuteChanged();
+    }
+
     partial void OnIsRunningChanged(bool value)
     {
         StartCompileCommand.NotifyCanExecuteChanged();
@@ -718,10 +769,23 @@ public partial class CompilerViewModel(
 
     private void LoadState()
     {
+        SelectedEngine = ValidateSelection(
+            _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedEngine)}", SelectedEngine),
+            EngineOptions,
+            EngineOptions[0]);
+
+        var fallbackRefs = GetFallbackSourceRefs(SelectedEngine);
+        AvailableSourceRefs = BuildSourceRefOptions(fallbackRefs, SelectedEngine);
         SourceRef = _settings.GetValue($"{SettingsPrefix}.{nameof(SourceRef)}", SourceRef);
-        var sourceRefMatch = FallbackSourceRefOptions.FirstOrDefault(
+        var sourceRefMatch = fallbackRefs.FirstOrDefault(
             option => string.Equals(option, SourceRef, StringComparison.OrdinalIgnoreCase));
         SelectedSourceRef = sourceRefMatch ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(SourceRef))
+        {
+            SourceRef = fallbackRefs[0];
+            SelectedSourceRef = fallbackRefs[0];
+        }
+
         SelectedBuildTarget = ValidateSelection(
             _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedBuildTarget)}", SelectedBuildTarget),
             BuildTargetOptions,
@@ -745,12 +809,12 @@ public partial class CompilerViewModel(
         StripExecutable = _settings.GetValue($"{SettingsPrefix}.{nameof(StripExecutable)}", StripExecutable);
         AutoInstallToolchain = _settings.GetValue($"{SettingsPrefix}.{nameof(AutoInstallToolchain)}", AutoInstallToolchain);
         WorkspaceFolder = _settings.GetValue($"{SettingsPrefix}.{nameof(WorkspaceFolder)}", WorkspaceFolder);
-        SelectedEngine = EngineOptions[0];
         GitHubPat = string.Empty;
     }
 
     private void SaveState()
     {
+        _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedEngine)}", SelectedEngine);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SourceRef)}", SourceRef);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedBuildTarget)}", SelectedBuildTarget);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SelectedCompiler)}", SelectedCompiler);
@@ -785,7 +849,12 @@ public partial class CompilerViewModel(
         return client;
     }
 
-    private static List<SourceRefOption> BuildSourceRefOptions(IEnumerable<string> refs)
+    private static List<string> GetFallbackSourceRefs(string engine) =>
+        string.Equals(engine, "Berserk", StringComparison.OrdinalIgnoreCase)
+            ? BerserkFallbackSourceRefOptions
+            : StockfishFallbackSourceRefOptions;
+
+    private static List<SourceRefOption> BuildSourceRefOptions(IEnumerable<string> refs, string engine)
     {
         var options = new List<SourceRefOption>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -803,14 +872,30 @@ public partial class CompilerViewModel(
                 continue;
             }
 
-            options.Add(new SourceRefOption(normalized, FormatSourceRefDisplayName(normalized)));
+            options.Add(new SourceRefOption(normalized, FormatSourceRefDisplayName(normalized, engine)));
         }
 
         return options;
     }
 
-    private static string FormatSourceRefDisplayName(string sourceRef)
+    private static string FormatSourceRefDisplayName(string sourceRef, string engine)
     {
+        if (string.Equals(engine, "Berserk", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.Equals(sourceRef, "main", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(sourceRef, "master", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Berserk Dev";
+            }
+
+            if (TryParseBerserkVersionText(sourceRef, out var berserkVersion))
+            {
+                return $"Berserk {berserkVersion}";
+            }
+
+            return sourceRef;
+        }
+
         if (string.Equals(sourceRef, "master", StringComparison.OrdinalIgnoreCase))
         {
             return "Stockfish Dev";
@@ -856,13 +941,53 @@ public partial class CompilerViewModel(
         return true;
     }
 
+    private static bool TryParseBerserkVersionText(string sourceRef, out string versionText)
+    {
+        versionText = string.Empty;
+        var normalized = sourceRef.Trim();
+        if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[1..];
+        }
+
+        var segments = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length is < 1 or > 3)
+        {
+            return false;
+        }
+
+        var normalizedSegments = new string[segments.Length];
+        for (var i = 0; i < segments.Length; i++)
+        {
+            if (!int.TryParse(segments[i], NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return false;
+            }
+
+            normalizedSegments[i] = parsed.ToString(CultureInfo.InvariantCulture);
+        }
+
+        versionText = string.Join(".", normalizedSegments);
+        return true;
+    }
+
+    private async Task<List<string>> FetchSourceRefsAsync(string engine, CancellationToken ct)
+    {
+        if (string.Equals(engine, "Berserk", StringComparison.OrdinalIgnoreCase))
+        {
+            return await FetchBerserkSourceRefsAsync(ct).ConfigureAwait(false);
+        }
+
+        return await FetchStockfishSourceRefsAsync(ct).ConfigureAwait(false);
+    }
+
     private async Task<List<string>> FetchStockfishSourceRefsAsync(CancellationToken ct)
     {
         var stableTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var page = 1; page <= GitHubTagPageLimit; page++)
         {
-            using var request = CreateGitHubTagRequest(page);
+            using var request = CreateGitHubTagRequest(StockfishTagsApiBaseUri, page);
             using var response = await GitHubClient
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
                 .ConfigureAwait(false);
@@ -919,9 +1044,72 @@ public partial class CompilerViewModel(
         return sourceRefs;
     }
 
-    private HttpRequestMessage CreateGitHubTagRequest(int page)
+    private async Task<List<string>> FetchBerserkSourceRefsAsync(CancellationToken ct)
     {
-        var uri = new Uri($"{StockfishTagsApiBaseUri}?per_page={GitHubTagPageSize}&page={page}");
+        var versionTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var page = 1; page <= GitHubTagPageLimit; page++)
+        {
+            using var request = CreateGitHubTagRequest(BerserkTagsApiBaseUri, page);
+            using var response = await GitHubClient
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+
+            if (IsRateLimited(response))
+            {
+                throw new InvalidOperationException(
+                    "GitHub API rate limit exceeded. Set PGNTOOLS_GITHUB_TOKEN or GITHUB_TOKEN to increase the limit.");
+            }
+
+            response.EnsureSuccessStatusCode();
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                break;
+            }
+
+            var tagCount = 0;
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                tagCount++;
+                if (!item.TryGetProperty("name", out var nameElement))
+                {
+                    continue;
+                }
+
+                var name = nameElement.GetString();
+                if (TryParseBerserkTag(name, out _))
+                {
+                    versionTags.Add(name!);
+                }
+            }
+
+            if (tagCount < GitHubTagPageSize)
+            {
+                break;
+            }
+        }
+
+        var ordered = versionTags
+            .Select(tag => (Tag: tag, Version: ParseBerserkTag(tag)))
+            .Where(x => x.Version.HasValue)
+            .OrderByDescending(x => x.Version!.Value.Major)
+            .ThenByDescending(x => x.Version!.Value.Minor)
+            .ThenByDescending(x => x.Version!.Value.Patch)
+            .ThenBy(x => x.Tag, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.Tag)
+            .ToList();
+
+        var refs = new List<string> { "main" };
+        refs.AddRange(ordered);
+        return refs;
+    }
+
+    private HttpRequestMessage CreateGitHubTagRequest(Uri apiBaseUri, int page)
+    {
+        var uri = new Uri($"{apiBaseUri}?per_page={GitHubTagPageSize}&page={page}");
         var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
 
@@ -993,6 +1181,19 @@ public partial class CompilerViewModel(
         return true;
     }
 
+    private static bool TryParseBerserkTag(string? tag, out BerserkTagVersion version)
+    {
+        var parsed = ParseBerserkTag(tag);
+        if (!parsed.HasValue)
+        {
+            version = default;
+            return false;
+        }
+
+        version = parsed.Value;
+        return true;
+    }
+
     private static StableTagVersion? ParseStableTag(string? tag)
     {
         if (string.IsNullOrWhiteSpace(tag) ||
@@ -1020,6 +1221,37 @@ public partial class CompilerViewModel(
         return new StableTagVersion(parts[0], parts[1], parts[2]);
     }
 
+    private static BerserkTagVersion? ParseBerserkTag(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        var normalized = tag.Trim();
+        if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[1..];
+        }
+
+        var segments = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length is < 1 or > 3)
+        {
+            return null;
+        }
+
+        var parts = new int[3];
+        for (var i = 0; i < segments.Length; i++)
+        {
+            if (!int.TryParse(segments[i], NumberStyles.None, CultureInfo.InvariantCulture, out parts[i]))
+            {
+                return null;
+            }
+        }
+
+        return new BerserkTagVersion(parts[0], parts[1], parts[2]);
+    }
+
     private static string ValidateSelection(string? value, IReadOnlyCollection<string> options, string fallback)
     {
         if (!string.IsNullOrWhiteSpace(value) &&
@@ -1034,4 +1266,5 @@ public partial class CompilerViewModel(
     public sealed record SourceRefOption(string Ref, string DisplayName);
 
     private readonly record struct StableTagVersion(int Major, int Minor, int Patch);
+    private readonly record struct BerserkTagVersion(int Major, int Minor, int Patch);
 }
