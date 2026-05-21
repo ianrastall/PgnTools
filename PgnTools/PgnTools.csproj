@@ -26,6 +26,7 @@
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
         <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+        <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\Build\**</DefaultItemExcludes>
         
         <!-- Allow unsafe code for WinRT interop -->
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

@@ -16,26 +16,40 @@
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
                 <NumberBox Width="140"
+                           Header="Year"
                            Minimum="1900"
                            Maximum="2100"
                            SpinButtonPlacementMode="Inline"
                            Value="{x:Bind ViewModel.TargetYear, Mode=TwoWay}"/>
                 <NumberBox Width="100"
+                           Header="Month"
                            Minimum="1"
                            Maximum="12"
                            SpinButtonPlacementMode="Inline"
                            Value="{x:Bind ViewModel.TargetMonth, Mode=TwoWay}"/>
-                <NumberBox Width="200"
-                           Minimum="0"
-                           SmallChange="50"
-                           SpinButtonPlacementMode="Inline"
-                           Value="{x:Bind ViewModel.MinElo, Mode=TwoWay}"/>
             </StackPanel>
 
             <TextBlock Text="Filters"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <NumberBox Width="200"
+                           Header="Minimum Elo"
+                           Minimum="0"
+                           SmallChange="50"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.MinElo, Mode=TwoWay}"/>
+                <NumberBox Width="200"
+                           Header="Maximum Elo"
+                           Minimum="1"
+                           SmallChange="500"
+                           SpinButtonPlacementMode="Inline"
+                           Value="{x:Bind ViewModel.MaxElo, Mode=TwoWay}"/>
+            </StackPanel>
+
             <CheckBox Content="Exclude bullet games"
                       IsChecked="{x:Bind ViewModel.ExcludeBullet, Mode=TwoWay}"/>
+            <CheckBox Content="Only keep games where both players have real names"
+                      IsChecked="{x:Bind ViewModel.RequireRealNames, Mode=TwoWay}"/>
 
             <TextBlock Text="Seed List"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>

@@ -24,6 +24,7 @@ public partial class ChesscomMonthlyDownloaderViewModel(
     private bool _logPathSuggested;
     private string _lastOutputFolder = string.Empty;
     private const string SettingsPrefix = nameof(ChesscomMonthlyDownloaderViewModel);
+    private const int DefaultMaxElo = 5000;
     private static readonly Regex SuggestedOutputRegex =
         new(@"^chesscom-\d+-\d{4}-\d{2}\.pgn$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -44,7 +45,13 @@ public partial class ChesscomMonthlyDownloaderViewModel(
     private int _minElo = 2500;
 
     [ObservableProperty]
+    private int _maxElo = DefaultMaxElo;
+
+    [ObservableProperty]
     private bool _excludeBullet;
+
+    [ObservableProperty]
+    private bool _requireRealNames;
 
     [ObservableProperty]
     private string _seedFilePath = string.Empty;
@@ -253,6 +260,11 @@ public partial class ChesscomMonthlyDownloaderViewModel(
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task StartAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (!TryGetTargetMonth(out var targetMonth))
         {
             StatusMessage = "Target month is invalid.";
@@ -263,6 +275,20 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         if (string.IsNullOrWhiteSpace(SeedFilePath) || !File.Exists(SeedFilePath))
         {
             StatusMessage = "Seed list file not found.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (MaxElo <= 0)
+        {
+            StatusMessage = "Maximum Elo must be greater than zero.";
+            StatusSeverity = InfoBarSeverity.Warning;
+            return;
+        }
+
+        if (MaxElo < MinElo)
+        {
+            StatusMessage = "Maximum Elo must be greater than or equal to minimum Elo.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
         }
@@ -377,12 +403,16 @@ public partial class ChesscomMonthlyDownloaderViewModel(
             return;
         }
 
+        var executionLockAcquired = false;
         if (!await _executionLock.WaitAsync(0))
         {
             StatusMessage = "A crawl is already in progress.";
             StatusSeverity = InfoBarSeverity.Warning;
             return;
         }
+        executionLockAcquired = true;
+
+        CancellationTokenSource? crawlCancellationTokenSource = null;
 
         try
         {
@@ -395,20 +425,23 @@ public partial class ChesscomMonthlyDownloaderViewModel(
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
 
-            _cancellationTokenSource = new CancellationTokenSource();
+            crawlCancellationTokenSource = new CancellationTokenSource();
+            _cancellationTokenSource = crawlCancellationTokenSource;
 
             var progress = new Progress<ChesscomMonthlyCrawlProgress>(UpdateProgress);
             var result = await _service.CrawlMonthAsync(
                 new ChesscomMonthlyCrawlOptions(
                     targetMonth,
                     MinElo,
+                    MaxElo,
                     seedFullPath,
                     processedFullPath,
                     outputFullPath,
                     LogFilePath: logFullPath,
-                    ExcludeBullet: ExcludeBullet),
+                    ExcludeBullet: ExcludeBullet,
+                    RequireRealNames: RequireRealNames),
                 progress,
-                _cancellationTokenSource.Token);
+                crawlCancellationTokenSource.Token);
 
             var message = result.GamesSaved == 0
                 ? "Crawl complete. No games matched filters."
@@ -445,14 +478,25 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         finally
         {
             IsRunning = false;
-            _cancellationTokenSource?.Dispose();
-            _cancellationTokenSource = null;
-            _executionLock.Release();
+
+            if (ReferenceEquals(_cancellationTokenSource, crawlCancellationTokenSource))
+            {
+                _cancellationTokenSource = null;
+            }
+
+            crawlCancellationTokenSource?.Dispose();
+
+            if (executionLockAcquired && !_disposed)
+            {
+                _executionLock.Release();
+            }
+
             StopProgressTimer();
         }
     }
 
     private bool CanRun() =>
+        !_disposed &&
         !IsRunning &&
         !string.IsNullOrWhiteSpace(SeedFilePath) &&
         File.Exists(SeedFilePath) &&
@@ -461,6 +505,11 @@ public partial class ChesscomMonthlyDownloaderViewModel(
     [RelayCommand]
     private void Cancel()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _cancellationTokenSource?.Cancel();
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
@@ -590,9 +639,6 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
-        _cancellationTokenSource?.Dispose();
-        _cancellationTokenSource = null;
-        _executionLock.Dispose();
     }
 
     private void LoadState()
@@ -601,7 +647,11 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         TargetYear = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetYear)}", defaultMonth.Year);
         TargetMonth = _settings.GetValue($"{SettingsPrefix}.{nameof(TargetMonth)}", defaultMonth.Month);
         MinElo = _settings.GetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        MaxElo = _settings.GetValue(
+            $"{SettingsPrefix}.{nameof(MaxElo)}",
+            _settings.GetValue($"{SettingsPrefix}.MaxPlayers", MaxElo));
         ExcludeBullet = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        RequireRealNames = _settings.GetValue($"{SettingsPrefix}.{nameof(RequireRealNames)}", RequireRealNames);
         SeedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(SeedFilePath)}", SeedFilePath);
         ProcessedFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(ProcessedFilePath)}", ProcessedFilePath);
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -613,6 +663,10 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         {
             TargetYear = defaultMonth.Year;
             TargetMonth = defaultMonth.Month;
+        }
+        if (MaxElo <= 0)
+        {
+            MaxElo = DefaultMaxElo;
         }
 
         SeedFileName = string.IsNullOrWhiteSpace(SeedFilePath) ? string.Empty : Path.GetFileName(SeedFilePath);
@@ -645,7 +699,9 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         _settings.SetValue($"{SettingsPrefix}.{nameof(TargetYear)}", TargetYear);
         _settings.SetValue($"{SettingsPrefix}.{nameof(TargetMonth)}", TargetMonth);
         _settings.SetValue($"{SettingsPrefix}.{nameof(MinElo)}", MinElo);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(MaxElo)}", MaxElo);
         _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(RequireRealNames)}", RequireRealNames);
         _settings.SetValue($"{SettingsPrefix}.{nameof(SeedFilePath)}", SeedFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(ProcessedFilePath)}", ProcessedFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -828,7 +884,12 @@ public partial class ChesscomMonthlyDownloaderViewModel(
         }
 
         detailParts.Add($"Games {progress.GamesSaved:N0}");
-        if (progress.NewPlayers > 0)
+        if (progress.CandidatePlayers > 0)
+        {
+            detailParts.Add($"Players found {progress.CandidatePlayers:N0}");
+        }
+
+        if (progress.NewPlayers > 0 || progress.CandidatePlayers > 0)
         {
             detailParts.Add($"+{progress.NewPlayers:N0} new players");
         }
@@ -863,7 +924,12 @@ public partial class ChesscomMonthlyDownloaderViewModel(
 
         detailParts.Add($"Games {result.GamesSaved:N0}");
 
-        if (result.NewPlayers > 0)
+        if (result.CandidatePlayers > 0)
+        {
+            detailParts.Add($"Players found {result.CandidatePlayers:N0}");
+        }
+
+        if (result.NewPlayers > 0 || result.CandidatePlayers > 0)
         {
             detailParts.Add($"+{result.NewPlayers:N0} new players");
         }
