@@ -2,7 +2,7 @@
 
 ## Service Implementation: TwicDownloaderService
 
-**Version:** Current implementation (updated 2026-02-06)  
+**Version:** Current implementation (updated 2026-06-02)
 **Layer:** Service Layer (Domain Logic)  
 **Dependencies:** `HttpClient`, `FileReplacementHelper`  
 **Thread Safety:** Safe for concurrent calls. Avoid concurrent calls that target the same output path.
@@ -23,7 +23,7 @@ public interface ITwicDownloaderService
 ### 2.1 Helper API (Static)
 ```csharp
 public static int CalculateEstimatedLatestIssue(DateTime? today = null);
-public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct);
+public static Task<TwicLatestIssueProbeResult> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct);
 ```
 
 ### 2.2 Parameter Semantics
@@ -35,11 +35,13 @@ public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<stri
 
 ## 3. Constants & Endpoints (Actual)
 
-- **Base URI:** `https://www.theweekinchess.com/zips/`
+- **Base URI:** `https://theweekinchess.com/zips/`
 - **Issue file pattern:** `twic{N}g.zip` (games‑only ZIPs)
 - **BufferSize:** `65536` (64 KB)
 - **MinimumIssue:** `920` (used as a lower bound for estimation and UI defaults)
 - **AnchorIssue:** `1628` published on **2026-01-19 (UTC)** for estimate stability
+- **MaxZipBytes:** `100 MB`
+- **MaxPgnEntryBytes:** `250 MB`
 
 ## 4. High-Level Pipeline (Actual)
 
@@ -48,11 +50,13 @@ public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<stri
 3. For each issue in `[start, end]`:
    - Wait **2–4 seconds** between issues (polite rate limiting).
    - Download `twic{issue}g.zip` with up to **3 attempts**.
-   - If **404**, report and continue to the next issue.
+   - If **404** or another recoverable per-issue failure occurs, record the failure and continue to the next issue.
    - Extract the first PGN entry and append it to the combined output.
    - Delete the ZIP immediately to save disk space.
-4. If at least one issue was appended, replace the destination file via `FileReplacementHelper.ReplaceFile`.
-5. Always clean up temp artifacts in `finally`.
+4. If any requested issue failed, delete the partial temp output and refuse to replace the existing destination file.
+5. If every requested issue succeeded, replace the destination file via `FileReplacementHelper.ReplaceFileAsync`.
+6. If final replacement fails after a complete download, preserve the temp output file for recovery.
+7. Always clean up downloaded ZIP artifacts in `finally`.
 
 ## 5. Latest Issue Detection (Actual)
 
@@ -64,14 +68,15 @@ public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<stri
 - Result is clamped to `>= MinimumIssue` (920)
 
 ### 5.2 Probe
-`ProbeLatestIssueAsync` confirms the latest issue by HEAD‑requesting sequential ZIPs:
+`ProbeLatestIssueAsync` confirms the latest issue by sending bounded `GET` requests with `ResponseHeadersRead`:
 
-- Starts at `max(MinimumIssue, estimatedIssue - 3)`
-- Sends `HEAD` requests to `twic{N}g.zip`
+- Starts at `max(MinimumIssue, estimatedIssue - 10)`
+- Stops no later than `estimatedIssue + 10`
+- Sends `GET` requests to `twic{N}g.zip` and disposes the response after headers
 - Stops after **3 consecutive failures** (404 or other non‑success)
 - Waits **~400 ms** between probes
-- Manual redirect handling (max **5** redirects)
-- If no success is confirmed in the probe window, it **falls back to the estimate** and reports that the result is unconfirmed.
+- Manual redirect handling (max **5** redirects), restricted to HTTPS and the TWIC host allowlist
+- If no success is confirmed in the probe window, it falls back to the estimate and returns `IsConfirmed = false`.
 
 ## 6. ZIP Extraction & Append (Actual)
 
@@ -82,17 +87,20 @@ public static Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<stri
 - Encoding: **Windows‑1252** with BOM detection (BOM overrides to UTF‑8/UTF‑16 when present).
 - Leading blank lines in each PGN are skipped.
 - **Two blank lines** are inserted between issues.
+- After the first nonblank line is found, the remainder of the PGN entry is copied in buffered chunks.
 
 ## 7. Error Handling & Reporting (Actual)
 
 | Scenario | Behavior |
 | --- | --- |
-| Download failure (network/HTTP) | Reports status and continues with the next issue |
-| HTTP 404 | Reports `"Issue #{N} not found"` and continues |
-| ZIP processing error | Returns `false` for that issue; continues |
+| Download failure (network/HTTP) | Records the issue failure and continues with the next issue |
+| HTTP 404 | Records the issue as missing and continues |
+| ZIP processing error | Records the issue failure and continues |
+| Any requested issue failed | Refuses to replace the destination and throws an incomplete-download error |
 | No issues appended | Reports `"No issues were successfully downloaded."` and removes temp output |
 | Cancellation | Reports `"Download cancelled."` and rethrows for the caller |
-| Unexpected exception | Reports `"Error: <message>"`, cleans up, and rethrows |
+| Final replacement failure | Reports the error, preserves the complete temp output, and rethrows |
+| Unexpected exception | Reports `"Error: <message>"`, preserves useful partial temp output when present, and rethrows |
 
 ## 8. Usage Example (ViewModel Context)
 
@@ -117,13 +125,14 @@ var issuesWritten = await _twicDownloaderService.DownloadIssuesAsync(
   - **Full download:** issues **920 → latest**
   - **Custom range:** user‑specified start/end
 - Latest issue can be probed from the UI via `ProbeLatestIssueAsync`.
+- Probe results distinguish confirmed latest issues from unconfirmed estimates.
 - Output file is chosen using the WinUI file picker.
 
 ## 10. Limitations (Current Implementation)
 
-- **Single source:** Only `https://www.theweekinchess.com/zips/` is used (no mirrors or FTP).
+- **Single source:** Only `https://theweekinchess.com/zips/` is used (no mirrors or FTP).
 - **ZIP only:** No `.pgn` or `.gz` handling.
 - **No checksums:** Integrity is not verified.
 - **No incremental cache:** Previously downloaded issues are not tracked.
 - **No dedup/sorting:** Output preserves source order and content as-is.
-- **Latest probing is heuristic:** It assumes sequential issue numbering and stops after 3 consecutive failures.
+- **Latest probing is heuristic:** It assumes sequential issue numbering within a bounded estimate window.

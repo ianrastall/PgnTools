@@ -5,18 +5,30 @@ using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
+public sealed record TwicLatestIssueProbeResult(int Issue, bool IsConfirmed, string Source);
+
 public class TwicDownloaderService : ITwicDownloaderService
 {
     private const int BufferSize = 65536;
     private const int MinimumIssue = 920;
+    private const int MaxDownloadAttempts = 3;
+    private const int ConsecutiveProbeFailures = 3;
+    private const int ProbeLookBehind = 10;
+    private const int ProbeLookAhead = 10;
+    private const long MaxZipBytes = 100L * 1024 * 1024;
+    private const long MaxPgnEntryBytes = 250L * 1024 * 1024;
 
     // Anchor for estimation to reduce long-term calendar drift.
     // TWIC 1628 was published on 2026-01-19.
     private const int AnchorIssue = 1628;
     private static readonly DateTime AnchorIssueDate = new(2026, 1, 19, 0, 0, 0, DateTimeKind.Utc);
-    private static readonly Uri BaseUri = new("https://www.theweekinchess.com/zips/");
+    private static readonly Uri BaseUri = new("https://theweekinchess.com/zips/");
+    private static readonly HashSet<string> AllowedRedirectHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "theweekinchess.com",
+        "www.theweekinchess.com"
+    };
 
-    // Use a shared client to respect socket pooling, but configure timeouts
     private static readonly HttpClient HttpClient = CreateClient();
     private static readonly Random RandomJitter = Random.Shared;
 
@@ -39,7 +51,6 @@ public class TwicDownloaderService : ITwicDownloaderService
 
         var outputFullPath = Path.GetFullPath(outputFile);
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
-        // Use a unique temp folder to avoid collisions
         var tempFolder = Path.Combine(Path.GetTempPath(), $"PgnTools_Twic_{Guid.NewGuid():N}");
 
         Directory.CreateDirectory(tempFolder);
@@ -47,20 +58,18 @@ public class TwicDownloaderService : ITwicDownloaderService
 
         var issuesWritten = 0;
         var isFirstGlobalEntry = true;
+        var failures = new List<TwicIssueFailure>();
 
         try
         {
             await using (var outputStream = new FileStream(tempOutputPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous))
-            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize))
+            await using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize))
             {
                 for (var issue = start; issue <= end; issue++)
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    // RATE LIMITING:
-                    // Wait 2 to 4 seconds between requests to be respectful.
-                    // If this is the very first request, we don't need to wait.
-                    if (issuesWritten > 0 || issue > start)
+                    if (issue > start)
                     {
                         var delayMs = RandomJitter.Next(2000, 4000);
                         await Task.Delay(delayMs, ct);
@@ -79,44 +88,66 @@ public class TwicDownloaderService : ITwicDownloaderService
                     }
                     catch (OperationCanceledException ex)
                     {
-                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        AddFailure(failures, status, issue, "Download timed out.", ex);
                         continue;
                     }
-                    catch (HttpRequestException ex)
+                    catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException)
                     {
-                        status.Report($"Failed to download #{issue}: {ex.Message}");
-                        continue;
-                    }
-                    catch (IOException ex)
-                    {
-                        status.Report($"Failed to download #{issue}: {ex.Message}");
+                        AddFailure(failures, status, issue, ex.Message, ex);
                         continue;
                     }
 
                     if (zipPath == null)
                     {
-                        status.Report($"Issue #{issue} not found (404).");
+                        AddFailure(failures, status, issue, "Issue not found (404).");
                         continue;
                     }
 
-                    status.Report($"Processing TWIC #{issue}...");
-                    var appended = await AppendIssueFromZipAsync(writer, zipPath, issue, isFirstGlobalEntry, ct);
-
-                    // Cleanup ZIP immediately to save disk space
-                    try { File.Delete(zipPath); } catch { /* Ignore file lock issues on temp files */ }
-
-                    if (appended)
+                    try
                     {
-                        isFirstGlobalEntry = false;
-                        issuesWritten++;
+                        status.Report($"Processing TWIC #{issue}...");
+                        var appended = await AppendIssueFromZipAsync(writer, zipPath, issue, isFirstGlobalEntry, ct);
+
+                        if (appended)
+                        {
+                            isFirstGlobalEntry = false;
+                            issuesWritten++;
+                        }
+                        else
+                        {
+                            AddFailure(failures, status, issue, "No PGN content found.");
+                        }
                     }
-                    else
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
                     {
-                        status.Report($"No PGN content found in #{issue}.");
+                        throw;
+                    }
+                    catch (InvalidDataException ex)
+                    {
+                        AddFailure(failures, status, issue, "Invalid ZIP archive or PGN entry.", ex);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        AddFailure(failures, status, issue, ex.Message, ex);
+                    }
+                    catch (IOException ex)
+                    {
+                        throw new IOException($"Output write or ZIP stream failure while processing TWIC #{issue}.", ex);
+                    }
+                    finally
+                    {
+                        TryDelete(zipPath);
                     }
                 }
 
                 await writer.FlushAsync(ct);
+            }
+
+            if (failures.Count > 0)
+            {
+                status.Report($"Download incomplete. Refusing to replace output. Succeeded: {issuesWritten:N0}; failed: {failures.Count:N0}.");
+                CleanupTemp(tempOutputPath);
+                throw new InvalidOperationException(BuildIncompleteDownloadMessage(issuesWritten, failures));
             }
 
             if (issuesWritten == 0)
@@ -138,8 +169,7 @@ public class TwicDownloaderService : ITwicDownloaderService
         }
         catch (Exception ex)
         {
-            status.Report($"Error: {ex.Message}");
-            CleanupTemp(tempOutputPath);
+            ReportErrorAndPreserveTempIfUseful(status, ex, tempOutputPath);
             throw;
         }
         finally
@@ -154,29 +184,32 @@ public class TwicDownloaderService : ITwicDownloaderService
         }
     }
 
-    private static void CleanupTemp(string path)
-    {
-        if (File.Exists(path)) try { File.Delete(path); } catch { }
-    }
-
     public static int CalculateEstimatedLatestIssue(DateTime? today = null)
     {
-        var current = (today ?? DateTime.UtcNow).Date;
-        var daysPassed = (current - AnchorIssueDate).TotalDays;
+        var current = today ?? DateTime.UtcNow;
+        var currentUtcDate = current.Kind switch
+        {
+            DateTimeKind.Local => current.ToUniversalTime().Date,
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(current, DateTimeKind.Utc).Date,
+            _ => current.Date
+        };
+
+        var daysPassed = (currentUtcDate - AnchorIssueDate.Date).TotalDays;
         var weeksPassed = (int)Math.Floor(daysPassed / 7.0);
         var estimated = AnchorIssue + weeksPassed;
         return Math.Max(MinimumIssue, estimated);
     }
 
-    public static async Task<int> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct)
+    public static async Task<TwicLatestIssueProbeResult> ProbeLatestIssueAsync(int estimatedIssue, IProgress<string> status, CancellationToken ct)
     {
-        // Start probing slightly before the estimate in case of calculation errors or holidays
-        var probe = Math.Max(MinimumIssue, estimatedIssue - 3);
+        var estimate = Math.Max(MinimumIssue, estimatedIssue);
+        var probe = Math.Max(MinimumIssue, estimate - ProbeLookBehind);
+        var maxProbe = estimate + ProbeLookAhead;
         var lastSuccess = 0;
         var hadSuccess = false;
         var failures = 0;
 
-        while (failures < 3) // Stop after 3 consecutive 404s
+        while (failures < ConsecutiveProbeFailures && probe <= maxProbe)
         {
             ct.ThrowIfCancellationRequested();
             var url = new Uri(BaseUri, $"twic{probe}g.zip");
@@ -185,46 +218,44 @@ public class TwicDownloaderService : ITwicDownloaderService
 
             try
             {
-                using var response = await SendWithRedirectsAsync(HttpMethod.Head, url, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var response = await SendWithRedirectsAsync(HttpMethod.Get, url, HttpCompletionOption.ResponseHeadersRead, ct);
 
                 if (response.IsSuccessStatusCode)
                 {
                     lastSuccess = probe;
                     hadSuccess = true;
-                    probe++;
-                    failures = 0; // Reset failures on success
-                }
-                else if (response.StatusCode == HttpStatusCode.NotFound)
-                {
-                    failures++;
-                    probe++;
+                    failures = 0;
                 }
                 else
                 {
                     failures++;
-                    probe++;
                 }
             }
-            catch (HttpRequestException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Network error counts as a failure to find
+                throw;
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
                 failures++;
-                probe++;
             }
 
-            // Minimal delay during probing, but still some
-            await Task.Delay(400, ct);
+            probe++;
+
+            if (failures < ConsecutiveProbeFailures && probe <= maxProbe)
+            {
+                await Task.Delay(400, ct);
+            }
         }
 
         if (!hadSuccess)
         {
-            var fallback = Math.Max(MinimumIssue, estimatedIssue);
-            status.Report($"Could not confirm latest issue; using estimate {fallback}.");
-            return fallback;
+            status.Report($"Could not confirm latest issue; using estimate {estimate}.");
+            return new TwicLatestIssueProbeResult(estimate, IsConfirmed: false, Source: "estimate");
         }
 
         status.Report($"Latest confirmed issue: {lastSuccess}");
-        return lastSuccess;
+        return new TwicLatestIssueProbeResult(lastSuccess, IsConfirmed: true, Source: "probe");
     }
 
     private static HttpClient CreateClient()
@@ -236,9 +267,8 @@ public class TwicDownloaderService : ITwicDownloaderService
 
         var client = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = TimeSpan.FromSeconds(90)
         };
-        // Polite User Agent
         client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
         return client;
     }
@@ -249,7 +279,7 @@ public class TwicDownloaderService : ITwicDownloaderService
         var url = new Uri(BaseUri, fileName);
         var outputPath = Path.Combine(tempFolder, fileName);
 
-        int attempts = 0;
+        var attempts = 0;
         while (true)
         {
             attempts++;
@@ -260,15 +290,27 @@ public class TwicDownloaderService : ITwicDownloaderService
 
                 response.EnsureSuccessStatusCode();
 
+                if (response.Content.Headers.ContentLength is { } contentLength && contentLength > MaxZipBytes)
+                {
+                    throw new InvalidOperationException($"Download exceeded maximum allowed ZIP size of {MaxZipBytes:N0} bytes.");
+                }
+
                 await using var contentStream = await response.Content.ReadAsStreamAsync(ct);
                 await using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
-                await contentStream.CopyToAsync(fileStream, ct);
+                await CopyToAsyncLimited(contentStream, fileStream, MaxZipBytes, ct);
 
                 return outputPath;
             }
-            catch (Exception) when (attempts < 3)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Exponential backoff: 1s, 2s, 4s
+                throw;
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch (Exception) when (attempts < MaxDownloadAttempts && !ct.IsCancellationRequested)
+            {
                 await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempts - 1)), ct);
             }
         }
@@ -301,10 +343,27 @@ public class TwicDownloaderService : ITwicDownloaderService
                 throw new HttpRequestException($"Redirect response from {current} did not include a Location header.");
             }
 
-            current = location.IsAbsoluteUri ? location : new Uri(current, location);
+            current = ValidateRedirect(current, location);
         }
 
         throw new HttpRequestException($"Too many redirects when requesting {url}.");
+    }
+
+    private static Uri ValidateRedirect(Uri current, Uri location)
+    {
+        var next = location.IsAbsoluteUri ? location : new Uri(current, location);
+
+        if (next.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new HttpRequestException($"Refusing non-HTTPS redirect to {next.Host}.");
+        }
+
+        if (!AllowedRedirectHosts.Contains(next.Host))
+        {
+            throw new HttpRequestException($"Refusing redirect from {current.Host} to {next.Host}.");
+        }
+
+        return next;
     }
 
     private static bool IsRedirectStatusCode(HttpStatusCode statusCode) =>
@@ -316,52 +375,148 @@ public class TwicDownloaderService : ITwicDownloaderService
 
     private static async Task<bool> AppendIssueFromZipAsync(StreamWriter writer, string zipPath, int issue, bool isFirstGlobalEntry, CancellationToken ct)
     {
-        try
+        using var archive = ZipFile.OpenRead(zipPath);
+        var entry = archive.Entries.FirstOrDefault(e => e.Name.Equals($"twic{issue}.pgn", StringComparison.OrdinalIgnoreCase))
+                    ?? archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase));
+
+        if (entry == null) return false;
+
+        if (entry.Length > MaxPgnEntryBytes)
         {
-            using var archive = ZipFile.OpenRead(zipPath);
-            // TWIC sometimes nests files or names them differently.
-            // Priority: "twicX.pgn", then any ".pgn".
-            var entry = archive.Entries.FirstOrDefault(e => e.Name.Equals($"twic{issue}.pgn", StringComparison.OrdinalIgnoreCase))
-                        ?? archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase));
+            throw new InvalidOperationException($"PGN entry exceeded maximum allowed size of {MaxPgnEntryBytes:N0} bytes.");
+        }
 
-            if (entry == null) return false;
+        await using var entryStream = entry.Open();
+        using var reader = new StreamReader(entryStream, Encoding.GetEncoding(1252), detectEncodingFromByteOrderMarks: true);
 
-            await using var entryStream = entry.Open();
-            // Detect encoding (often Windows-1252 or UTF8)
-            using var reader = new StreamReader(entryStream, Encoding.GetEncoding(1252), detectEncodingFromByteOrderMarks: true);
-
-            string? line;
-            var hasContent = false;
-            while ((line = await reader.ReadLineAsync(ct)) != null)
+        string? line;
+        while ((line = await reader.ReadLineAsync(ct)) != null)
+        {
+            if (string.IsNullOrWhiteSpace(line))
             {
-                if (!hasContent)
-                {
-                    if (string.IsNullOrWhiteSpace(line))
-                    {
-                        continue; // Skip leading empty lines
-                    }
-
-                    if (!isFirstGlobalEntry)
-                    {
-                        await writer.WriteLineAsync();
-                        await writer.WriteLineAsync(); // Double newline between files
-                    }
-
-                    hasContent = true;
-                }
-
-                await writer.WriteLineAsync(line);
+                continue;
             }
 
-            return hasContent;
+            if (!isFirstGlobalEntry)
+            {
+                ct.ThrowIfCancellationRequested();
+                await writer.WriteLineAsync();
+                await writer.WriteLineAsync();
+            }
+
+            await writer.WriteLineAsync(line.AsMemory(), ct);
+            await CopyRemainingPgnTextAsync(reader, writer, line.Length + Environment.NewLine.Length, ct);
+            return true;
         }
-        catch (OperationCanceledException)
+
+        return false;
+    }
+
+    private static async Task CopyToAsyncLimited(Stream source, Stream destination, long maxBytes, CancellationToken ct)
+    {
+        var buffer = new byte[BufferSize];
+        long totalBytes = 0;
+
+        while (true)
         {
-            throw;
+            var bytesRead = await source.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (bytesRead == 0)
+            {
+                return;
+            }
+
+            totalBytes += bytesRead;
+            if (totalBytes > maxBytes)
+            {
+                throw new InvalidOperationException($"Download exceeded maximum allowed size of {maxBytes:N0} bytes.");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task CopyRemainingPgnTextAsync(StreamReader reader, StreamWriter writer, long charactersWritten, CancellationToken ct)
+    {
+        var buffer = new char[BufferSize];
+        var totalCharacters = charactersWritten;
+
+        while (true)
+        {
+            var charsRead = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+            if (charsRead == 0)
+            {
+                return;
+            }
+
+            totalCharacters += charsRead;
+            if (totalCharacters > MaxPgnEntryBytes)
+            {
+                throw new InvalidOperationException($"PGN content exceeded maximum allowed size of {MaxPgnEntryBytes:N0} characters.");
+            }
+
+            await writer.WriteAsync(buffer.AsMemory(0, charsRead), ct).ConfigureAwait(false);
+        }
+    }
+
+    private static void AddFailure(List<TwicIssueFailure> failures, IProgress<string> status, int issue, string reason, Exception? exception = null)
+    {
+        failures.Add(new TwicIssueFailure(issue, reason, exception));
+        status.Report($"Failed TWIC #{issue}: {reason}");
+    }
+
+    private static string BuildIncompleteDownloadMessage(int issuesWritten, IReadOnlyList<TwicIssueFailure> failures)
+    {
+        var examples = string.Join("; ", failures.Take(5).Select(f => $"#{f.Issue}: {f.Reason}"));
+        var suffix = failures.Count > 5 ? $" (+{failures.Count - 5:N0} more)" : string.Empty;
+
+        return $"TWIC download incomplete. Refusing to replace the existing output file. " +
+               $"Succeeded: {issuesWritten:N0}; failed: {failures.Count:N0}. {examples}{suffix}";
+    }
+
+    private static void ReportErrorAndPreserveTempIfUseful(IProgress<string> status, Exception ex, string tempOutputPath)
+    {
+        if (TryGetFileLength(tempOutputPath) > 0)
+        {
+            status.Report($"Error: {ex.Message} Partial output preserved at {tempOutputPath}");
+            return;
+        }
+
+        CleanupTemp(tempOutputPath);
+        status.Report($"Error: {ex.Message}");
+    }
+
+    private static long TryGetFileLength(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
         }
         catch
         {
-            return false;
+            return 0;
         }
     }
+
+    private static void CleanupTemp(string path)
+    {
+        if (File.Exists(path)) TryDelete(path);
+    }
+
+    private static void TryDelete(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed record TwicIssueFailure(int Issue, string Reason, Exception? Exception);
 }

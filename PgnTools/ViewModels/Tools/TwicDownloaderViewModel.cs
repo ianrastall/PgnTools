@@ -12,13 +12,16 @@ public partial class TwicDownloaderViewModel(
     IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
     private const int BaseIssue = 920;
+    private const string SettingsPrefix = nameof(TwicDownloaderViewModel);
+
     private readonly ITwicDownloaderService _twicDownloaderService = twicDownloaderService;
     private readonly IAppSettingsService _settings = settings;
     private readonly IWindowService _windowService = windowService;
-    private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private CancellationTokenSource? _cancellationTokenSource;
     private bool _disposed;
-    private const string SettingsPrefix = nameof(TwicDownloaderViewModel);
+    private bool _operationInFlight;
+    private bool _executionLockDisposed;
 
     [ObservableProperty]
     private string _outputFilePath = string.Empty;
@@ -46,6 +49,9 @@ public partial class TwicDownloaderViewModel(
 
     [ObservableProperty]
     private string _statusMessage = "Select output file and download range";
+
+    public bool IsCustomRange => SelectedModeIndex == 1;
+
     public void Initialize()
     {
         Title = "TWIC Downloader";
@@ -56,11 +62,15 @@ public partial class TwicDownloaderViewModel(
         SelectedModeIndex = 0;
         LoadState();
     }
-    public bool IsCustomRange => SelectedModeIndex == 1;
 
     [RelayCommand]
     private async Task SelectOutputFileAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
             var suggestedName = "twic_collection.pgn";
@@ -79,89 +89,96 @@ public partial class TwicDownloaderViewModel(
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-    }
+            }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-    }
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanProbe))]
     private async Task ProbeLatestAsync()
     {
-        if (!await _executionLock.WaitAsync(0))
+        if (_disposed || !_executionLock.Wait(0))
         {
             return;
-    }
+        }
+
+        _operationInFlight = true;
+        CancellationTokenSource? cts = null;
+
         try
         {
             IsRunning = true;
+            EstimatedLatestIssue = TwicDownloaderService.CalculateEstimatedLatestIssue();
             StatusMessage = "Probing TWIC for the latest issue...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
 
-            _cancellationTokenSource = new CancellationTokenSource();
+            cts = new CancellationTokenSource();
+            _cancellationTokenSource = cts;
             var progress = new Progress<string>(message =>
             {
                 StatusMessage = message;
                 StatusDetail = BuildProgressDetail();
             });
 
-            var latest = await TwicDownloaderService.ProbeLatestIssueAsync(
-                LatestIssue,
+            var result = await TwicDownloaderService.ProbeLatestIssueAsync(
+                EstimatedLatestIssue,
                 progress,
-                _cancellationTokenSource.Token);
+                cts.Token);
 
-            LatestIssue = latest;
-            StatusMessage = $"Latest issue detected: {latest}";
-            StatusSeverity = InfoBarSeverity.Success;
+            LatestIssue = result.Issue;
+            StatusMessage = result.IsConfirmed
+                ? $"Latest confirmed issue: {result.Issue}"
+                : $"Estimated latest issue: {result.Issue} (not confirmed)";
+            StatusSeverity = result.IsConfirmed ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (OperationCanceledException)
         {
             StatusMessage = "Probe cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         finally
         {
-            IsRunning = false;
-            _cancellationTokenSource?.Dispose();
-            _cancellationTokenSource = null;
-            _executionLock.Release();
-            StopProgressTimer();
-    }
+            CompleteOperation(cts);
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RunAsync()
     {
-        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        if (_disposed || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-    }
-        var start = IsCustomRange ? (int)Math.Round(StartIssue) : BaseIssue;
-        var end = IsCustomRange ? (int)Math.Round(EndIssue) : LatestIssue;
+        }
 
-        if (start < 1 || end < 1 || end < start)
+        if (!TryBuildIssueRange(out var start, out var end))
         {
             StatusMessage = "Enter a valid issue range.";
             StatusSeverity = InfoBarSeverity.Error;
             return;
-    }
-        if (!await _executionLock.WaitAsync(0))
+        }
+
+        if (!_executionLock.Wait(0))
         {
             return;
-    }
+        }
+
+        _operationInFlight = true;
+        CancellationTokenSource? cts = null;
+
         try
         {
             IsRunning = true;
@@ -170,7 +187,8 @@ public partial class TwicDownloaderViewModel(
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
 
-            _cancellationTokenSource = new CancellationTokenSource();
+            cts = new CancellationTokenSource();
+            _cancellationTokenSource = cts;
             var progress = new Progress<string>(message =>
             {
                 StatusMessage = message;
@@ -182,48 +200,40 @@ public partial class TwicDownloaderViewModel(
                 end,
                 OutputFilePath,
                 progress,
-                _cancellationTokenSource.Token);
+                cts.Token);
 
             StatusSeverity = issuesWritten > 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (OperationCanceledException)
         {
             StatusMessage = "TWIC download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         finally
         {
-            IsRunning = false;
-            _cancellationTokenSource?.Dispose();
-            _cancellationTokenSource = null;
-            _executionLock.Release();
-            StopProgressTimer();
-    }
+            CompleteOperation(cts);
+        }
     }
 
     private bool CanRun()
     {
-        if (IsRunning || string.IsNullOrWhiteSpace(OutputFilePath))
+        if (_disposed || IsRunning || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return false;
+        }
+
+        return TryBuildIssueRange(out _, out _);
     }
-        if (!IsCustomRange)
-        {
-            return LatestIssue >= BaseIssue;
-    }
-        var start = (int)Math.Round(StartIssue);
-        var end = (int)Math.Round(EndIssue);
-        return start >= 1 && end >= start;
-    }
-    private bool CanProbe() => !IsRunning;
+
+    private bool CanProbe() => !_disposed && !IsRunning;
 
     [RelayCommand]
     private void Cancel()
@@ -233,53 +243,139 @@ public partial class TwicDownloaderViewModel(
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
     }
+
     partial void OnOutputFilePathChanged(string value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
+
     partial void OnStartIssueChanged(double value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
+
     partial void OnEndIssueChanged(double value)
     {
         RunCommand.NotifyCanExecuteChanged();
     }
+
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
         ProbeLatestCommand.NotifyCanExecuteChanged();
     }
+
     partial void OnSelectedModeIndexChanged(int value)
     {
         OnPropertyChanged(nameof(IsCustomRange));
         if (!IsCustomRange)
         {
             EndIssue = LatestIssue;
-    }
+        }
+
         RunCommand.NotifyCanExecuteChanged();
     }
+
     partial void OnLatestIssueChanged(int value)
     {
         if (!IsCustomRange)
         {
             EndIssue = value;
-    }
+        }
+
         RunCommand.NotifyCanExecuteChanged();
     }
+
     public void Dispose()
     {
         if (_disposed)
         {
             return;
-    }
+        }
+
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
-        _cancellationTokenSource?.Dispose();
-        _cancellationTokenSource = null;
+
+        if (!_operationInFlight)
+        {
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+            DisposeExecutionLock();
+        }
+
+        RunCommand.NotifyCanExecuteChanged();
+        ProbeLatestCommand.NotifyCanExecuteChanged();
+    }
+
+    private bool TryBuildIssueRange(out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+
+        if (!IsCustomRange)
+        {
+            start = BaseIssue;
+            end = LatestIssue;
+            return end >= BaseIssue;
+        }
+
+        return TryGetIssueNumber(StartIssue, out start) &&
+               TryGetIssueNumber(EndIssue, out end) &&
+               end >= start;
+    }
+
+    private static bool TryGetIssueNumber(double value, out int issue)
+    {
+        issue = 0;
+
+        if (!double.IsFinite(value))
+        {
+            return false;
+        }
+
+        var rounded = Math.Round(value);
+        if (rounded < 1 || rounded > int.MaxValue)
+        {
+            return false;
+        }
+
+        issue = (int)rounded;
+        return true;
+    }
+
+    private void CompleteOperation(CancellationTokenSource? cts)
+    {
+        IsRunning = false;
+
+        if (ReferenceEquals(_cancellationTokenSource, cts))
+        {
+            _cancellationTokenSource = null;
+        }
+
+        cts?.Dispose();
+        _executionLock.Release();
+        _operationInFlight = false;
+
+        if (_disposed)
+        {
+            DisposeExecutionLock();
+        }
+
+        StopProgressTimer();
+    }
+
+    private void DisposeExecutionLock()
+    {
+        if (_executionLockDisposed)
+        {
+            return;
+        }
+
+        _executionLockDisposed = true;
         _executionLock.Dispose();
     }
+
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -291,12 +387,14 @@ public partial class TwicDownloaderViewModel(
                 OutputFilePath = Path.Combine(defaultFolder, "twic_collection.pgn");
             }
         }
+
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
 
         SelectedModeIndex = _settings.GetValue($"{SettingsPrefix}.{nameof(SelectedModeIndex)}", SelectedModeIndex);
         StartIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(StartIssue)}", StartIssue);
         EndIssue = _settings.GetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
     }
+
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
@@ -305,9 +403,3 @@ public partial class TwicDownloaderViewModel(
         _settings.SetValue($"{SettingsPrefix}.{nameof(EndIssue)}", EndIssue);
     }
 }
-
-
-
-
-
-

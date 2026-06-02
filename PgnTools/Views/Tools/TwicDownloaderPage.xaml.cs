@@ -28,10 +28,8 @@ public sealed partial class TwicDownloaderPage : Page
             {
                 ViewModel.CancelCommand.Execute(null);
             }
-            else
-            {
-                ViewModel.Dispose();
-            }
+
+            ViewModel.Dispose();
         }
     }
 }

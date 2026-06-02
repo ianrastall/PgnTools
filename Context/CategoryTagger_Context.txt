@@ -1,5 +1,5 @@
 # Context Dump: Category Tagger
-# Date: 2026-02-05 10:00:19
+# Date: 2026-06-02 09:44:45
 # File Count: 11
 
 ===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
@@ -596,6 +596,38 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
 
+    private readonly record struct TournamentKey(
+        string Event,
+        string Site,
+        string EventDate,
+        string Section,
+        string Stage);
+
+    private sealed class TournamentKeyComparer : IEqualityComparer<TournamentKey>
+    {
+        public static TournamentKeyComparer Instance { get; } = new();
+
+        public bool Equals(TournamentKey x, TournamentKey y)
+        {
+            return StringComparer.OrdinalIgnoreCase.Equals(x.Event, y.Event) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Site, y.Site) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.EventDate, y.EventDate) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Section, y.Section) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(x.Stage, y.Stage);
+        }
+
+        public int GetHashCode(TournamentKey obj)
+        {
+            var hash = new HashCode();
+            hash.Add(obj.Event, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Site, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.EventDate, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Section, StringComparer.OrdinalIgnoreCase);
+            hash.Add(obj.Stage, StringComparer.OrdinalIgnoreCase);
+            return hash.ToHashCode();
+        }
+    }
+
     private sealed class TournamentData
     {
         public HashSet<string> Players { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -622,6 +654,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
     public CategoryTaggerService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
+        ArgumentNullException.ThrowIfNull(pgnReader);
+        ArgumentNullException.ThrowIfNull(pgnWriter);
         _pgnReader = pgnReader;
         _pgnWriter = pgnWriter;
     }
@@ -664,10 +698,15 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
         var (stats, totalGames) = await AnalyzeStatsAsync(inputFullPath, cancellationToken).ConfigureAwait(false);
 
-        var categories = stats
-            .Select(kv => (Event: kv.Key, Category: kv.Value.CalculateCategory()))
-            .Where(x => x.Category.HasValue)
-            .ToDictionary(x => x.Event, x => x.Category!.Value, StringComparer.OrdinalIgnoreCase);
+        var categories = new Dictionary<TournamentKey, int>(TournamentKeyComparer.Instance);
+        foreach (var entry in stats)
+        {
+            var category = entry.Value.CalculateCategory();
+            if (category.HasValue)
+            {
+                categories[entry.Key] = category.Value;
+            }
+        }
 
         try
         {
@@ -690,11 +729,12 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
                     cancellationToken.ThrowIfCancellationRequested();
                     processedGames++;
 
-                    var tournamentKey = BuildTournamentKey(game.Headers);
-                    if (!string.IsNullOrWhiteSpace(tournamentKey) &&
+                    if (TryBuildTournamentKey(game.Headers, out var tournamentKey) &&
                         categories.TryGetValue(tournamentKey, out var category))
                     {
-                        game.Headers["EventCategory"] = category.ToString();
+                        const string categoryKey = "EventCategory";
+                        game.Headers[categoryKey] = category.ToString();
+                        EnsureHeaderOrder(game.HeaderOrder, categoryKey, insertAfterKey: "Event");
                     }
 
                     if (!firstOutput)
@@ -715,7 +755,8 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
                 await writer.FlushAsync().ConfigureAwait(false);
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken)
+                .ConfigureAwait(false);
             progress?.Report(100);
         }
         catch
@@ -735,11 +776,11 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
         }
     }
 
-    private async Task<(Dictionary<string, TournamentData> Stats, long TotalGames)> AnalyzeStatsAsync(
+    private async Task<(Dictionary<TournamentKey, TournamentData> Stats, long TotalGames)> AnalyzeStatsAsync(
         string inputFilePath,
         CancellationToken cancellationToken)
     {
-        var stats = new Dictionary<string, TournamentData>(StringComparer.OrdinalIgnoreCase);
+        var stats = new Dictionary<TournamentKey, TournamentData>(TournamentKeyComparer.Instance);
         var totalGames = 0L;
 
         await foreach (var game in _pgnReader.ReadGamesAsync(inputFilePath, readMoveText: false, cancellationToken)
@@ -748,8 +789,7 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             cancellationToken.ThrowIfCancellationRequested();
             totalGames++;
 
-            var tournamentKey = BuildTournamentKey(game.Headers);
-            if (string.IsNullOrWhiteSpace(tournamentKey))
+            if (!TryBuildTournamentKey(game.Headers, out var tournamentKey))
             {
                 continue;
             }
@@ -764,19 +804,27 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
             if (game.Headers.TryGetHeaderValue("White", out var white) && !string.IsNullOrWhiteSpace(white))
             {
-                data.Players.Add(white);
-                if (TryParseElo(game.Headers, "WhiteElo", out var rating))
+                var whiteName = white.Trim();
+                if (!string.IsNullOrEmpty(whiteName))
                 {
-                    TryAddRating(data, white, rating);
+                    data.Players.Add(whiteName);
+                    if (TryParseElo(game.Headers, "WhiteElo", out var rating))
+                    {
+                        TryAddRating(data, whiteName, rating);
+                    }
                 }
             }
 
             if (game.Headers.TryGetHeaderValue("Black", out var black) && !string.IsNullOrWhiteSpace(black))
             {
-                data.Players.Add(black);
-                if (TryParseElo(game.Headers, "BlackElo", out var rating))
+                var blackName = black.Trim();
+                if (!string.IsNullOrEmpty(blackName))
                 {
-                    TryAddRating(data, black, rating);
+                    data.Players.Add(blackName);
+                    if (TryParseElo(game.Headers, "BlackElo", out var rating))
+                    {
+                        TryAddRating(data, blackName, rating);
+                    }
                 }
             }
         }
@@ -809,18 +857,25 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
 
     private static void TryAddRating(TournamentData data, string player, int rating)
     {
-        if (!data.PlayerRatings.ContainsKey(player))
+        if (data.PlayerRatings.TryGetValue(player, out var existing))
         {
-            data.PlayerRatings[player] = rating;
+            if (rating > existing)
+            {
+                data.PlayerRatings[player] = rating;
+            }
+            return;
         }
+
+        data.PlayerRatings[player] = rating;
     }
 
-    private static string BuildTournamentKey(IReadOnlyDictionary<string, string> headers)
+    private static bool TryBuildTournamentKey(IReadOnlyDictionary<string, string> headers, out TournamentKey key)
     {
         var eventName = headers.GetHeaderValueOrDefault("Event", string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(eventName))
         {
-            return string.Empty;
+            key = default;
+            return false;
         }
 
         var site = headers.GetHeaderValueOrDefault("Site", string.Empty).Trim();
@@ -834,12 +889,33 @@ public sealed class CategoryTaggerService : ICategoryTaggerService
             eventDate = date;
         }
 
-        return string.Join(" | ",
-            eventName,
-            site,
-            eventDate,
-            section,
-            stage);
+        key = new TournamentKey(eventName, site, eventDate, section, stage);
+        return true;
+    }
+
+    private static void EnsureHeaderOrder(List<string> order, string key, string? insertAfterKey = null)
+    {
+        for (var i = 0; i < order.Count; i++)
+        {
+            if (string.Equals(order[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(insertAfterKey))
+        {
+            for (var i = 0; i < order.Count; i++)
+            {
+                if (string.Equals(order[i], insertAfterKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    order.Insert(i + 1, key);
+                    return;
+                }
+            }
+        }
+
+        order.Add(key);
     }
 
     private static bool ShouldReportProgress(long processedGames, ref DateTime lastReportUtc)
@@ -1113,11 +1189,21 @@ public partial class PgnReader
             return false;
         }
 
+        if (trimmedSpan[0] == '%')
+        {
+            if (inMoveSection && readMoveText && moveText != null)
+            {
+                moveText.AppendLine();
+            }
+
+            return false;
+        }
+
         // Only treat as tag line when we're not deep in comments/variations.
         var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
         {
-            if (TryParseHeaderLine(trimmedSpan, out var tagKey, out var rawValue))
+            if (TryParseHeaderLine(trimmedSpan, allowUnquotedValue: !inMoveSection, out var tagKey, out var rawValue))
             {
                 if (inMoveSection && currentGame != null)
                 {
@@ -1180,51 +1266,41 @@ public partial class PgnReader
         }
 
         var length = 0;
-        var escaping = false;
-
-        foreach (var c in value)
+        for (var i = 0; i < value.Length; i++)
         {
-            if (!escaping && c == '\\')
+            var c = value[i];
+            if (c == '\\' && i + 1 < value.Length)
             {
-                escaping = true;
-                continue;
+                var next = value[i + 1];
+                if (next == '\\' || next == '"' || next == '\'')
+                {
+                    length++;
+                    i++;
+                    continue;
+                }
             }
 
-            length++;
-            escaping = false;
-        }
-
-        if (escaping)
-        {
             length++;
         }
 
         return string.Create(length, value, (span, state) =>
         {
             var idx = 0;
-            var isEscaping = false;
-
-            foreach (var c in state)
+            for (var i = 0; i < state.Length; i++)
             {
-                if (isEscaping)
+                var c = state[i];
+                if (c == '\\' && i + 1 < state.Length)
                 {
-                    span[idx++] = c;
-                    isEscaping = false;
-                    continue;
-                }
-
-                if (c == '\\')
-                {
-                    isEscaping = true;
-                    continue;
+                    var next = state[i + 1];
+                    if (next == '\\' || next == '"' || next == '\'')
+                    {
+                        span[idx++] = next;
+                        i++;
+                        continue;
+                    }
                 }
 
                 span[idx++] = c;
-            }
-
-            if (isEscaping && idx < span.Length)
-            {
-                span[idx] = '\\';
             }
         });
     }
@@ -1343,12 +1419,12 @@ public partial class PgnReader
         return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 
-    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, out string key, out string rawValue)
+    private static bool TryParseHeaderLine(ReadOnlySpan<char> line, bool allowUnquotedValue, out string key, out string rawValue)
     {
-        return TryParseHeaderFallback(line, out key, out rawValue);
+        return TryParseHeaderFallback(line, allowUnquotedValue, out key, out rawValue);
     }
 
-    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, out string key, out string rawValue)
+    private static bool TryParseHeaderFallback(ReadOnlySpan<char> line, bool allowUnquotedValue, out string key, out string rawValue)
     {
         key = string.Empty;
         rawValue = string.Empty;
@@ -1383,6 +1459,24 @@ public partial class PgnReader
             key = nameSpan.ToString();
             rawValue = string.Empty;
             return true;
+        }
+
+        if (!allowUnquotedValue)
+        {
+            var first = nameSpan[0];
+            if (!char.IsLetter(first))
+            {
+                return false;
+            }
+
+            for (var i = 1; i < nameSpan.Length; i++)
+            {
+                var c = nameSpan[i];
+                if (!char.IsLetterOrDigit(c) && c != '_')
+                {
+                    return false;
+                }
+            }
         }
 
         if (span[0] == '"' || span[0] == '\'')
@@ -1422,6 +1516,11 @@ public partial class PgnReader
             key = nameSpan.ToString();
             rawValue = builder.ToString();
             return true;
+        }
+
+        if (!allowUnquotedValue)
+        {
+            return false;
         }
 
         var closingIndex = span.IndexOf(']');
@@ -1683,6 +1782,9 @@ public partial class CategoryTaggerViewModel(
     private double _progressValue;
 
     [ObservableProperty]
+    private bool _isIndeterminate = true;
+
+    [ObservableProperty]
     private string _statusMessage = "Select input and output PGN files";
     public void Initialize()
     {
@@ -1787,6 +1889,7 @@ public partial class CategoryTaggerViewModel(
         {
             IsRunning = true;
             ProgressValue = 0;
+            IsIndeterminate = true;
             StatusMessage = "Analyzing tournaments...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
@@ -1797,6 +1900,7 @@ public partial class CategoryTaggerViewModel(
             var progress = new Progress<double>(p =>
             {
                 ProgressValue = p;
+                IsIndeterminate = false;
                 StatusMessage = $"Tagging categories... {p:0}%";
                 StatusDetail = BuildProgressDetail(p);
             });
@@ -1808,6 +1912,7 @@ public partial class CategoryTaggerViewModel(
                 _cancellationTokenSource.Token);
 
             ProgressValue = 100;
+            IsIndeterminate = false;
             StatusMessage = "Category tagging complete.";
             StatusSeverity = InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100);
@@ -1817,6 +1922,7 @@ public partial class CategoryTaggerViewModel(
             StatusMessage = "Category tagging cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             ProgressValue = 0;
+            IsIndeterminate = false;
             StatusDetail = BuildProgressDetail(ProgressValue);
     }
         catch (Exception ex)
@@ -1828,6 +1934,7 @@ public partial class CategoryTaggerViewModel(
         finally
         {
             IsRunning = false;
+            IsIndeterminate = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
             _executionLock.Release();
@@ -1845,7 +1952,13 @@ public partial class CategoryTaggerViewModel(
     [RelayCommand]
     private void Cancel()
     {
-        _cancellationTokenSource?.Cancel();
+        try
+        {
+            _cancellationTokenSource?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail(ProgressValue);
@@ -2016,7 +2129,7 @@ public partial class CategoryTaggerViewModel(
                                     StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
                                     StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
                                     IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
-                                    IsIndeterminate="False"
+                                    IsIndeterminate="{x:Bind ViewModel.IsIndeterminate, Mode=OneWay}"
                                     ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
         </ScrollViewer>
     </Grid>

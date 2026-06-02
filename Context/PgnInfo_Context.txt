@@ -1,5 +1,5 @@
 # Context Dump: PGN Info
-# Date: 2026-02-06 21:49:27
+# Date: 2026-06-02 09:44:52
 # File Count: 9
 
 ===== BEGIN: Docs\PgnInfoService.md =====
@@ -651,16 +651,23 @@ public partial class PgnInfoService : IPgnInfoService
 
     private static int CountPlies(string moveText)
     {
+        if (string.IsNullOrEmpty(moveText))
+        {
+            return 0;
+        }
+
         // Simple ply counting: count SAN moves (words that look like moves)
         var count = 0;
         var inComment = false;
         var inLineComment = false;
+        var inBracketAnnotation = false;
         var depth = 0;
         var wordStart = -1;
+        var span = moveText.AsSpan();
 
-        for (var i = 0; i < moveText.Length; i++)
+        for (var i = 0; i < span.Length; i++)
         {
-            var c = moveText[i];
+            var c = span[i];
 
             if (inLineComment)
             {
@@ -671,12 +678,21 @@ public partial class PgnInfoService : IPgnInfoService
                 continue;
             }
 
+            if (inBracketAnnotation)
+            {
+                if (c == ']')
+                {
+                    inBracketAnnotation = false;
+                }
+                continue;
+            }
+
             switch (c)
             {
                 case '{':
                     if (wordStart >= 0)
                     {
-                        var word = moveText[wordStart..i];
+                        var word = span.Slice(wordStart, i - wordStart);
                         if (IsSanMove(word))
                         {
                             count++;
@@ -688,10 +704,26 @@ public partial class PgnInfoService : IPgnInfoService
                 case '}':
                     inComment = false;
                     continue;
+                case '[':
+                    if (!inComment && depth == 0)
+                    {
+                        if (wordStart >= 0)
+                        {
+                            var word = span.Slice(wordStart, i - wordStart);
+                            if (IsSanMove(word))
+                            {
+                                count++;
+                            }
+                            wordStart = -1;
+                        }
+                        inBracketAnnotation = true;
+                        continue;
+                    }
+                    break;
                 case '(':
                     if (wordStart >= 0)
                     {
-                        var word = moveText[wordStart..i];
+                        var word = span.Slice(wordStart, i - wordStart);
                         if (IsSanMove(word))
                         {
                             count++;
@@ -708,7 +740,7 @@ public partial class PgnInfoService : IPgnInfoService
                     {
                         if (wordStart >= 0)
                         {
-                            var word = moveText[wordStart..i];
+                            var word = span.Slice(wordStart, i - wordStart);
                             if (IsSanMove(word))
                             {
                                 count++;
@@ -732,7 +764,7 @@ public partial class PgnInfoService : IPgnInfoService
             }
             else if (wordStart >= 0)
             {
-                var word = moveText[wordStart..i];
+                var word = span.Slice(wordStart, i - wordStart);
                 if (IsSanMove(word))
                 {
                     count++;
@@ -744,7 +776,7 @@ public partial class PgnInfoService : IPgnInfoService
         // Check last word
         if (wordStart >= 0)
         {
-            var word = moveText[wordStart..];
+            var word = span.Slice(wordStart);
             if (IsSanMove(word))
             {
                 count++;
@@ -754,34 +786,62 @@ public partial class PgnInfoService : IPgnInfoService
         return count;
     }
 
-    private static bool IsSanMove(string word)
+    private static bool IsSanMove(ReadOnlySpan<char> word)
     {
-        if (string.IsNullOrEmpty(word) || word.Length < 2)
+        if (word.IsEmpty || word.Length < 2)
             return false;
 
         // Skip move numbers
-        if (word.All(c => char.IsDigit(c) || c == '.'))
+        var allDigitsOrDots = true;
+        for (var i = 0; i < word.Length; i++)
+        {
+            var c = word[i];
+            if (!char.IsDigit(c) && c != '.')
+            {
+                allDigitsOrDots = false;
+                break;
+            }
+        }
+        if (allDigitsOrDots)
             return false;
 
         // Skip results
-        if (word is "1-0" or "0-1" or "1/2-1/2" or "*")
+        if (word.Length == 1 && word[0] == '*')
+            return false;
+        if (word.SequenceEqual("1-0".AsSpan()) ||
+            word.SequenceEqual("0-1".AsSpan()) ||
+            word.SequenceEqual("1/2-1/2".AsSpan()))
             return false;
 
         // Skip NAGs
-        if (word.StartsWith('$'))
+        if (word[0] == '$')
             return false;
 
         // Skip annotations
-        if (word is "!!" or "??" or "!?" or "?!" or "!" or "?")
+        if (word.Length == 1 && (word[0] == '!' || word[0] == '?'))
             return false;
+        if (word.Length == 2)
+        {
+            if ((word[0] == '!' && word[1] == '!') ||
+                (word[0] == '?' && word[1] == '?') ||
+                (word[0] == '!' && word[1] == '?') ||
+                (word[0] == '?' && word[1] == '!'))
+            {
+                return false;
+            }
+        }
 
         // Basic SAN check: starts with piece letter or file letter
         var first = word[0];
-        return char.IsUpper(first) || (first >= 'a' && first <= 'h') || word.StartsWith("O-O");
+        return char.IsUpper(first) ||
+               (first >= 'a' && first <= 'h') ||
+               word.StartsWith("O-O".AsSpan(), StringComparison.OrdinalIgnoreCase) ||
+               word.StartsWith("0-0".AsSpan(), StringComparison.Ordinal);
     }
 
     private static void ApplyGame(IReadOnlyDictionary<string, string> headers, int plyCount, InternalStats stats)
     {
+        headers = EnsureCaseInsensitive(headers);
         stats.Games++;
 
         // Players
@@ -936,12 +996,12 @@ public partial class PgnInfoService : IPgnInfoService
     private static DateTime? ParseDate(IReadOnlyDictionary<string, string> headers)
     {
         var raw = headers.GetHeaderValueOrDefault("Date") ?? headers.GetHeaderValueOrDefault("EventDate");
-        if (string.IsNullOrEmpty(raw)) return null;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (raw.IndexOf('?', StringComparison.Ordinal) >= 0) return null;
 
-        // Replace ?? with 01 for parsing
-        var normalized = raw.Replace("??", "01");
-        var parts = normalized.Split('.');
-        if (parts.Length < 3) return null;
+        var normalized = raw.Replace('/', '.').Replace('-', '.');
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3) return null;
 
         if (!int.TryParse(parts[0], out var year) ||
             !int.TryParse(parts[1], out var month) ||
@@ -955,14 +1015,9 @@ public partial class PgnInfoService : IPgnInfoService
             return null;
         }
 
-        try
-        {
-            return new DateTime(year, month, Math.Min(day, DateTime.DaysInMonth(year, month)));
-        }
-        catch
-        {
-            return null;
-        }
+        if (day > DateTime.DaysInMonth(year, month)) return null;
+
+        return new DateTime(year, month, day);
     }
 
     private class TournamentStats
@@ -1121,6 +1176,16 @@ public partial class PgnInfoService : IPgnInfoService
         lastReportUtc = now;
         return true;
     }
+
+    private static IReadOnlyDictionary<string, string> EnsureCaseInsensitive(IReadOnlyDictionary<string, string> headers)
+    {
+        if (headers is Dictionary<string, string> dict && dict.Comparer == StringComparer.OrdinalIgnoreCase)
+        {
+            return dict;
+        }
+
+        return new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
+    }
 }
 ===== END: PgnTools\Services\PgnInfoService.cs =====
 
@@ -1143,6 +1208,7 @@ public partial class PgnInfoViewModel(
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private bool _disposeLockOnRelease;
     private bool _disposed;
     private const string SettingsPrefix = nameof(PgnInfoViewModel);
 
@@ -1159,7 +1225,7 @@ public partial class PgnInfoViewModel(
     private string _statusMessage = "Select a PGN file to analyze";
 
     [ObservableProperty]
-    private PgnStatistics? _statistics;
+    private PgnStatistics _statistics = new();
 
     [ObservableProperty]
     private bool _hasResults;
@@ -1197,7 +1263,7 @@ public partial class PgnInfoViewModel(
             StatusMessage = $"Ready to analyze: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
             HasResults = false;
-            Statistics = null;
+            Statistics = new PgnStatistics();
     }
         catch (Exception ex)
         {
@@ -1209,7 +1275,7 @@ public partial class PgnInfoViewModel(
     [RelayCommand(CanExecute = nameof(CanAnalyze))]
     private async Task AnalyzeAsync()
     {
-        if (string.IsNullOrEmpty(SelectedFilePath))
+        if (_disposed || string.IsNullOrEmpty(SelectedFilePath))
         {
             return;
     }
@@ -1221,6 +1287,7 @@ public partial class PgnInfoViewModel(
         {
             IsAnalyzing = true;
             HasResults = false;
+            Statistics = new PgnStatistics();
             ProgressGames = 0;
             StatusMessage = "Analyzing...";
             StatusSeverity = InfoBarSeverity.Informational;
@@ -1263,7 +1330,18 @@ public partial class PgnInfoViewModel(
             IsAnalyzing = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            _executionLock.Release();
+            try
+            {
+                _executionLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose() may have already torn down the semaphore.
+            }
+            if (_disposeLockOnRelease)
+            {
+                _executionLock.Dispose();
+            }
             StopProgressTimer();
     }
     }
@@ -1299,6 +1377,11 @@ public partial class PgnInfoViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
+        if (IsAnalyzing || _executionLock.CurrentCount == 0)
+        {
+            _disposeLockOnRelease = true;
+            return;
+        }
         _executionLock.Dispose();
     }
     private void LoadState()
@@ -1387,12 +1470,12 @@ public partial class PgnInfoViewModel(
                 <!-- Status/Progress -->
                 <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
                                         StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
-                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
-                                    IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
+                                        StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                        IsRunning="{x:Bind ViewModel.IsAnalyzing, Mode=OneWay}"
                                         IsIndeterminate="True"/>
 
                 <!-- Statistics Display -->
-                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay}"
+                <StackPanel Visibility="{x:Bind ViewModel.HasResults, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}"
                             Margin="0,24,0,0"
                             Spacing="24">
                     
@@ -1558,10 +1641,7 @@ public sealed partial class PgnInfoPage : Page
             {
                 ViewModel.CancelAnalysisCommand.Execute(null);
             }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.Dispose();
         }
     }
 

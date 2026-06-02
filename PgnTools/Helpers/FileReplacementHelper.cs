@@ -66,19 +66,21 @@ public static class FileReplacementHelper
                 }
                 catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    File.Move(tempFilePath, destinationPath, overwrite: false);
                     return;
                 }
             }
-            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 lastError = ex;
-                Thread.Sleep(attempt * 100);
-            }
-            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
-            {
-                lastError = ex;
-                Thread.Sleep(attempt * 100);
+
+                if (attempt < MaxReplaceAttempts)
+                {
+                    Thread.Sleep(attempt * 100);
+                    continue;
+                }
+
+                break;
             }
         }
 
@@ -124,19 +126,21 @@ public static class FileReplacementHelper
                 }
                 catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    File.Move(tempFilePath, destinationPath, overwrite: false);
                     return;
                 }
             }
-            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 lastError = ex;
-                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
-            }
-            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
-            {
-                lastError = ex;
-                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+
+                if (attempt < MaxReplaceAttempts)
+                {
+                    await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                break;
             }
         }
 

@@ -1,11 +1,11 @@
-# Context Dump: Remove Doubles
-# Date: 2026-06-02 09:44:55
+# Context Dump: Checkmate Filter
+# Date: 2026-06-02 09:44:46
 # File Count: 9
 
-===== BEGIN: Docs\RemoveDoublesService.md =====
-# RemoveDoublesService.md
+===== BEGIN: Docs\CheckmateFilterService.md =====
+# CheckmateFilterService.md
 
-## Service Implementation: RemoveDoublesService
+## Service Implementation: CheckmateFilterService
 
 **Version:** Current implementation (updated 2026-02-07)  
 **Layer:** Service Layer (Domain Logic)  
@@ -14,41 +14,54 @@
 
 ## 1. Objective
 
-Deduplicate games by hashing normalized headers and move text.
+Filter a PGN file to keep only games that contain a checkmate marker (`#`) in the mainline move text (ignores comments and variations).
 
 ## 2. Public API (Actual)
 
 ```csharp
-public sealed record RemoveDoublesResult(long Processed, long Kept, long Removed);
+public sealed record CheckmateFilterResult(long Processed, long Kept);
 
-public interface IRemoveDoublesService
+public interface ICheckmateFilterService
 {
-    Task<RemoveDoublesResult> DeduplicateAsync(
+    Task<CheckmateFilterResult> FilterAsync(
         string inputFilePath,
         string outputFilePath,
-        IProgress<(long games, string message)>? progress = null,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default);
 }
 ```
 
 ## 3. High-Level Pipeline (Actual)
 
-1. Stream games from input.
-2. Compute a SHA‑256 hash:
-   - Headers are case‑insensitively sorted.
-   - Move text is normalized (comments/variations/NAGs removed).
-3. Write only the first occurrence of each hash.
-4. Replace output file.
+1. **Validate paths** and create a temp output file.
+2. Stream games from input with `PgnReader`.
+3. Keep a game only if `ContainsCheckmate(moveText)` is true.
+4. Write kept games to temp output (UTF‑8, no BOM).
+5. Replace destination file via `FileReplacementHelper.ReplaceFile`.
 
-## 4. Progress Reporting
+## 4. Checkmate Detection Rules
 
-Reports every ~200 games with kept/removed counts.
+`ContainsCheckmate` scans the move text and:
+- Ignores `{}` comments and `;` line comments.
+- Ignores text inside `(...)` variations.
+- Treats any `#` outside those regions as checkmate.
 
-## 5. Limitations
+## 5. Progress Reporting
 
-- Hashing is text‑based; no semantic normalization beyond token filtering.
-- Uses synchronous `ReplaceFile` at the end.
-===== END: Docs\RemoveDoublesService.md =====
+Progress is reported by **input byte position** (percent of input stream length), throttled by:
+- Every 200 games, and
+- At least every 100 ms.
+
+## 6. Output Behavior
+
+- If zero games are processed, no output file is produced.
+- Games are separated by a single blank line.
+
+## 7. Limitations
+
+- Only detects `#` in mainline; does not parse SAN to verify legal checkmate.
+- Uses synchronous `ReplaceFile` at the end (blocking).
+===== END: Docs\CheckmateFilterService.md =====
 
 ===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
 using System.Collections.Generic;
@@ -594,46 +607,43 @@ public static class PgnHeaderExtensions
 }
 ===== END: PgnTools\Helpers\PgnHeaderExtensions.cs =====
 
-===== BEGIN: PgnTools\Services\RemoveDoublesService.cs =====
-using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
+===== BEGIN: PgnTools\Services\CheckmateFilterService.cs =====
 using System.Text;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
-public sealed record RemoveDoublesResult(long Processed, long Kept, long Removed);
+public sealed record CheckmateFilterResult(long Processed, long Kept);
 
-public interface IRemoveDoublesService
+public interface ICheckmateFilterService
 {
-    Task<RemoveDoublesResult> DeduplicateAsync(
+    Task<CheckmateFilterResult> FilterAsync(
         string inputFilePath,
         string outputFilePath,
-        IProgress<(long games, string message)>? progress = null,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default);
 }
 
-public class RemoveDoublesService : IRemoveDoublesService
+public class CheckmateFilterService : ICheckmateFilterService
 {
     private const int BufferSize = 65536;
     private const int ProgressGameInterval = 200;
     private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
-    private static readonly char[] AnnotationTrimChars = ['+', '#', '!', '?'];
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
 
-    public RemoveDoublesService(PgnReader pgnReader, PgnWriter pgnWriter)
+    public CheckmateFilterService(PgnReader pgnReader, PgnWriter pgnWriter)
     {
         _pgnReader = pgnReader;
         _pgnWriter = pgnWriter;
     }
 
-    public async Task<RemoveDoublesResult> DeduplicateAsync(
+    public async Task<CheckmateFilterResult> FilterAsync(
         string inputFilePath,
         string outputFilePath,
-        IProgress<(long games, string message)>? progress = null,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFilePath))
         {
             throw new ArgumentException("Input file path is required.", nameof(inputFilePath));
@@ -646,10 +656,6 @@ public class RemoveDoublesService : IRemoveDoublesService
 
         var inputFullPath = Path.GetFullPath(inputFilePath);
         var outputFullPath = Path.GetFullPath(outputFilePath);
-        if (Path.GetDirectoryName(outputFullPath) is { Length: > 0 } outputDirectory)
-        {
-            Directory.CreateDirectory(outputDirectory);
-        }
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
 
         if (!File.Exists(inputFullPath))
@@ -663,10 +669,8 @@ public class RemoveDoublesService : IRemoveDoublesService
                 "Input and output files must be different. To modify in-place, use a temporary output file first.");
         }
 
-        var seenHashes = new HashSet<Hash256>();
         var processed = 0L;
         var kept = 0L;
-        var removed = 0L;
         var lastProgressReport = DateTime.MinValue;
 
         try
@@ -689,35 +693,32 @@ public class RemoveDoublesService : IRemoveDoublesService
             {
                 var firstOutput = true;
 
-                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
+                progress?.Report(0);
+
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     processed++;
 
-                    var hash = ComputeGameHash(game);
-                    if (seenHashes.Add(hash))
+                    if (ContainsCheckmate(game.MoveText))
                     {
                         if (!firstOutput)
                         {
-                            await writer.WriteLineAsync().ConfigureAwait(false);
+                            await writer.WriteLineAsync();
                         }
 
-                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
+                        await _pgnWriter.WriteGameAsync(writer, game, cancellationToken);
                         firstOutput = false;
                         kept++;
-                    }
-                    else
-                    {
-                        removed++;
                     }
 
                     if (ShouldReportProgress(processed, ref lastProgressReport))
                     {
-                        progress?.Report((processed, $"Processing Game {processed:N0}... (kept {kept:N0}, removed {removed:N0})"));
+                        progress?.Report(GetProgressPercent(inputStream));
                     }
                 }
 
-                await writer.FlushAsync().ConfigureAwait(false);
+                await writer.FlushAsync();
             }
 
             if (processed == 0)
@@ -727,15 +728,14 @@ public class RemoveDoublesService : IRemoveDoublesService
                     File.Delete(tempOutputPath);
                 }
 
-                progress?.Report((0, "No games found."));
-                return new RemoveDoublesResult(0, 0, 0);
+                progress?.Report(100);
+                return new CheckmateFilterResult(0, 0);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, cancellationToken).ConfigureAwait(false);
-            progress?.Report((processed, $"Saved {kept:N0} unique games ({removed:N0} removed)."));
+            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            progress?.Report(100);
 
-            return new RemoveDoublesResult(processed, kept, removed);
+            return new CheckmateFilterResult(processed, kept);
         }
         catch
         {
@@ -753,58 +753,31 @@ public class RemoveDoublesService : IRemoveDoublesService
         }
     }
 
-    private static Hash256 ComputeGameHash(PgnGame game)
+    private static double GetProgressPercent(Stream stream)
     {
-        var headerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in game.Headers)
+        if (!stream.CanSeek || stream.Length == 0)
         {
-            headerMap[header.Key] = header.Value;
+            return 0;
         }
 
-        var sortedHeaders = headerMap
-            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(kvp => $"{kvp.Key}:{kvp.Value}");
+        var percent = stream.Position / (double)stream.Length * 100;
+        if (percent < 0)
+        {
+            return 0;
+        }
 
-        var normalizedMoves = NormalizeMoveText(game.MoveText);
-        var blob = string.Concat(string.Join("|", sortedHeaders), "||", normalizedMoves);
-
-        var bytes = Encoding.UTF8.GetBytes(blob);
-        var hashBytes = SHA256.HashData(bytes);
-        return new Hash256(hashBytes);
+        return percent > 100 ? 100 : percent;
     }
 
-    private static string NormalizeMoveText(string moveText)
+    private static bool ContainsCheckmate(string moveText)
     {
-        if (string.IsNullOrWhiteSpace(moveText))
+        if (string.IsNullOrEmpty(moveText))
         {
-            return string.Empty;
+            return false;
         }
 
-        var builder = new StringBuilder(moveText.Length);
-        foreach (var move in TokenizeMoves(moveText))
-        {
-            if (builder.Length > 0)
-            {
-                builder.Append(' ');
-            }
-
-            builder.Append(move);
-        }
-
-        return builder.ToString();
-    }
-
-    private static IEnumerable<string> TokenizeMoves(string moveText)
-    {
-        if (string.IsNullOrWhiteSpace(moveText))
-        {
-            yield break;
-        }
-
-        var token = new StringBuilder();
         var inBraceComment = false;
         var inLineComment = false;
-        var inBracketComment = false;
         var variationDepth = 0;
 
         for (var i = 0; i < moveText.Length; i++)
@@ -813,11 +786,10 @@ public class RemoveDoublesService : IRemoveDoublesService
 
             if (inLineComment)
             {
-                if (c is '\n' or '\r')
+                if (c == '\n' || c == '\r')
                 {
                     inLineComment = false;
                 }
-
                 continue;
             }
 
@@ -827,275 +799,44 @@ public class RemoveDoublesService : IRemoveDoublesService
                 {
                     inBraceComment = false;
                 }
-
                 continue;
             }
 
-            if (inBracketComment)
+            switch (c)
             {
-                if (c == ']')
-                {
-                    inBracketComment = false;
-                }
-                continue;
-            }
-
-            if (c == ';')
-            {
-                if (token.Length > 0)
-                {
-                    var raw = token.ToString();
-                    token.Clear();
-                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
+                case '{':
+                    inBraceComment = true;
+                    continue;
+                case ';':
+                    if (variationDepth == 0)
                     {
-                        yield return move!;
+                        inLineComment = true;
+                        continue;
                     }
-                    else if (isResult)
+                    break;
+                case '(':
+                    variationDepth++;
+                    continue;
+                case ')':
+                    if (variationDepth > 0)
                     {
-                        yield break;
+                        variationDepth--;
                     }
-                }
-
-                inLineComment = true;
-                continue;
-            }
-
-            if (c == '{')
-            {
-                if (token.Length > 0)
-                {
-                    var raw = token.ToString();
-                    token.Clear();
-                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
-                    {
-                        yield return move!;
-                    }
-                    else if (isResult)
-                    {
-                        yield break;
-                    }
-                }
-
-                inBraceComment = true;
-                continue;
-            }
-
-            if (c == '[')
-            {
-                if (token.Length > 0)
-                {
-                    var raw = token.ToString();
-                    token.Clear();
-                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
-                    {
-                        yield return move!;
-                    }
-                    else if (isResult)
-                    {
-                        yield break;
-                    }
-                }
-
-                inBracketComment = true;
-                continue;
+                    continue;
             }
 
             if (variationDepth > 0)
             {
-                if (c == '(')
-                {
-                    variationDepth++;
-                }
-                else if (c == ')')
-                {
-                    variationDepth--;
-                }
-
                 continue;
             }
 
-            if (c == '(')
+            if (c == '#')
             {
-                if (token.Length > 0)
-                {
-                    var raw = token.ToString();
-                    token.Clear();
-                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
-                    {
-                        yield return move!;
-                    }
-                    else if (isResult)
-                    {
-                        yield break;
-                    }
-                }
-
-                variationDepth = 1;
-                continue;
-            }
-
-            if (char.IsWhiteSpace(c))
-            {
-                if (token.Length > 0)
-                {
-                    var raw = token.ToString();
-                    token.Clear();
-                    if (TryNormalizeMoveToken(raw, out var move, out var isResult))
-                    {
-                        yield return move!;
-                    }
-                    else if (isResult)
-                    {
-                        yield break;
-                    }
-                }
-
-                continue;
-            }
-
-            token.Append(c);
-        }
-
-        if (token.Length > 0)
-        {
-            var raw = token.ToString();
-            if (TryNormalizeMoveToken(raw, out var move, out var isResult))
-            {
-                yield return move!;
+                return true;
             }
         }
-    }
 
-    private static bool TryNormalizeMoveToken(string raw, out string? move, out bool isResult)
-    {
-        move = null;
-        isResult = false;
-
-        var token = raw.Trim();
-        if (token.Length == 0)
-        {
-            return false;
-        }
-
-        if (token[0] == '$' && token.Skip(1).All(char.IsDigit))
-        {
-            return false;
-        }
-
-        if (token.All(c => c == '.'))
-        {
-            return false;
-        }
-
-        if (TryStripMoveNumberPrefix(token, out var stripped))
-        {
-            token = stripped;
-        }
-
-        token = token.TrimStart('.');
-        if (token.Length == 0)
-        {
-            return false;
-        }
-
-        if (token.All(c => c is '!' or '?' or '+' or '#'))
-        {
-            return false;
-        }
-
-        if (IsResultToken(token))
-        {
-            isResult = true;
-            return false;
-        }
-
-        token = token.TrimEnd(AnnotationTrimChars);
-        if (token.Length == 0)
-        {
-            return false;
-        }
-
-        token = StripTrailingNag(token);
-        if (token.Length == 0)
-        {
-            return false;
-        }
-
-        if (IsResultToken(token))
-        {
-            isResult = true;
-            return false;
-        }
-
-        if (token.Equals("e.p.", StringComparison.OrdinalIgnoreCase) ||
-            token.Equals("ep", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        token = NormalizeCastling(token);
-        move = token;
-        return true;
-    }
-
-    private static string StripTrailingNag(string token)
-    {
-        var index = token.LastIndexOf('$');
-        if (index < 0 || index == token.Length - 1)
-        {
-            return token;
-        }
-
-        var digits = token[(index + 1)..];
-        return digits.All(char.IsDigit) ? token[..index] : token;
-    }
-
-    private static bool TryStripMoveNumberPrefix(string token, out string stripped)
-    {
-        stripped = token;
-        var firstDot = token.IndexOf('.');
-        if (firstDot < 0)
-        {
-            return false;
-        }
-
-        var prefix = token[..firstDot];
-        if (prefix.Length == 0 || !prefix.All(char.IsDigit))
-        {
-            return false;
-        }
-
-        var lastDot = token.LastIndexOf('.');
-        if (lastDot >= token.Length - 1)
-        {
-            stripped = string.Empty;
-            return true;
-        }
-
-        stripped = token[(lastDot + 1)..];
-        return true;
-    }
-
-    private static bool IsResultToken(string token)
-    {
-        return token is "1-0" or "0-1" or "1/2-1/2" or "*";
-    }
-
-    private static string NormalizeCastling(string token)
-    {
-        if (token.Equals("0-0", StringComparison.OrdinalIgnoreCase) ||
-            token.Equals("o-o", StringComparison.OrdinalIgnoreCase))
-        {
-            return "O-O";
-        }
-
-        if (token.Equals("0-0-0", StringComparison.OrdinalIgnoreCase) ||
-            token.Equals("o-o-o", StringComparison.OrdinalIgnoreCase))
-        {
-            return "O-O-O";
-        }
-
-        return token;
+        return false;
     }
 
     private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
@@ -1105,10 +846,13 @@ public class RemoveDoublesService : IRemoveDoublesService
             return false;
         }
 
+        if (games != 1 && games % ProgressGameInterval != 0)
+        {
+            return false;
+        }
+
         var now = DateTime.UtcNow;
-        var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
-        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
-        if (!gameIntervalMet && !timeIntervalMet)
+        if (now - lastReportUtc < ProgressTimeInterval)
         {
             return false;
         }
@@ -1116,42 +860,29 @@ public class RemoveDoublesService : IRemoveDoublesService
         lastReportUtc = now;
         return true;
     }
-
-    private readonly record struct Hash256(ulong A, ulong B, ulong C, ulong D)
-    {
-        public Hash256(ReadOnlySpan<byte> bytes)
-            : this(
-                BitConverter.ToUInt64(bytes[0..8]),
-                BitConverter.ToUInt64(bytes[8..16]),
-                BitConverter.ToUInt64(bytes[16..24]),
-                BitConverter.ToUInt64(bytes[24..32]))
-        {
-        }
-    }
 }
-===== END: PgnTools\Services\RemoveDoublesService.cs =====
+===== END: PgnTools\Services\CheckmateFilterService.cs =====
 
-===== BEGIN: PgnTools\ViewModels\Tools\RemoveDoublesViewModel.cs =====
+===== BEGIN: PgnTools\ViewModels\Tools\CheckmateFilterViewModel.cs =====
 using System.IO;
 
 namespace PgnTools.ViewModels.Tools;
 
 /// <summary>
-/// ViewModel for the Deduplicator tool.
+/// ViewModel for the Checkmate Filter tool.
 /// </summary>
-public partial class RemoveDoublesViewModel(
-    IRemoveDoublesService removeDoublesService,
+public partial class CheckmateFilterViewModel(
+    ICheckmateFilterService checkmateFilterService,
     IWindowService windowService,
     IAppSettingsService settings) : BaseViewModel, IInitializable, IDisposable
 {
-    private readonly IRemoveDoublesService _removeDoublesService = removeDoublesService;
+    private readonly ICheckmateFilterService _checkmateFilterService = checkmateFilterService;
     private readonly IAppSettingsService _settings = settings;
     private readonly IWindowService _windowService = windowService;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
-    private bool _disposeLockOnRelease;
     private bool _disposed;
-    private const string SettingsPrefix = nameof(RemoveDoublesViewModel);
+    private const string SettingsPrefix = nameof(CheckmateFilterViewModel);
 
     [ObservableProperty]
     private string _inputFilePath = string.Empty;
@@ -1172,10 +903,10 @@ public partial class RemoveDoublesViewModel(
     private string _statusMessage = "Select input and output PGN files";
 
     [ObservableProperty]
-    private long _progressGames;
+    private double _progressValue;
     public void Initialize()
     {
-        Title = "Deduplicator";
+        Title = "Checkmate Filter";
         StatusSeverity = InfoBarSeverity.Informational;
         LoadState();
     }
@@ -1203,7 +934,15 @@ public partial class RemoveDoublesViewModel(
             InputFileName = file.Name;
             StatusMessage = $"Selected input: {file.Name}";
             StatusSeverity = InfoBarSeverity.Informational;
+
+            if (string.IsNullOrWhiteSpace(OutputFilePath))
+            {
+                var directory = Path.GetDirectoryName(InputFilePath) ?? string.Empty;
+                var suggestedName = $"{Path.GetFileNameWithoutExtension(InputFilePath)}_checkmates.pgn";
+                OutputFilePath = Path.Combine(directory, suggestedName);
+                OutputFileName = Path.GetFileName(OutputFilePath);
     }
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting input file: {ex.Message}";
@@ -1217,8 +956,8 @@ public partial class RemoveDoublesViewModel(
         try
         {
             var suggestedName = string.IsNullOrWhiteSpace(InputFilePath)
-                ? "deduplicated.pgn"
-                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_deduplicated.pgn";
+                ? "checkmates.pgn"
+                : $"{Path.GetFileNameWithoutExtension(InputFilePath)}_checkmates.pgn";
 
             var file = await FilePickerHelper.PickSaveFileAsync(
                 _windowService.WindowHandle,
@@ -1247,7 +986,7 @@ public partial class RemoveDoublesViewModel(
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RunAsync()
     {
-        if (_disposed || string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
+        if (string.IsNullOrWhiteSpace(InputFilePath) || string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
     }
@@ -1267,22 +1006,22 @@ public partial class RemoveDoublesViewModel(
         try
         {
             IsRunning = true;
-            ProgressGames = 0;
-            StatusMessage = "Removing duplicates...";
+            ProgressValue = 0;
+            StatusMessage = "Filtering for checkmates...";
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
-            StatusDetail = BuildProgressDetail(null, 0, null, "games");
+            StatusDetail = BuildProgressDetail(0);
 
             _cancellationTokenSource = new CancellationTokenSource();
 
-            var progress = new Progress<(long games, string message)>(p =>
+            var progress = new Progress<double>(p =>
             {
-                ProgressGames = p.games;
-                StatusMessage = p.message;
-                StatusDetail = BuildProgressDetail(null, p.games, null, "games");
+                ProgressValue = p;
+                StatusMessage = $"Processing... {p:0}%";
+                StatusDetail = BuildProgressDetail(p);
             });
 
-            var result = await _removeDoublesService.DeduplicateAsync(
+            var result = await _checkmateFilterService.FilterAsync(
                 InputFilePath,
                 OutputFilePath,
                 progress,
@@ -1290,39 +1029,29 @@ public partial class RemoveDoublesViewModel(
 
             StatusMessage = result.Processed == 0
                 ? "No games found."
-                : $"Deduplication complete: {result.Kept:N0} unique games saved ({result.Removed:N0} removed)";
+                : $"Completed! Processed: {result.Processed:N0}, Found: {result.Kept:N0}";
             StatusSeverity = result.Processed == 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
             StatusDetail = BuildProgressDetail(100, result.Processed, null, "games");
     }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Deduplication cancelled";
+            StatusMessage = "Checkmate filter cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
-            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+            ProgressValue = 0;
+            StatusDetail = BuildProgressDetail(ProgressValue);
     }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-            StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+            StatusDetail = BuildProgressDetail(ProgressValue);
     }
         finally
         {
             IsRunning = false;
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-            try
-            {
-                _executionLock.Release();
-            }
-            catch (ObjectDisposedException)
-            {
-                // Dispose() may have already torn down the semaphore.
-            }
-            if (_disposeLockOnRelease)
-            {
-                _executionLock.Dispose();
-            }
+            _executionLock.Release();
             StopProgressTimer();
     }
     }
@@ -1330,15 +1059,16 @@ public partial class RemoveDoublesViewModel(
     private bool CanRun() =>
         !IsRunning &&
         !string.IsNullOrWhiteSpace(InputFilePath) &&
-        File.Exists(InputFilePath) &&
-        !string.IsNullOrWhiteSpace(OutputFilePath);
+        !string.IsNullOrWhiteSpace(OutputFilePath) &&
+        File.Exists(InputFilePath);
 
     [RelayCommand]
     private void Cancel()
     {
         _cancellationTokenSource?.Cancel();
+        StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
-        StatusDetail = BuildProgressDetail(null, ProgressGames, null, "games");
+        StatusDetail = BuildProgressDetail(ProgressValue);
     }
     partial void OnInputFilePathChanged(string value)
     {
@@ -1363,11 +1093,6 @@ public partial class RemoveDoublesViewModel(
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
-        if (IsRunning || _executionLock.CurrentCount == 0)
-        {
-            _disposeLockOnRelease = true;
-            return;
-        }
         _executionLock.Dispose();
     }
     private void LoadState()
@@ -1397,12 +1122,12 @@ public partial class RemoveDoublesViewModel(
 
 
 
-===== END: PgnTools\ViewModels\Tools\RemoveDoublesViewModel.cs =====
+===== END: PgnTools\ViewModels\Tools\CheckmateFilterViewModel.cs =====
 
-===== BEGIN: PgnTools\Views\Tools\RemoveDoublesPage.xaml =====
+===== BEGIN: PgnTools\Views\Tools\CheckmateFilterPage.xaml =====
 <?xml version="1.0" encoding="utf-8"?>
 <Page
-    x:Class="PgnTools.Views.Tools.RemoveDoublesPage"
+    x:Class="PgnTools.Views.Tools.CheckmateFilterPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -1419,8 +1144,8 @@ public partial class RemoveDoublesViewModel(
 
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
-            <TextBlock Text="Deduplicator" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Remove duplicate games by hashing headers and normalized moves."
+            <TextBlock Text="Checkmate Filter" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Keep only games where the mainline move text ends in checkmate (#)."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -1486,7 +1211,8 @@ public partial class RemoveDoublesViewModel(
                                     StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
                                     StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
                                     IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
-                                    IsIndeterminate="True"/>
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
         </ScrollViewer>
     </Grid>
 </Page>
@@ -1497,24 +1223,24 @@ public partial class RemoveDoublesViewModel(
 
 
 
-===== END: PgnTools\Views\Tools\RemoveDoublesPage.xaml =====
+===== END: PgnTools\Views\Tools\CheckmateFilterPage.xaml =====
 
-===== BEGIN: PgnTools\Views\Tools\RemoveDoublesPage.xaml.cs =====
+===== BEGIN: PgnTools\Views\Tools\CheckmateFilterPage.xaml.cs =====
 namespace PgnTools.Views.Tools;
 
 /// <summary>
-/// Page for the Deduplicator tool.
+/// Page for the Checkmate Filter tool.
 /// </summary>
-public sealed partial class RemoveDoublesPage : Page
+public sealed partial class CheckmateFilterPage : Page
 {
     private readonly bool _ownsViewModel;
-    public RemoveDoublesViewModel ViewModel { get; }
+    public CheckmateFilterViewModel ViewModel { get; }
 
-    public RemoveDoublesPage() : this(App.GetService<RemoveDoublesViewModel>(), ownsViewModel: true)
+    public CheckmateFilterPage() : this(App.GetService<CheckmateFilterViewModel>(), ownsViewModel: true)
     {
     }
 
-    public RemoveDoublesPage(RemoveDoublesViewModel viewModel, bool ownsViewModel = false)
+    public CheckmateFilterPage(CheckmateFilterViewModel viewModel, bool ownsViewModel = false)
     {
         ViewModel = viewModel ?? throw new System.ArgumentNullException(nameof(viewModel));
         _ownsViewModel = ownsViewModel;
@@ -1530,10 +1256,13 @@ public sealed partial class RemoveDoublesPage : Page
             {
                 ViewModel.CancelCommand.Execute(null);
             }
-            ViewModel.Dispose();
+            else
+            {
+                ViewModel.Dispose();
+            }
         }
     }
 }
 
-===== END: PgnTools\Views\Tools\RemoveDoublesPage.xaml.cs =====
+===== END: PgnTools\Views\Tools\CheckmateFilterPage.xaml.cs =====
 

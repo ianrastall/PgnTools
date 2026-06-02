@@ -1,5 +1,5 @@
 # Context Dump: PGN Mentor
-# Date: 2026-02-06 02:10:55
+# Date: 2026-06-02 09:44:54
 # File Count: 9
 
 ===== BEGIN: Docs\PgnMentorDownloaderService.md =====
@@ -7,14 +7,14 @@
 
 ## Service Implementation: PgnMentorDownloaderService
 
-**Version:** Current implementation (updated 2026-02-05)  
+**Version:** Current implementation (updated 2026-02-07)  
 **Layer:** Service Layer (Domain Logic)  
-**Dependencies:** `HttpClient`, `FileReplacementHelper`  
-**Thread Safety:** Not safe for concurrent calls (static `Random` for jitter; shared `HttpClient` is fine, but jitter is not thread-safe).
+**Dependencies:** `HttpClient`, `FileReplacementHelper`, `System.IO.Compression`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
 
 ## 1. Objective
 
-Download all PGN Mentor archives referenced on the public file listing page, extract PGNs, and combine them into a single output file. The combined file is written in the same order the site provides.
+Download all PGN Mentor archives listed on the public file index and combine them into a single PGN file.
 
 ## 2. Public API (Actual)
 
@@ -25,80 +25,31 @@ public interface IPgnMentorDownloaderService
 }
 ```
 
-### 2.1 Parameter Semantics
-- `outputFile`: Destination PGN file path. Required.
-- `status`: Status messages (phase + current file).
-- `ct`: Cancels download, extraction, or writing.
-
 ## 3. High-Level Pipeline (Actual)
-1. **Validate output path** and compute full paths.
-2. **Fetch file list** from `https://www.pgnmentor.com/files.html`.
-3. **Extract file links** for `.zip` and `.pgn` using regex.
-4. **Download + append** each file in site order.
-5. **Replace final output** using `FileReplacementHelper.ReplaceFile`.
-6. **Cleanup** temp folder and temp output in `finally`.
 
-## 4. Workflow Details
+1. **Fetch file list** from `https://www.pgnmentor.com/files.html`.
+2. **Extract links** for `.zip` and `.pgn` via regex.
+3. **Download + append** each file in site order:
+   - `.zip`: append all `.pgn` entries
+   - `.pgn`: append file contents
+4. **Replace output** via `FileReplacementHelper.ReplaceFileAsync`.
+5. **Cleanup** temp downloads and temp output file.
 
-### 4.1 Link Discovery
-- URL: `https://www.pgnmentor.com/files.html`
-- Regex: `href="...(.zip|.pgn)"`
-- Links are de‑duplicated with a case‑insensitive set and returned **in site order**.
+## 4. Rate Limiting & Retries
 
-### 4.2 Download Loop
-For each link:
-- Wait **2–4 seconds** between downloads (random jitter).
-- Download to a temp folder via `DownloadWithRetryAsync`:
-  - Up to 3 attempts.
-  - Exponential backoff: 2s, 4s.
-  - On failure after 3 attempts, exception is caught in the loop and logged via `status`.
+- Random delay **2–4 seconds** between downloads.
+- Up to **3 attempts** per file with exponential backoff.
 
-### 4.3 Append Strategy
-- Output is written to a **single temp file** with `StreamWriter` (UTF‑8, no BOM).
-- **`.zip`**: Each `.pgn` entry is streamed and appended.
-- **`.pgn`**: File contents are streamed and appended.
-- Two blank lines are inserted between appended sources.
-- **No sorting** or de‑duplication is performed. Output order is the website order.
+## 5. Output Behavior
 
-### 4.4 Completion Rules
-- If **no valid PGN content** is appended, the method reports `"No valid PGN data collected."` and exits without replacing the destination file.
-- If content exists, the temp output replaces the destination file atomically.
+- Output preserves the site order (no sorting).
+- Two blank lines are inserted between sources.
+- UTF‑8 output (no BOM).
 
-## 5. Error Handling & Cleanup
+## 6. Limitations
 
-| Scenario | Behavior |
-| --- | --- |
-| Download failure | Status reports `"Failed <file>"`, continues with next link |
-| Extraction error | Returns false for that file; continues |
-| Cancellation | Throws `OperationCanceledException`, cleanup runs |
-| Temp cleanup | Always deletes temp folder and temp output file in `finally` |
-
-## 6. Key Constraints & Constants
-
-- **BufferSize:** 64KB (`65536`)
-- **BaseUri:** `https://www.pgnmentor.com/`
-- **FilesUri:** `https://www.pgnmentor.com/files.html`
-- **Rate Limit:** 2–4 seconds between downloads
-
-## 7. Usage Example (ViewModel Context)
-
-```csharp
-var progress = new Progress<string>(message =>
-{
-    StatusMessage = message;
-    StatusDetail = BuildProgressDetail();
-});
-
-await _pgnMentorDownloaderService.DownloadAndCombineAsync(
-    OutputFilePath,
-    progress,
-    _cancellationTokenSource.Token);
-```
-
-## 8. Limitations (Current Implementation)
-- Output is **not sorted** or normalized.
-- Order is **site order** only; no filtering by category or source.
-- Regex link extraction only supports `.zip` and `.pgn` links on the file list page.
+- No category filtering or deduplication.
+- Link extraction only covers `.zip` and `.pgn` on the file list page.
 ===== END: Docs\PgnMentorDownloaderService.md =====
 
 ===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
@@ -570,13 +521,23 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
     private static readonly Uri BaseUri = new("https://www.pgnmentor.com/");
     private static readonly Uri FilesUri = new("https://www.pgnmentor.com/files.html");
     private static readonly HttpClient HttpClient = CreateClient();
-    private static readonly Random RandomJitter = new();
+    private static readonly Random RandomJitter = Random.Shared;
 
     public async Task DownloadAndCombineAsync(string outputFile, IProgress<string> status, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(outputFile)) throw new ArgumentException("Output file path is required.");
+        if (string.IsNullOrWhiteSpace(outputFile))
+        {
+            throw new ArgumentException("Output file path is required.", nameof(outputFile));
+        }
+
+        ArgumentNullException.ThrowIfNull(status);
 
         var outputFullPath = Path.GetFullPath(outputFile);
+        var outputDirectory = Path.GetDirectoryName(outputFullPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
         var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputFullPath);
         var tempFolder = Path.Combine(Path.GetTempPath(), $"PgnTools_Mentor_{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempFolder);
@@ -585,7 +546,7 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
         {
             // 1. Fetch the list
             status.Report("Fetching file list...");
-            var html = await HttpClient.GetStringAsync(FilesUri, ct);
+            var html = await HttpClient.GetStringAsync(FilesUri, ct).ConfigureAwait(false);
             var links = ExtractLinks(html);
 
             if (links.Count == 0)
@@ -601,7 +562,7 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
             // Note: This sacrifices Sorting. Sorting 5GB of PGNs requires a database or external merge sort.
             // For a downloader, "As Provided" order is acceptable and much safer.
             await using (var outputStream = new FileStream(tempOutputPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous))
-            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
             {
                 int processed = 0;
 
@@ -612,44 +573,72 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
                     // RATE LIMIT: 2 to 4 seconds delay
                     if (i > 0)
                     {
-                        var delay = RandomJitter.Next(2000, 4000);
-                        await Task.Delay(delay, ct);
+                        var delay = RandomJitter.Next(2000, 4001);
+                        await Task.Delay(delay, ct).ConfigureAwait(false);
                     }
 
                     var link = links[i];
-                    var fileName = Path.GetFileName(link) ?? $"file_{i}.pgn";
                     var downloadUrl = new Uri(BaseUri, link);
-                    var tempDownloadPath = Path.Combine(tempFolder, fileName);
+                    var displayName = Path.GetFileName(downloadUrl.LocalPath);
+                    if (string.IsNullOrWhiteSpace(displayName))
+                    {
+                        displayName = $"file_{i:D4}";
+                    }
 
-                    status.Report($"Downloading {fileName} ({i + 1}/{links.Count})...");
+                    var safeName = SanitizeFileName(displayName);
+                    if (string.IsNullOrWhiteSpace(safeName))
+                    {
+                        safeName = $"file_{i:D4}";
+                    }
+
+                    var tempDownloadPath = Path.Combine(tempFolder, $"{i:D4}_{safeName}");
+
+                    status.Report($"Downloading {displayName} ({i + 1}/{links.Count})...");
 
                     try
                     {
-                        await DownloadWithRetryAsync(downloadUrl, tempDownloadPath, ct);
+                        await DownloadWithRetryAsync(downloadUrl, tempDownloadPath, ct).ConfigureAwait(false);
 
                         bool hasContent = false;
+                        var extension = Path.GetExtension(downloadUrl.LocalPath);
 
-                        if (fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                        if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
                         {
-                            hasContent = await ExtractAndAppendZipAsync(writer, tempDownloadPath, processed > 0, ct);
+                            hasContent = await ExtractAndAppendZipAsync(writer, tempDownloadPath, processed > 0, ct)
+                                .ConfigureAwait(false);
                         }
-                        else if (fileName.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase))
+                        else if (extension.Equals(".pgn", StringComparison.OrdinalIgnoreCase))
                         {
-                            hasContent = await AppendPgnFileAsync(writer, tempDownloadPath, processed > 0, ct);
+                            hasContent = await AppendPgnFileAsync(writer, tempDownloadPath, processed > 0, ct)
+                                .ConfigureAwait(false);
                         }
 
                         if (hasContent) processed++;
-
-                        // Cleanup immediately
-                        if (File.Exists(tempDownloadPath)) File.Delete(tempDownloadPath);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
                     }
                     catch (Exception ex)
                     {
-                        status.Report($"Failed {fileName}: {ex.Message}");
+                        status.Report($"Failed {displayName}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (File.Exists(tempDownloadPath))
+                            {
+                                File.Delete(tempDownloadPath);
+                            }
+                        }
+                        catch
+                        {
+                        }
                     }
                 }
 
-                await writer.FlushAsync();
+                await writer.FlushAsync().ConfigureAwait(false);
 
                 if (processed == 0)
                 {
@@ -658,13 +647,32 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
                 }
             }
 
-            FileReplacementHelper.ReplaceFile(tempOutputPath, outputFullPath);
+            await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputFullPath, ct).ConfigureAwait(false);
             status.Report("Download complete.");
         }
         finally
         {
-            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
-            if (File.Exists(tempOutputPath)) File.Delete(tempOutputPath);
+            try
+            {
+                if (Directory.Exists(tempFolder))
+                {
+                    Directory.Delete(tempFolder, true);
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (File.Exists(tempOutputPath))
+                {
+                    File.Delete(tempOutputPath);
+                }
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -677,68 +685,101 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
 
     private static async Task DownloadWithRetryAsync(Uri uri, string destPath, CancellationToken ct)
     {
-        int attempts = 0;
-        while (true)
+        const int maxAttempts = 3;
+
+        for (var attempts = 1; attempts <= maxAttempts; attempts++)
         {
-            attempts++;
+            ct.ThrowIfCancellationRequested();
             try
             {
-                using var response = await HttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var response = await HttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                await using var webStream = await response.Content.ReadAsStreamAsync(ct);
+                await using var webStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                 await using var fileStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous);
-                await webStream.CopyToAsync(fileStream, ct);
+                await webStream.CopyToAsync(fileStream, ct).ConfigureAwait(false);
                 return;
             }
-            catch (Exception) when (attempts < 3)
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attempts < maxAttempts)
             {
-                await Task.Delay(TimeSpan.FromSeconds(2 * attempts), ct);
+                await Task.Delay(TimeSpan.FromSeconds(2 * attempts), ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempts < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2 * attempts), ct).ConfigureAwait(false);
+            }
+            catch (IOException) when (attempts < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2 * attempts), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
         }
     }
 
     private static async Task<bool> ExtractAndAppendZipAsync(StreamWriter writer, string zipPath, bool addSeparator, CancellationToken ct)
     {
-        try
+        using var archive = ZipFile.OpenRead(zipPath);
+        bool foundAny = false;
+        foreach (var entry in archive.Entries.Where(e => e.FullName.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase)))
         {
-            using var archive = ZipFile.OpenRead(zipPath);
-            bool foundAny = false;
-            foreach (var entry in archive.Entries.Where(e => e.FullName.EndsWith(".pgn", StringComparison.OrdinalIgnoreCase)))
+            await using var s = entry.Open();
+            using var reader = new StreamReader(s, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            var appended = await AppendReaderAsync(writer, reader, addSeparator || foundAny, ct).ConfigureAwait(false);
+            if (appended)
             {
-                if (addSeparator || foundAny)
-                {
-                    await writer.WriteLineAsync();
-                    await writer.WriteLineAsync();
-                }
-
-                await using var s = entry.Open();
-                using var reader = new StreamReader(s, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct)) != null)
-                {
-                    await writer.WriteLineAsync(line);
-                }
                 foundAny = true;
             }
-            return foundAny;
         }
-        catch { return false; }
+
+        return foundAny;
     }
 
     private static async Task<bool> AppendPgnFileAsync(StreamWriter writer, string pgnPath, bool addSeparator, CancellationToken ct)
     {
-        if (addSeparator)
+        using var reader = new StreamReader(pgnPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return await AppendReaderAsync(writer, reader, addSeparator, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> AppendReaderAsync(StreamWriter writer, StreamReader reader, bool addSeparator, CancellationToken ct)
+    {
+        var bufferedLines = new List<string>();
+        string? line;
+        var hasNonWhitespace = false;
+
+        while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) != null)
         {
-            await writer.WriteLineAsync();
-            await writer.WriteLineAsync();
+            bufferedLines.Add(line);
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                hasNonWhitespace = true;
+                break;
+            }
         }
 
-        using var reader = new StreamReader(pgnPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        string? line;
-        while ((line = await reader.ReadLineAsync(ct)) != null)
+        if (!hasNonWhitespace)
         {
-            await writer.WriteLineAsync(line);
+            return false;
         }
+
+        if (addSeparator)
+        {
+            await writer.WriteLineAsync().ConfigureAwait(false);
+            await writer.WriteLineAsync().ConfigureAwait(false);
+        }
+
+        foreach (var buffered in bufferedLines)
+        {
+            await writer.WriteLineAsync(buffered).ConfigureAwait(false);
+        }
+
+        while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) != null)
+        {
+            await writer.WriteLineAsync(line).ConfigureAwait(false);
+        }
+
         return true;
     }
 
@@ -770,13 +811,31 @@ public partial class PgnMentorDownloaderService : IPgnMentorDownloaderService
         return links;
     }
 
-    [GeneratedRegex("href\\s*=\\s*[\"'](?<url>[^\"'#]+?\\.(?:zip|pgn))[\"']", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex("href\\s*=\\s*[\"'](?<url>[^\"'#\\s]+?\\.(?:zip|pgn)(?:\\?[^\"'#\\s]*)?)[\"']", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex LinkRegex();
+
+    private static string SanitizeFileName(string fileName)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var builder = new StringBuilder(fileName.Length);
+        foreach (var c in fileName)
+        {
+            if (Array.IndexOf(invalidChars, c) >= 0)
+            {
+                continue;
+            }
+
+            builder.Append(c);
+        }
+
+        return builder.ToString();
+    }
 }
 ===== END: PgnTools\Services\PgnMentorDownloaderService.cs =====
 
 ===== BEGIN: PgnTools\ViewModels\Tools\PgnMentorDownloaderViewModel.cs =====
 using System.IO;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -794,7 +853,10 @@ public partial class PgnMentorDownloaderViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeWhenDone;
     private const string SettingsPrefix = nameof(PgnMentorDownloaderViewModel);
+    private string _lastStatusMessage = string.Empty;
+    private bool _hadFailures;
 
     [ObservableProperty]
     private string _outputFilePath = string.Empty;
@@ -834,13 +896,13 @@ public partial class PgnMentorDownloaderViewModel(
                 OutputFileName = file.Name;
                 StatusMessage = $"Selected output: {file.Name}";
                 StatusSeverity = InfoBarSeverity.Informational;
-    }
+            }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error selecting output file: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
-    }
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanRun))]
@@ -849,11 +911,11 @@ public partial class PgnMentorDownloaderViewModel(
         if (string.IsNullOrWhiteSpace(OutputFilePath))
         {
             return;
-    }
+        }
         if (!await _executionLock.WaitAsync(0))
         {
             return;
-    }
+        }
         try
         {
             IsRunning = true;
@@ -861,10 +923,17 @@ public partial class PgnMentorDownloaderViewModel(
             StatusSeverity = InfoBarSeverity.Informational;
             StartProgressTimer();
             StatusDetail = BuildProgressDetail();
+            _lastStatusMessage = string.Empty;
+            _hadFailures = false;
 
             _cancellationTokenSource = new CancellationTokenSource();
             var progress = new Progress<string>(message =>
             {
+                _lastStatusMessage = message;
+                if (message.StartsWith("Failed ", StringComparison.OrdinalIgnoreCase))
+                {
+                    _hadFailures = true;
+                }
                 StatusMessage = message;
                 StatusDetail = BuildProgressDetail();
             });
@@ -874,22 +943,33 @@ public partial class PgnMentorDownloaderViewModel(
                 progress,
                 _cancellationTokenSource.Token);
 
-            StatusMessage = "PGN Mentor download complete.";
-            StatusSeverity = InfoBarSeverity.Success;
+            if (string.Equals(_lastStatusMessage, "Download complete.", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusSeverity = _hadFailures ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+            }
+            else if (_lastStatusMessage.StartsWith("No ", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+            else if (_hadFailures)
+            {
+                StatusSeverity = InfoBarSeverity.Warning;
+            }
+
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (OperationCanceledException)
         {
             StatusMessage = "PGN Mentor download cancelled";
             StatusSeverity = InfoBarSeverity.Warning;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
             StatusSeverity = InfoBarSeverity.Error;
             StatusDetail = BuildProgressDetail();
-    }
+        }
         finally
         {
             IsRunning = false;
@@ -897,7 +977,11 @@ public partial class PgnMentorDownloaderViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
-    }
+            if (_disposeWhenDone && !_disposed)
+            {
+                Dispose();
+            }
+        }
     }
 
     private bool CanRun() =>
@@ -910,6 +994,18 @@ public partial class PgnMentorDownloaderViewModel(
         StatusMessage = "Cancelling...";
         StatusSeverity = InfoBarSeverity.Warning;
         StatusDetail = BuildProgressDetail();
+    }
+
+    public void RequestDispose()
+    {
+        _disposeWhenDone = true;
+        if (IsRunning)
+        {
+            Cancel();
+            return;
+        }
+
+        Dispose();
     }
     partial void OnOutputFilePathChanged(string value)
     {
@@ -924,7 +1020,13 @@ public partial class PgnMentorDownloaderViewModel(
         if (_disposed)
         {
             return;
-    }
+        }
+        if (IsRunning)
+        {
+            _disposeWhenDone = true;
+            Cancel();
+            return;
+        }
         _disposed = true;
         SaveState();
         _cancellationTokenSource?.Cancel();
@@ -935,6 +1037,14 @@ public partial class PgnMentorDownloaderViewModel(
     private void LoadState()
     {
         OutputFilePath = _settings.GetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
+        if (string.IsNullOrWhiteSpace(OutputFilePath))
+        {
+            var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+            if (!string.IsNullOrWhiteSpace(defaultFolder))
+            {
+                OutputFilePath = Path.Combine(defaultFolder, "pgnmentor_collection.pgn");
+            }
+        }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
     }
     private void SaveState()
@@ -971,7 +1081,7 @@ public partial class PgnMentorDownloaderViewModel(
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
             <TextBlock Text="PGN Mentor Downloader" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Download PGN Mentor archives, extract PGNs, and combine them into one sorted file."
+            <TextBlock Text="Download PGN Mentor archives, extract PGNs, and combine them into one file."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -1059,7 +1169,7 @@ public sealed partial class PgnMentorDownloaderPage : Page
         {
             if (ViewModel.IsRunning)
             {
-                ViewModel.CancelCommand.Execute(null);
+                ViewModel.RequestDispose();
             }
             else
             {

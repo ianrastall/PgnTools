@@ -1,177 +1,76 @@
 # Context Dump: Lc0
-# Date: 2026-02-04 20:48:53
+# Date: 2026-06-02 09:44:50
 # File Count: 8
 
 ===== BEGIN: Docs\Lc0DownloaderService.md =====
 # Lc0DownloaderService.md
 
-## Service Specification: Lc0DownloaderService
+## Service Implementation: Lc0DownloaderService
 
-**Version:** 1.0 (Current Implementation)
-
-**Layer:** Service Layer (Domain Logic)
-
-**Dependencies:** `PgnReader`, `PgnWriter`, `HttpClient`
-
-**Thread Safety:** Stateless execution; `HttpClient` is shared static.
+**Version:** Current implementation (updated 2026-02-07)  
+**Layer:** Service Layer (Domain Logic)  
+**Dependencies:** `PgnReader`, `PgnWriter`, `HtmlAgilityPack`, `HttpClient`  
+**Thread Safety:** Safe for concurrent calls with separate output paths.
 
 ## 1. Objective
 
-The `Lc0DownloaderService` automates the retrieval, processing, and normalization of Leela Chess Zero (Lc0) self-play training games. It scrapes match metadata from the training dashboard, retrieves the raw game files (PGN or Tar/GZ) from the storage backend, filters games based on user criteria (e.g., checkmates only, standard chess), and normalizes PGN headers to map training dates to specific Lc0 version numbers.
+Download and collate Lc0 match PGNs for a specific month, with optional filtering.
 
-## 2. Input Contract
-
-The service operates on a request-response pattern defined by `Lc0DownloadOptions` and `Lc0DownloadResult`.
-
-### 2.1 Configuration (`Lc0DownloadOptions`)
+## 2. Public API (Actual)
 
 ```csharp
 public sealed record Lc0DownloadOptions(
-    string OutputFilePath,      // Destination for the consolidated PGN
-    DateOnly ArchiveMonth,      // The specific month/year to scrape (e.g., "2024-06")
-    bool ExcludeNonStandard,    // If true, filters out variants (e.g., "From Position" if not standard)
-    bool OnlyCheckmates         // If true, keeps only games ending in checkmate (#) or Termination header
-);
+    string OutputFilePath,
+    DateOnly ArchiveMonth,
+    bool ExcludeNonStandard,
+    bool OnlyCheckmates);
 
-```
-
-### 2.2 Result (`Lc0DownloadResult`)
-
-```csharp
-public sealed record Lc0DownloadResult(
-    int TotalMatches,       // Number of match IDs found for the month
-    int ProcessedMatches,   // Number of matches successfully downloaded and parsed
-    int FailedMatches,      // Number of matches that 404'd or failed processing
-    long GamesSeen,         // Total raw games iterated
-    long GamesKept          // Total games written to output after filtering
-);
-
-```
-
-### 2.3 Progress Reporting
-
-The service reports progress via `IProgress<Lc0DownloadProgress>`, covering four phases:
-
-1. **Scraping:** Iterating metadata pages.
-2. **Downloading:** Fetching specific match files.
-3. **Processing:** Decompressing and parsing PGNs.
-4. **Completed:** Final summary.
-
-## 3. Workflow & Algorithm Specification
-
-The service executes in a linear pipeline: **Scrape Metadata** → **Iterate Matches** → **Download/Stream** → **Normalize/Write**.
-
-### 3.1 Phase 1: Metadata Scraping
-
-The service scrapes `https://training.lczero.org/matches/` to build a manifest of available matches for the requested month.
-
-* **Pagination:** Iterates `?page=X` (up to `MaxScrapePages = 5000`).
-* **Parsing:** Uses Regex (`TbodyRegex`, `RowRegex`, `CellRegex`) to parse the HTML table.
-* **Termination:** Stops scraping when:
-* `EmptyPageLimit` (2 consecutive empty pages) is reached.
-* The scraped match dates predate the requested `ArchiveMonth`.
-
-
-* **Sorting:** Matches are sorted by date (Oldest  Newest) for the parsing phase.
-
-### 3.2 Phase 2: Heuristic URL Resolution
-
-Because the Lc0 storage bucket structure varies between training runs, the service uses a heuristic approach to find the correct download URL for a match ID.
-
-**Strategy:** Iterate through generated candidate URLs until a `200 OK` is received.
-
-```csharp
-private static IReadOnlyList<(Uri Url, Lc0FileKind FileKind)> BuildMatchUrls(int trainingRunId, int matchId)
+public interface ILc0DownloaderService
 {
-    // 1. Run Segments: explicit run ID folder vs root
-    // 2. Base Names: "12345" vs "match_12345"
-    // 3. Suffixes: ".pgn" vs ".pgn.tar.gz"
-    
-    // Generates permutations like:
-    // https://storage.lczero.org/files/match_pgns/1/match_12345.pgn.tar.gz
-    // https://storage.lczero.org/files/match_pgns/match_12345.pgn
-    // ...
+    Task<Lc0DownloadResult> DownloadAndProcessAsync(
+        Lc0DownloadOptions options,
+        IProgress<Lc0DownloadProgress> progress,
+        CancellationToken ct = default);
 }
-
 ```
 
-### 3.3 Phase 3: Streaming Processing
+## 3. High-Level Pipeline (Actual)
 
-To handle large archives without memory exhaustion, the service streams data directly from disk after a temp download.
+1. **Scrape matches** from `https://training.lczero.org/matches/` (paginated).
+2. **Filter by month** (UTC date range).
+3. **Download match PGNs** from `https://storage.lczero.org/files/match_pgns/`:
+   - Tries `.pgn` and `.pgn.tar.gz` patterns.
+4. **Process games**:
+   - Optional filters: exclude non‑standard variants, only checkmates.
+   - Normalize headers: `Event`, `Date`, `White`, `Black`.
+5. **Write combined PGN** to temp output and replace destination.
 
-1. **Download:** File is downloaded to `%TEMP%/lc0_match_{GUID}.{ext}`.
-2. **Decompression:**
-* If `.tar.gz`: Uses `GZipStream` wrapped in `TarReader`. Iterates entries looking for `.pgn` files.
-* If `.pgn`: Streams directly.
+## 4. Progress & Results
 
+Progress includes phases:
+- `Scraping`
+- `Downloading`
+- `Processing`
+- `Completed`
 
-3. **Parsing:** Uses `PgnReader` to iterate games asynchronously.
+Result includes totals: matches processed, failed, games seen, games kept.
 
-### 3.4 Phase 4: Normalization & Filtering
+## 5. Version Mapping
 
-Every game passing the filters (`IsStandardVariant`, `IsCheckmateGame`) undergoes header normalization before being written.
+Lc0 version labels are derived from a cutoff table:
+- `Assets/lc0-version-map.json` if present
+- Built‑in defaults otherwise
 
-**Version Mapping Logic:**
-The service maps the match `Date` to a specific Lc0 version string using a hardcoded lookup table (`VersionMap`).
+## 6. Limitations
 
-| Date Range (Start) | Mapped Version |
-| --- | --- |
-| >= 2025-01-01 | v0.32.0 |
-| >= 2024-06-01 | v0.31.0 |
-| >= 2023-07-01 | v0.30.0 |
-| ... | ... |
-| Default (< 2018) | v0.23.0 |
-
-**Header Updates:**
-
-* `[Event]`: Set to `"Lc0 match {MatchId}"`.
-* `[Date]`: Normalized to `yyyy-MM-dd`.
-* `[White]`/`[Black]`: Set to `"Lc0 {Version}"`.
-
-## 4. Error Handling & Resilience
-
-| Failure Mode | Strategy |
-| --- | --- |
-| **HTTP 404** | The URL resolution loop tries the next candidate URL pattern. If all patterns fail, the match is recorded as `FailedMatches`. |
-| **Network Failure** | `DownloadToTempAsync` implements a retry loop (`MaxRetries = 3`) with exponential backoff (2s * attempt). |
-| **Corrupt Archive** | Exceptions during `TarReader` or `GZipStream` processing are caught; the specific match is marked failed, but the overall batch continues. |
-| **Temp File Cleanup** | `finally` blocks ensure temporary files in `%TEMP%` are deleted regardless of success or failure. |
-| **Rate Limiting** | A `RandomJitter` (200-450ms) is applied between match downloads to be a polite scraper. |
-
-## 5. Key Constraints & Constants
-
-* **BufferSize:** 64KB (`65536` bytes) for file streams.
-* **MaxScrapePages:** 5000 (Safety limit to prevent infinite loops).
-* **Base URIs:**
-* Scraping: `https://training.lczero.org/matches/`
-* Storage: `https://storage.lczero.org/files/match_pgns/`
-
-
-
-## 6. Usage Example (ViewModel Context)
-
-```csharp
-// Initialize service
-var service = new Lc0DownloaderService(new PgnReader(), new PgnWriter());
-
-// Configure request
-var options = new Lc0DownloadOptions(
-    OutputFilePath: @"C:\Chess\Lc0_2024_01.pgn",
-    ArchiveMonth: new DateOnly(2024, 1, 1),
-    ExcludeNonStandard: true,
-    OnlyCheckmates: false
-);
-
-// Execute
-var result = await service.DownloadAndProcessAsync(options, progressReporter, cancellationToken);
-
-if (result.FailedMatches > 0)
-{
-    Log($"Warning: {result.FailedMatches} matches could not be retrieved.");
-}
+- Scrape depth is capped (max 5000 pages).
+- Only match PGNs from the official training site are supported.
+- No resume for partial downloads.
 ===== END: Docs\Lc0DownloaderService.md =====
 
 ===== BEGIN: PgnTools\Helpers\FilePickerHelper.cs =====
+using System.Collections.Generic;
+using System.Linq;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 
@@ -195,6 +94,7 @@ public static class FilePickerHelper
         string? settingsIdentifier,
         params string[] fileTypeFilters)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileOpenPicker();
 
         // Initialize with window handle for unpackaged apps
@@ -207,12 +107,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -232,6 +134,7 @@ public static class FilePickerHelper
         string? settingsIdentifier,
         params string[] fileTypeFilters)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileOpenPicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -243,12 +146,14 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
-        foreach (var filter in fileTypeFilters)
+        var addedFilter = false;
+        foreach (var filter in NormalizeFilters(fileTypeFilters))
         {
             picker.FileTypeFilter.Add(filter);
+            addedFilter = true;
         }
 
-        if (fileTypeFilters.Length == 0)
+        if (!addedFilter)
         {
             picker.FileTypeFilter.Add("*");
         }
@@ -270,6 +175,7 @@ public static class FilePickerHelper
         Dictionary<string, IList<string>> fileTypeChoices,
         string? settingsIdentifier = null)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FileSavePicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -281,9 +187,32 @@ public static class FilePickerHelper
             picker.SettingsIdentifier = settingsIdentifier;
         }
 
+        var normalizedChoices = new List<(string Label, List<string> Extensions)>();
         foreach (var choice in fileTypeChoices)
         {
-            picker.FileTypeChoices.Add(choice.Key, choice.Value);
+            var normalizedExtensions = NormalizeFilters(choice.Value).ToList();
+            if (normalizedExtensions.Count == 0)
+            {
+                continue;
+            }
+
+            normalizedChoices.Add((choice.Key, normalizedExtensions));
+            picker.FileTypeChoices.Add(choice.Key, normalizedExtensions);
+        }
+
+        if (string.IsNullOrWhiteSpace(picker.DefaultFileExtension))
+        {
+            foreach (var choice in normalizedChoices)
+            {
+                var extension = choice.Extensions[0];
+                if (!string.IsNullOrWhiteSpace(extension))
+                {
+                    picker.DefaultFileExtension = extension.StartsWith(".", StringComparison.Ordinal)
+                        ? extension
+                        : $".{extension}";
+                    break;
+                }
+            }
         }
 
         return await picker.PickSaveFileAsync();
@@ -297,6 +226,7 @@ public static class FilePickerHelper
     /// <returns>The selected StorageFolder, or null if cancelled.</returns>
     public static async Task<StorageFolder?> PickFolderAsync(nint windowHandle, string? settingsIdentifier = null)
     {
+        ValidateWindowHandle(windowHandle);
         var picker = new FolderPicker();
 
         WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
@@ -310,6 +240,38 @@ public static class FilePickerHelper
         }
 
         return await picker.PickSingleFolderAsync();
+    }
+
+    private static void ValidateWindowHandle(nint windowHandle)
+    {
+        if (windowHandle == 0)
+        {
+            throw new ArgumentException("Window handle (HWND) cannot be zero.", nameof(windowHandle));
+        }
+    }
+
+    private static IEnumerable<string> NormalizeFilters(IEnumerable<string> filters)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filter in filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            var trimmed = filter.Trim();
+            var normalized = trimmed == "*"
+                ? "*"
+                : trimmed.StartsWith(".", StringComparison.Ordinal)
+                    ? trimmed
+                    : $".{trimmed}";
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
     }
 }
 ===== END: PgnTools\Helpers\FilePickerHelper.cs =====
@@ -469,12 +431,15 @@ public static class PgnHeaderExtensions
 
 ===== BEGIN: PgnTools\Services\Lc0DownloaderService.cs =====
 // PGNTOOLS-LC0-BEGIN
+using System.Diagnostics;
+using HtmlAgilityPack;
 using System.Formats.Tar;
 using System.Globalization;
 using System.IO.Compression;
 using System.Net;
 using System.Text;
-using System.Text.RegularExpressions;
+using System.Text.Json;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -518,26 +483,31 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 {
     private const int BufferSize = 65536;
     private const int MaxRetries = 3;
+    private const int MaxScrapeRetries = 3;
+    private const int FailedPageLimit = 3;
     private const int EmptyPageLimit = 2;
     private const int MaxScrapePages = 5000;
     private static readonly Uri MatchesBaseUri = new("https://training.lczero.org/matches/");
     private static readonly Uri StorageBaseUri = new("https://storage.lczero.org/files/match_pgns/");
     private static readonly HttpClient HttpClient = CreateClient();
-    private static readonly Random RandomJitter = new();
 
-    private static readonly (DateTime Date, string Version)[] VersionMap =
+    private static readonly string[] MatchDateFormats =
     [
-        (new DateTime(2025, 1, 1), "v0.32.0"),
-        (new DateTime(2024, 6, 1), "v0.31.0"),
-        (new DateTime(2023, 7, 1), "v0.30.0"),
-        (new DateTime(2023, 1, 1), "v0.29.0"),
-        (new DateTime(2022, 1, 1), "v0.28.0"),
-        (new DateTime(2021, 1, 1), "v0.27.0"),
-        (new DateTime(2020, 1, 1), "v0.26.0"),
-        (new DateTime(2019, 1, 1), "v0.25.0"),
-        (new DateTime(2018, 1, 1), "v0.24.0"),
-        (new DateTime(1970, 1, 1), "v0.23.0")
+        "yyyy-MM-dd",
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd HH:mm:ss",
+        "MMM d, yyyy",
+        "MMM dd, yyyy",
+        "M/d/yyyy",
+        "MM/dd/yyyy"
     ];
+
+    private static readonly JsonSerializerOptions VersionMapJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private static readonly Lazy<IReadOnlyList<VersionCutoff>> VersionMap = new(LoadVersionMap);
 
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
@@ -575,7 +545,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             Lc0DownloadPhase.Scraping,
             $"Scraping match metadata for {options.ArchiveMonth:yyyy-MM}..."));
 
-        var allMatches = await ScrapeMatchesAsync(monthStart, monthEnd, progress, ct);
+        var allMatches = await ScrapeMatchesAsync(monthStart, monthEnd, progress, ct).ConfigureAwait(false);
         if (allMatches.Count == 0)
         {
             progress.Report(new Lc0DownloadProgress(
@@ -596,65 +566,97 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         long gamesKept = 0;
 
         var totalMatches = allMatches.Count;
-        await using var outputStream = new FileStream(
-            outputPath,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            BufferSize,
-            FileOptions.Asynchronous);
-        using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-        var outputWriter = new OutputWriter(writer);
+        var tempOutputPath = FileReplacementHelper.CreateTempFilePath(outputPath);
+        var preserveTempOutput = false;
 
-        for (var i = 0; i < allMatches.Count; i++)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-
-            var match = allMatches[i];
-            var percent = (i / (double)totalMatches) * 100.0;
-            progress.Report(new Lc0DownloadProgress(
-                Lc0DownloadPhase.Downloading,
-                $"Downloading match {match.MatchId} ({i + 1}/{totalMatches})...",
-                i + 1,
-                totalMatches,
-                percent));
-
-            var outcome = await DownloadAndProcessMatchAsync(
-                match,
-                outputWriter,
-                options.ExcludeNonStandard,
-                options.OnlyCheckmates,
-                ct);
-
-            gamesSeen += outcome.GamesSeen;
-            gamesKept += outcome.GamesKept;
-
-            if (outcome.Success)
+            await using (var outputStream = new FileStream(
+                tempOutputPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                BufferSize,
+                FileOptions.Asynchronous))
             {
-                processedMatches++;
-            }
-            else
-            {
-                failedMatches++;
-                if (!string.IsNullOrWhiteSpace(outcome.Message))
+                using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
+                var outputWriter = new OutputWriter(writer);
+
+                for (var i = 0; i < allMatches.Count; i++)
                 {
+                    ct.ThrowIfCancellationRequested();
+
+                    var match = allMatches[i];
+                    var percent = (i / (double)totalMatches) * 100.0;
                     progress.Report(new Lc0DownloadProgress(
                         Lc0DownloadPhase.Downloading,
-                        $"Match {match.MatchId} failed: {outcome.Message}",
+                        $"Downloading match {match.MatchId} ({i + 1}/{totalMatches})...",
                         i + 1,
                         totalMatches,
                         percent));
+
+                    var outcome = await DownloadAndProcessMatchAsync(
+                        match,
+                        outputWriter,
+                        options.ExcludeNonStandard,
+                        options.OnlyCheckmates,
+                        ct).ConfigureAwait(false);
+
+                    gamesSeen += outcome.GamesSeen;
+                    gamesKept += outcome.GamesKept;
+
+                    if (outcome.Success)
+                    {
+                        processedMatches++;
+                    }
+                    else
+                    {
+                        failedMatches++;
+                        if (!string.IsNullOrWhiteSpace(outcome.Message))
+                        {
+                            progress.Report(new Lc0DownloadProgress(
+                                Lc0DownloadPhase.Downloading,
+                                $"Match {match.MatchId} failed: {outcome.Message}",
+                                i + 1,
+                                totalMatches,
+                                percent));
+                        }
+                    }
+
+                    if (i < allMatches.Count - 1)
+                    {
+                        var delayMs = Random.Shared.Next(200, 450);
+                        await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                    }
                 }
+
+                await writer.FlushAsync().ConfigureAwait(false);
+                await outputStream.FlushAsync(ct).ConfigureAwait(false);
             }
 
-            if (i < allMatches.Count - 1)
+            try
             {
-                var delayMs = RandomJitter.Next(200, 450);
-                await Task.Delay(delayMs, ct);
+                await FileReplacementHelper.ReplaceFileAsync(tempOutputPath, outputPath, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                preserveTempOutput = true;
+                throw new IOException(
+                    $"Failed to finalize output file '{outputPath}'. " +
+                    $"The generated PGN was preserved at '{tempOutputPath}'. " +
+                    "Close any app using the destination file, then rename/move the preserved file manually.",
+                    ex);
             }
         }
+        catch
+        {
+            if (!preserveTempOutput)
+            {
+                TryDeleteFile(tempOutputPath);
+            }
 
-        await writer.FlushAsync().ConfigureAwait(false);
+            throw;
+        }
 
         progress.Report(new Lc0DownloadProgress(
             Lc0DownloadPhase.Completed,
@@ -675,6 +677,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         var matches = new List<Lc0MatchEntry>();
         var seenMatchIds = new HashSet<int>();
         var emptyPages = 0;
+        var failedPages = 0;
         var page = 1;
 
         while (page <= MaxScrapePages)
@@ -688,7 +691,22 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 null,
                 null));
 
-            var pageMatches = await FetchMatchesPageAsync(page, progress, ct);
+            var pageResult = await FetchMatchesPageAsync(page, progress, ct).ConfigureAwait(false);
+            if (pageResult.Status == PageFetchStatus.Failed)
+            {
+                failedPages++;
+                emptyPages = 0;
+                if (failedPages >= FailedPageLimit)
+                {
+                    break;
+                }
+
+                page++;
+                continue;
+            }
+
+            failedPages = 0;
+            var pageMatches = pageResult.Matches;
             if (pageMatches.Count == 0)
             {
                 emptyPages++;
@@ -750,24 +768,64 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         return filtered;
     }
 
-    private async Task<List<Lc0MatchEntry>> FetchMatchesPageAsync(
+    private async Task<PageFetchResult> FetchMatchesPageAsync(
         int page,
         IProgress<Lc0DownloadProgress> progress,
         CancellationToken ct)
     {
         var uri = new Uri($"{MatchesBaseUri}?page={page}&show_all=1");
-        try
+        string? lastError = null;
+
+        for (var attempt = 1; attempt <= MaxScrapeRetries; attempt++)
         {
-            var html = await HttpClient.GetStringAsync(uri, ct);
-            return ParseMatchList(html);
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var response = await HttpClient
+                    .GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
+
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    return PageFetchResult.Success([]);
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    lastError = FormatStatus(response.StatusCode, response.ReasonPhrase);
+                    if (IsRetryableStatusCode(response.StatusCode) && attempt < MaxScrapeRetries)
+                    {
+                        await Task.Delay(GetRetryDelay(attempt, response), ct).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    return PageFetchResult.Failed(lastError);
+                }
+
+                var html = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                return PageFetchResult.Success(ParseMatchList(html));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < MaxScrapeRetries)
+            {
+                lastError = ex.Message;
+                await Task.Delay(GetRetryDelay(attempt), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+                break;
+            }
         }
-        catch (Exception ex)
-        {
-            progress.Report(new Lc0DownloadProgress(
-                Lc0DownloadPhase.Scraping,
-                $"Failed to fetch page {page}: {ex.Message}"));
-            return [];
-        }
+
+        progress.Report(new Lc0DownloadProgress(
+            Lc0DownloadPhase.Scraping,
+            $"Failed to fetch page {page}: {lastError ?? "Unknown error"}"));
+        return PageFetchResult.Failed(lastError ?? "Unknown error");
     }
 
     private static List<Lc0MatchEntry> ParseMatchList(string html)
@@ -777,41 +835,37 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
             return [];
         }
 
-        var tbodyMatch = TbodyRegex().Match(html);
-        if (!tbodyMatch.Success)
+        var matches = new List<Lc0MatchEntry>();
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+
+        var rows = doc.DocumentNode.SelectNodes("//tbody/tr");
+        if (rows == null)
         {
-            return [];
+            return matches;
         }
 
-        var body = tbodyMatch.Groups["body"].Value;
-        var matches = new List<Lc0MatchEntry>();
-
-        foreach (Match row in RowRegex().Matches(body))
+        foreach (var row in rows)
         {
-            if (!row.Success)
+            var cells = row.SelectNodes("td");
+            if (cells == null || cells.Count < 2)
             {
                 continue;
             }
 
-            var cells = CellRegex().Matches(row.Groups["row"].Value);
-            if (cells.Count < 2)
-            {
-                continue;
-            }
-
-            var matchIdText = StripHtml(cells[0].Groups["cell"].Value);
+            var matchIdText = NormalizeCellText(cells[0].InnerText);
             if (!int.TryParse(matchIdText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var matchId))
             {
                 continue;
             }
 
-            var runText = StripHtml(cells[1].Groups["cell"].Value);
+            var runText = NormalizeCellText(cells[1].InnerText);
             if (!int.TryParse(runText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var runId))
             {
                 continue;
             }
 
-            var dateText = StripHtml(cells[^1].Groups["cell"].Value);
+            var dateText = NormalizeCellText(cells[^1].InnerText);
             if (!TryParseMatchDate(dateText, out var matchDate))
             {
                 continue;
@@ -834,7 +888,9 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
         foreach (var candidate in BuildMatchUrls(match.TrainingRunId, match.MatchId))
         {
-            var result = await DownloadToTempAsync(candidate.Url, candidate.FileKind, ct);
+            ct.ThrowIfCancellationRequested();
+
+            var result = await DownloadToTempAsync(candidate.Url, candidate.FileKind, ct).ConfigureAwait(false);
 
             if (result.Status == DownloadStatus.NotFound)
             {
@@ -843,7 +899,14 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
             if (result.Status != DownloadStatus.Success || string.IsNullOrWhiteSpace(result.TempPath))
             {
-                lastError = "Download failed.";
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                {
+                    lastError = $"{candidate.Url} -> {result.Message}";
+                }
+                else
+                {
+                    lastError = $"{candidate.Url} -> Download failed.";
+                }
                 continue;
             }
 
@@ -856,7 +919,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                     outputWriter,
                     excludeNonStandard,
                     onlyCheckmates,
-                    ct);
+                    ct).ConfigureAwait(false);
 
                 if (processResult.GamesSeen > 0)
                 {
@@ -867,24 +930,19 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                         processResult.GamesKept);
                 }
 
-                lastError = "No PGN games found.";
+                lastError = $"{candidate.Url} -> No PGN games found.";
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                lastError = ex.Message;
+                lastError = $"{candidate.Url} -> {ex.Message}";
             }
             finally
             {
-                try
-                {
-                    if (File.Exists(result.TempPath))
-                    {
-                        File.Delete(result.TempPath);
-                    }
-                }
-                catch
-                {
-                }
+                TryDeleteFile(result.TempPath);
             }
         }
 
@@ -895,6 +953,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
     {
         var extension = fileKind == Lc0FileKind.TarGz ? ".tar.gz" : ".pgn";
         var tempPath = Path.Combine(Path.GetTempPath(), $"lc0_match_{Guid.NewGuid():N}{extension}");
+        string? lastError = null;
 
         for (var attempt = 1; attempt <= MaxRetries; attempt++)
         {
@@ -902,48 +961,61 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
             try
             {
-                using var response = await HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var response = await HttpClient
+                    .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
 
                 if (response.StatusCode == HttpStatusCode.NotFound)
                 {
                     return DownloadResult.NotFound();
                 }
 
-                if (!response.IsSuccessStatusCode)
+                if (response.IsSuccessStatusCode)
                 {
+                    await using var responseStream = await response.Content
+                        .ReadAsStreamAsync(ct)
+                        .ConfigureAwait(false);
+                    await using var fileStream = new FileStream(
+                        tempPath,
+                        FileMode.Create,
+                        FileAccess.Write,
+                        FileShare.None,
+                        BufferSize,
+                        FileOptions.Asynchronous);
+
+                    await responseStream.CopyToAsync(fileStream, ct).ConfigureAwait(false);
+                    return DownloadResult.Success(tempPath);
+                }
+
+                lastError = FormatStatus(response.StatusCode, response.ReasonPhrase);
+                if (IsRetryableStatusCode(response.StatusCode) && attempt < MaxRetries)
+                {
+                    await Task.Delay(GetRetryDelay(attempt, response), ct).ConfigureAwait(false);
                     continue;
                 }
 
-                await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
-                await using var fileStream = new FileStream(
-                    tempPath,
-                    FileMode.Create,
-                    FileAccess.Write,
-                    FileShare.None,
-                    BufferSize,
-                    FileOptions.Asynchronous);
-
-                await responseStream.CopyToAsync(fileStream, ct);
-                return DownloadResult.Success(tempPath);
+                return DownloadResult.Failed(lastError ?? "Download failed.");
             }
-            catch (Exception) when (attempt < MaxRetries)
+            catch (OperationCanceledException)
             {
-                try
-                {
-                    if (File.Exists(tempPath))
-                    {
-                        File.Delete(tempPath);
-                    }
-                }
-                catch
-                {
-                }
+                throw;
+            }
+            catch (Exception ex) when (attempt < MaxRetries)
+            {
+                lastError = ex.Message;
+                TryDeleteFile(tempPath);
 
-                await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct);
+                await Task.Delay(GetRetryDelay(attempt), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+                break;
             }
         }
 
-        return DownloadResult.Failed();
+        TryDeleteFile(tempPath);
+        return DownloadResult.Failed(lastError ?? "Download failed.");
     }
 
     private async Task<Lc0ProcessingResult> ProcessDownloadedFileAsync(
@@ -984,13 +1056,14 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                     continue;
                 }
 
+                // Do not dispose entry.DataStream: TarReader expects sequential consumption.
                 var result = await ProcessPgnStreamAsync(
                     entry.DataStream,
                     match,
                     outputWriter,
                     excludeNonStandard,
                     onlyCheckmates,
-                    ct);
+                    ct).ConfigureAwait(false);
                 gamesSeen += result.GamesSeen;
                 gamesKept += result.GamesKept;
             }
@@ -1011,7 +1084,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
                 outputWriter,
                 excludeNonStandard,
                 onlyCheckmates,
-                ct);
+                ct).ConfigureAwait(false);
             gamesSeen += result.GamesSeen;
             gamesKept += result.GamesKept;
         }
@@ -1072,6 +1145,17 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private static bool IsStandardVariant(IReadOnlyDictionary<string, string> headers)
     {
+        if (headers.TryGetHeaderValue("SetUp", out var setup) &&
+            setup.Trim().Equals("1", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (headers.TryGetHeaderValue("FEN", out var fen) && !string.IsNullOrWhiteSpace(fen))
+        {
+            return false;
+        }
+
         if (!headers.TryGetHeaderValue("Variant", out var variant) || string.IsNullOrWhiteSpace(variant))
         {
             return true;
@@ -1079,8 +1163,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
         var normalized = variant.Trim();
         return normalized.Equals("Standard", StringComparison.OrdinalIgnoreCase) ||
-               normalized.Equals("Chess", StringComparison.OrdinalIgnoreCase) ||
-               normalized.Equals("From Position", StringComparison.OrdinalIgnoreCase);
+               normalized.Equals("Chess", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsCheckmateGame(PgnGame game)
@@ -1096,8 +1179,9 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private static void UpdateHeaders(PgnGame game, Lc0MatchEntry match)
     {
-        var dateString = match.Date.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var version = GetVersion(match.Date.UtcDateTime.Date);
+        var dateOnly = DateOnly.FromDateTime(match.Date.UtcDateTime);
+        var dateString = dateOnly.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var version = GetVersion(dateOnly);
 
         game.Headers["Event"] = $"Lc0 match {match.MatchId}";
         game.Headers["Date"] = dateString;
@@ -1105,13 +1189,13 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
         game.Headers["Black"] = $"Lc0 {version}";
     }
 
-    private static string GetVersion(DateTime date)
+    private static string GetVersion(DateOnly date)
     {
-        foreach (var (cutoff, version) in VersionMap)
+        foreach (var cutoff in VersionMap.Value)
         {
-            if (date >= cutoff)
+            if (date >= cutoff.Start)
             {
-                return version;
+                return cutoff.Version;
             }
         }
 
@@ -1153,41 +1237,188 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private static bool TryParseMatchDate(string raw, out DateTimeOffset date)
     {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            date = default;
+            return false;
+        }
+
+        var cleaned = raw.Trim();
+        if (DateTimeOffset.TryParseExact(
+                cleaned,
+                MatchDateFormats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
+                out date))
+        {
+            return true;
+        }
+
         return DateTimeOffset.TryParse(
-            raw,
+            cleaned,
             CultureInfo.InvariantCulture,
             DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
             out date);
     }
 
-    private static string StripHtml(string html)
+    private static string NormalizeCellText(string? text)
     {
-        var text = HtmlTagRegex().Replace(html, string.Empty);
-        return WebUtility.HtmlDecode(text).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var decoded = HtmlEntity.DeEntitize(text);
+        return string.Join(" ", decoded.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static IReadOnlyList<VersionCutoff> LoadVersionMap()
+    {
+        var defaults = CreateDefaultVersionMap();
+        var configPath = ResolveVersionMapPath();
+        if (string.IsNullOrWhiteSpace(configPath))
+        {
+            return defaults;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(configPath);
+            var config = JsonSerializer.Deserialize<VersionMapConfig>(stream, VersionMapJsonOptions);
+            if (config?.VersionMap == null || config.VersionMap.Count == 0)
+            {
+                return defaults;
+            }
+
+            var parsed = new List<VersionCutoff>(config.VersionMap.Count);
+            foreach (var entry in config.VersionMap)
+            {
+                if (entry == null || string.IsNullOrWhiteSpace(entry.Start) || string.IsNullOrWhiteSpace(entry.Version))
+                {
+                    continue;
+                }
+
+                if (!DateOnly.TryParseExact(
+                        entry.Start.Trim(),
+                        "yyyy-MM-dd",
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.None,
+                        out var start))
+                {
+                    continue;
+                }
+
+                parsed.Add(new VersionCutoff(start, entry.Version.Trim()));
+            }
+
+            if (parsed.Count == 0)
+            {
+                return defaults;
+            }
+
+            parsed.Sort((a, b) => b.Start.CompareTo(a.Start));
+            return parsed;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to load lc0-version-map.json: {ex.Message}");
+            return defaults;
+        }
+    }
+
+    private static List<VersionCutoff> CreateDefaultVersionMap() =>
+    [
+        new VersionCutoff(new DateOnly(2025, 1, 1), "v0.32.0"),
+        new VersionCutoff(new DateOnly(2024, 6, 1), "v0.31.0"),
+        new VersionCutoff(new DateOnly(2023, 7, 1), "v0.30.0"),
+        new VersionCutoff(new DateOnly(2023, 1, 1), "v0.29.0"),
+        new VersionCutoff(new DateOnly(2022, 1, 1), "v0.28.0"),
+        new VersionCutoff(new DateOnly(2021, 1, 1), "v0.27.0"),
+        new VersionCutoff(new DateOnly(2020, 1, 1), "v0.26.0"),
+        new VersionCutoff(new DateOnly(2019, 1, 1), "v0.25.0"),
+        new VersionCutoff(new DateOnly(2018, 1, 1), "v0.24.0"),
+        new VersionCutoff(new DateOnly(1970, 1, 1), "v0.23.0")
+    ];
+
+    private static string? ResolveVersionMapPath()
+    {
+        var primary = Path.Combine(AppContext.BaseDirectory, "Assets", "lc0-version-map.json");
+        if (File.Exists(primary))
+        {
+            return primary;
+        }
+
+        var secondary = Path.Combine(AppContext.BaseDirectory, "lc0-version-map.json");
+        return File.Exists(secondary) ? secondary : null;
     }
 
     private static HttpClient CreateClient()
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(60)
+            // Rely on caller-provided CancellationToken for long downloads.
+            Timeout = Timeout.InfiniteTimeSpan
         };
 
         client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
         return client;
     }
 
-    [GeneratedRegex("<tbody[^>]*>(?<body>.*?)</tbody>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex TbodyRegex();
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
 
-    [GeneratedRegex("<tr[^>]*>(?<row>.*?)</tr>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex RowRegex();
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to delete temp file '{path}': {ex.Message}");
+        }
+    }
 
-    [GeneratedRegex("<td[^>]*>(?<cell>.*?)</td>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex CellRegex();
+    private static bool IsRetryableStatusCode(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
 
-    [GeneratedRegex("<.*?>", RegexOptions.Singleline)]
-    private static partial Regex HtmlTagRegex();
+    private static TimeSpan GetRetryDelay(int attempt, HttpResponseMessage? response = null)
+    {
+        var retryAfter = response?.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return delta;
+        }
+
+        if (retryAfter?.Date is { } date)
+        {
+            var dateDelay = date - DateTimeOffset.UtcNow;
+            if (dateDelay > TimeSpan.Zero)
+            {
+                return dateDelay;
+            }
+        }
+
+        var baseDelay = TimeSpan.FromSeconds(2 * attempt);
+        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(200, 450));
+        return baseDelay + jitter;
+    }
+
+    private static string FormatStatus(HttpStatusCode statusCode, string? reasonPhrase)
+    {
+        var reason = string.IsNullOrWhiteSpace(reasonPhrase) ? string.Empty : $" {reasonPhrase}";
+        return $"{(int)statusCode}{reason}";
+    }
 
     private enum Lc0FileKind
     {
@@ -1197,11 +1428,32 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 
     private sealed record Lc0MatchEntry(int MatchId, int TrainingRunId, DateTimeOffset Date);
 
-    private sealed record DownloadResult(DownloadStatus Status, string? TempPath)
+    private sealed record VersionCutoff(DateOnly Start, string Version);
+
+    private sealed record VersionMapConfig(List<VersionMapEntry>? VersionMap);
+
+    private sealed record VersionMapEntry(string? Start, string? Version);
+
+    private sealed record PageFetchResult(PageFetchStatus Status, List<Lc0MatchEntry> Matches, string? ErrorMessage)
     {
-        public static DownloadResult Success(string path) => new(DownloadStatus.Success, path);
-        public static DownloadResult NotFound() => new(DownloadStatus.NotFound, null);
-        public static DownloadResult Failed() => new(DownloadStatus.Failed, null);
+        public static PageFetchResult Success(List<Lc0MatchEntry> matches) =>
+            new(PageFetchStatus.Success, matches, null);
+
+        public static PageFetchResult Failed(string message) =>
+            new(PageFetchStatus.Failed, [], message);
+    }
+
+    private enum PageFetchStatus
+    {
+        Success,
+        Failed
+    }
+
+    private sealed record DownloadResult(DownloadStatus Status, string? TempPath, string? Message)
+    {
+        public static DownloadResult Success(string path) => new(DownloadStatus.Success, path, null);
+        public static DownloadResult NotFound() => new(DownloadStatus.NotFound, null, null);
+        public static DownloadResult Failed(string message) => new(DownloadStatus.Failed, null, message);
     }
 
     private enum DownloadStatus
@@ -1233,6 +1485,7 @@ public sealed partial class Lc0DownloaderService : ILc0DownloaderService
 ===== BEGIN: PgnTools\ViewModels\Tools\Lc0DownloaderViewModel.cs =====
 // PGNTOOLS-LC0-BEGIN
 using System.Globalization;
+using PgnTools.Services;
 
 namespace PgnTools.ViewModels.Tools;
 
@@ -1250,6 +1503,7 @@ public partial class Lc0DownloaderViewModel(
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
     private bool _disposed;
+    private bool _disposeRequested;
     private bool _outputPathSuggested;
     private string _lastOutputFolder = string.Empty;
     private static readonly DateOnly EarliestArchiveMonth = new(2018, 1, 1);
@@ -1450,6 +1704,11 @@ public partial class Lc0DownloaderViewModel(
             _cancellationTokenSource = null;
             _executionLock.Release();
             StopProgressTimer();
+
+            if (_disposeRequested)
+            {
+                Dispose();
+            }
     }
     }
 
@@ -1500,6 +1759,23 @@ public partial class Lc0DownloaderViewModel(
         _cancellationTokenSource?.Dispose();
         _cancellationTokenSource = null;
         _executionLock.Dispose();
+    }
+
+    public void RequestDispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (IsRunning)
+        {
+            _disposeRequested = true;
+            Cancel();
+            return;
+        }
+
+        Dispose();
     }
     private void LoadState()
     {
@@ -1590,6 +1866,11 @@ public partial class Lc0DownloaderViewModel(
         {
             return _lastOutputFolder;
     }
+        var defaultFolder = _settings.GetValue(AppSettingsKeys.DefaultDownloadFolder, string.Empty);
+        if (!string.IsNullOrWhiteSpace(defaultFolder))
+        {
+            return defaultFolder;
+        }
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
     private string GetSuggestedFileName()
@@ -1746,14 +2027,7 @@ public sealed partial class Lc0DownloaderPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            if (ViewModel.IsRunning)
-            {
-                ViewModel.CancelCommand.Execute(null);
-            }
-            else
-            {
-                ViewModel.Dispose();
-            }
+            ViewModel.RequestDispose();
         }
     }
 }
