@@ -24,7 +24,9 @@ public sealed partial class ChesscomDownloaderPage : Page
         base.OnNavigatedFrom(e);
         if (_ownsViewModel)
         {
-            if (ViewModel.UserDownloader.IsRunning || ViewModel.MonthlyDownloader.IsRunning)
+            if (ViewModel.UserDownloader.IsRunning ||
+                ViewModel.MonthlyDownloader.IsRunning ||
+                ViewModel.EventsDownloader.IsRunning)
             {
                 if (ViewModel.UserDownloader.IsRunning)
                 {
@@ -34,6 +36,11 @@ public sealed partial class ChesscomDownloaderPage : Page
                 if (ViewModel.MonthlyDownloader.IsRunning)
                 {
                     ViewModel.MonthlyDownloader.CancelCommand.Execute(null);
+                }
+
+                if (ViewModel.EventsDownloader.IsRunning)
+                {
+                    ViewModel.EventsDownloader.CancelCommand.Execute(null);
                 }
             }
             else

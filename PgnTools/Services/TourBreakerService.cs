@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using PgnTools.Helpers;
 
 namespace PgnTools.Services;
 
@@ -17,17 +18,34 @@ public interface ITourBreakerService
 }
 
 /// <summary>
-/// Splits a PGN database into tournament files based on event/site/year filters.
+/// Splits a PGN database into tournament files based on event/site/date filters.
 /// </summary>
 public sealed class TourBreakerService : ITourBreakerService
 {
     private const int BufferSize = 65536;
     private const int ProgressGameInterval = 200;
-    private static readonly TimeSpan ProgressTimeInterval = TimeSpan.FromMilliseconds(100);
+    private const long ProgressTimeIntervalMs = 100;
     private const int MaxSlugLength = 80;
     private const int MaxOpenWriters = 64;
+    private const char KeySeparator = '\u001F';
+
     private static readonly Regex SlugRegex = new("[^a-z0-9]+", RegexOptions.Compiled);
     private static readonly Regex WhitespaceRegex = new("\\s+", RegexOptions.Compiled);
+    private static readonly string[] FullDateFormats =
+    [
+        "yyyy.MM.dd",
+        "yyyy.M.dd",
+        "yyyy.MM.d",
+        "yyyy.M.d",
+        "yyyy-MM-dd",
+        "yyyy-M-dd",
+        "yyyy-MM-d",
+        "yyyy-M-d",
+        "yyyy/MM/dd",
+        "yyyy/M/dd",
+        "yyyy/MM/d",
+        "yyyy/M/d"
+    ];
 
     private readonly PgnReader _pgnReader;
     private readonly PgnWriter _pgnWriter;
@@ -40,13 +58,20 @@ public sealed class TourBreakerService : ITourBreakerService
         public int Games { get; set; }
         public HashSet<string> Players { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool AllMeetElo { get; set; } = true;
+        public bool HasMissingPlayerNames { get; set; }
         public DateOnly? MinDate { get; set; }
         public DateOnly? MaxDate { get; set; }
     }
 
     private sealed class WriterCache : IAsyncDisposable
     {
-        private readonly Dictionary<string, StreamWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
+        private sealed class CachedWriter(StreamWriter writer, LinkedListNode<string> node)
+        {
+            public StreamWriter Writer { get; } = writer;
+            public LinkedListNode<string> Node { get; } = node;
+        }
+
+        private readonly Dictionary<string, CachedWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
         private readonly LinkedList<string> _lru = new();
         private readonly Dictionary<string, bool> _hasContent = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _createdPaths = new(StringComparer.OrdinalIgnoreCase);
@@ -59,10 +84,12 @@ public sealed class TourBreakerService : ITourBreakerService
 
         public async Task<StreamWriter> GetWriterAsync(string path, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (_writers.TryGetValue(path, out var existing))
             {
-                Touch(path);
-                return existing;
+                Touch(existing.Node);
+                return existing.Writer;
             }
 
             if (_writers.Count >= _maxOpen)
@@ -79,9 +106,9 @@ public sealed class TourBreakerService : ITourBreakerService
                 BufferSize,
                 FileOptions.SequentialScan | FileOptions.Asynchronous);
             var writer = new StreamWriter(stream, new UTF8Encoding(false), BufferSize, leaveOpen: false);
+            var node = _lru.AddLast(path);
 
-            _writers[path] = writer;
-            _lru.AddLast(path);
+            _writers[path] = new CachedWriter(writer, node);
             _createdPaths.Add(path);
             return writer;
         }
@@ -96,22 +123,16 @@ public sealed class TourBreakerService : ITourBreakerService
             _hasContent[path] = true;
         }
 
-        private void Touch(string path)
+        private void Touch(LinkedListNode<string> node)
         {
-            var node = _lru.Find(path);
-            if (node != null)
-            {
-                _lru.Remove(node);
-                _lru.AddLast(node);
-            }
-            else
-            {
-                _lru.AddLast(path);
-            }
+            _lru.Remove(node);
+            _lru.AddLast(node);
         }
 
         private async Task EvictOldestAsync(CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var node = _lru.First;
             if (node == null)
             {
@@ -120,33 +141,73 @@ public sealed class TourBreakerService : ITourBreakerService
 
             var path = node.Value;
             _lru.RemoveFirst();
-            if (_writers.TryGetValue(path, out var writer))
+            if (_writers.Remove(path, out var cachedWriter))
             {
-                _writers.Remove(path);
-                try
+                var error = await TryFlushAndDisposeAsync(cachedWriter.Writer, cancellationToken).ConfigureAwait(false);
+                if (error != null)
                 {
-                    await writer.FlushAsync().ConfigureAwait(false);
+                    throw error;
                 }
-                catch
-                {
-                }
-
-                await writer.DisposeAsync().ConfigureAwait(false);
             }
         }
 
         public async ValueTask DisposeAsync()
         {
-            foreach (var writer in _writers.Values)
+            List<Exception>? errors = null;
+            foreach (var cachedWriter in _writers.Values)
             {
-                await writer.FlushAsync().ConfigureAwait(false);
-                await writer.DisposeAsync().ConfigureAwait(false);
+                var error = await TryFlushAndDisposeAsync(cachedWriter.Writer, CancellationToken.None).ConfigureAwait(false);
+                if (error != null)
+                {
+                    (errors ??= []).Add(error);
+                }
             }
 
             _writers.Clear();
             _lru.Clear();
             _hasContent.Clear();
             _createdPaths.Clear();
+
+            if (errors is { Count: 1 })
+            {
+                throw errors[0];
+            }
+
+            if (errors is { Count: > 1 })
+            {
+                throw new AggregateException("One or more tournament writers failed to flush or close.", errors);
+            }
+        }
+
+        private static async Task<Exception?> TryFlushAndDisposeAsync(StreamWriter writer, CancellationToken cancellationToken)
+        {
+            List<Exception>? errors = null;
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                (errors ??= []).Add(ex);
+            }
+
+            try
+            {
+                await writer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                (errors ??= []).Add(ex);
+            }
+
+            return errors switch
+            {
+                null => null,
+                { Count: 1 } => errors[0],
+                _ => new AggregateException("A tournament writer failed to flush and close.", errors)
+            };
         }
     }
 
@@ -189,12 +250,11 @@ public sealed class TourBreakerService : ITourBreakerService
 
         if (!File.Exists(inputFullPath))
         {
-            throw new FileNotFoundException("Input PGN file not found.", inputFullPath);
+            throw new FileNotFoundException($"Input PGN file not found: {inputFullPath}", inputFullPath);
         }
 
-        Directory.CreateDirectory(outputFullPath);
+        await EnsureWritableDirectoryAsync(outputFullPath, cancellationToken).ConfigureAwait(false);
 
-        // Pass 1: scan tournaments
         var tournaments = new Dictionary<string, TourMeta>(StringComparer.OrdinalIgnoreCase);
         var totalGames = 0L;
 
@@ -221,18 +281,22 @@ public sealed class TourBreakerService : ITourBreakerService
             {
                 meta.Players.Add(white);
             }
+            else
+            {
+                meta.HasMissingPlayerNames = true;
+            }
 
             if (game.Headers.TryGetHeaderValue("Black", out var black) && !string.IsNullOrWhiteSpace(black))
             {
                 meta.Players.Add(black);
             }
-
-            if (TryParseElo(game.Headers, "WhiteElo", out var whiteElo) && whiteElo < minElo)
+            else
             {
-                meta.AllMeetElo = false;
+                meta.HasMissingPlayerNames = true;
             }
 
-            if (TryParseElo(game.Headers, "BlackElo", out var blackElo) && blackElo < minElo)
+            if (!PlayerMeetsElo(game.Headers, "WhiteElo", minElo) ||
+                !PlayerMeetsElo(game.Headers, "BlackElo", minElo))
             {
                 meta.AllMeetElo = false;
             }
@@ -251,11 +315,16 @@ public sealed class TourBreakerService : ITourBreakerService
             }
         }
 
-        // Filter valid tournaments
         var validKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in tournaments)
         {
-            var playerMin = Math.Max(1, kv.Value.Players.Count / 2);
+            var playerCount = kv.Value.Players.Count;
+            if (playerCount < 2 || kv.Value.HasMissingPlayerNames)
+            {
+                continue;
+            }
+
+            var playerMin = Math.Max(1, (playerCount + 1) / 2);
             if (kv.Value.AllMeetElo && kv.Value.Games >= minGames && kv.Value.Games >= playerMin)
             {
                 validKeys.Add(kv.Key);
@@ -268,51 +337,194 @@ public sealed class TourBreakerService : ITourBreakerService
             return 0;
         }
 
-        // Pass 2: write filtered tournaments
+        var finalPathsByKey = BuildFinalPaths(validKeys, tournaments, outputFullPath);
+        var tempPathsByFinalPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var processedGames = 0L;
-        var lastProgressReport = DateTime.MinValue;
+        var lastProgressReportTick = 0L;
+        var commitStarted = false;
 
-        await using var writerCache = new WriterCache(MaxOpenWriters);
+        var writerCache = new WriterCache(MaxOpenWriters);
+        var writerCacheDisposed = false;
 
-        await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken).ConfigureAwait(false))
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            processedGames++;
-
-            var key = GetKey(game);
-            if (!validKeys.Contains(key))
+            await foreach (var game in _pgnReader.ReadGamesAsync(inputFullPath, cancellationToken).ConfigureAwait(false))
             {
-                if (ShouldReportProgress(processedGames, ref lastProgressReport))
+                cancellationToken.ThrowIfCancellationRequested();
+                processedGames++;
+
+                var key = GetKey(game);
+                if (!validKeys.Contains(key))
+                {
+                    if (ShouldReportProgress(processedGames, ref lastProgressReportTick))
+                    {
+                        ReportProgress(progress, processedGames, totalGames);
+                    }
+
+                    continue;
+                }
+
+                var finalPath = finalPathsByKey[key];
+                var tempPath = GetOrCreateTempPath(finalPath, tempPathsByFinalPath);
+                var needsSeparator = writerCache.HasContent(tempPath);
+                var writer = await writerCache.GetWriterAsync(tempPath, cancellationToken).ConfigureAwait(false);
+
+                if (needsSeparator)
+                {
+                    await writer.WriteLineAsync().ConfigureAwait(false);
+                }
+
+                await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
+                writerCache.MarkWritten(tempPath);
+
+                if (ShouldReportProgress(processedGames, ref lastProgressReportTick))
                 {
                     ReportProgress(progress, processedGames, totalGames);
                 }
-                continue;
             }
 
-            var meta = tournaments[key];
-            var filename = GenerateFilename(meta, key);
-            var path = Path.Combine(outputFullPath, filename);
+            await writerCache.DisposeAsync().ConfigureAwait(false);
+            writerCacheDisposed = true;
 
-            var needsSeparator = writerCache.HasContent(path);
+            commitStarted = true;
+            await CommitTempOutputsAsync(tempPathsByFinalPath, cancellationToken).ConfigureAwait(false);
 
-            var writer = await writerCache.GetWriterAsync(path, cancellationToken).ConfigureAwait(false);
-
-            if (needsSeparator)
+            progress?.Report(100);
+            return validKeys.Count;
+        }
+        catch
+        {
+            if (!writerCacheDisposed)
             {
-                await writer.WriteLineAsync().ConfigureAwait(false);
+                await DisposeWriterCacheForFailureAsync(writerCache).ConfigureAwait(false);
+                writerCacheDisposed = true;
             }
 
-            await _pgnWriter.WriteGameAsync(writer, game, cancellationToken).ConfigureAwait(false);
-            writerCache.MarkWritten(path);
-
-            if (ShouldReportProgress(processedGames, ref lastProgressReport))
+            if (!commitStarted)
             {
-                ReportProgress(progress, processedGames, totalGames);
+                CleanupTempOutputs(tempPathsByFinalPath.Values);
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (!writerCacheDisposed)
+            {
+                await DisposeWriterCacheForFailureAsync(writerCache).ConfigureAwait(false);
             }
         }
+    }
 
-        progress?.Report(100);
-        return validKeys.Count;
+    private static Dictionary<string, string> BuildFinalPaths(
+        HashSet<string> validKeys,
+        Dictionary<string, TourMeta> tournaments,
+        string outputFullPath)
+    {
+        var finalPathsByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var pathToKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in validKeys)
+        {
+            var filename = GenerateFilename(tournaments[key], key);
+            var finalPath = Path.Combine(outputFullPath, filename);
+
+            if (pathToKey.TryGetValue(finalPath, out var existingKey) &&
+                !string.Equals(existingKey, key, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Filename collision between tournament keys '{existingKey}' and '{key}'.");
+            }
+
+            pathToKey[finalPath] = key;
+            finalPathsByKey[key] = finalPath;
+        }
+
+        return finalPathsByKey;
+    }
+
+    private static string GetOrCreateTempPath(
+        string finalPath,
+        Dictionary<string, string> tempPathsByFinalPath)
+    {
+        if (tempPathsByFinalPath.TryGetValue(finalPath, out var tempPath))
+        {
+            return tempPath;
+        }
+
+        tempPath = FileReplacementHelper.CreateTempFilePath(finalPath);
+        tempPathsByFinalPath[finalPath] = tempPath;
+        return tempPath;
+    }
+
+    private static async Task CommitTempOutputsAsync(
+        Dictionary<string, string> tempPathsByFinalPath,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (finalPath, tempPath) in tempPathsByFinalPath)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await FileReplacementHelper.ReplaceFileAsync(tempPath, finalPath, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task EnsureWritableDirectoryAsync(string outputFullPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Directory.CreateDirectory(outputFullPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new UnauthorizedAccessException($"Cannot create output directory: {outputFullPath}", ex);
+        }
+
+        var testFile = Path.Combine(outputFullPath, $".pgn_tools_write_{Guid.NewGuid():N}");
+        try
+        {
+            await File.WriteAllTextAsync(testFile, "test", cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new UnauthorizedAccessException($"No write access to output directory: {outputFullPath}", ex);
+        }
+        finally
+        {
+            TryDelete(testFile);
+        }
+    }
+
+    private static void CleanupTempOutputs(IEnumerable<string> tempPaths)
+    {
+        foreach (var tempPath in tempPaths)
+        {
+            TryDelete(tempPath);
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task DisposeWriterCacheForFailureAsync(WriterCache writerCache)
+    {
+        try
+        {
+            await writerCache.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+        }
     }
 
     private static void ReportProgress(IProgress<double>? progress, long processedGames, long totalGames)
@@ -326,16 +538,11 @@ public sealed class TourBreakerService : ITourBreakerService
         progress.Report(percent);
     }
 
-    private static bool TryParseElo(IReadOnlyDictionary<string, string> headers, string key, out int elo)
+    private static bool PlayerMeetsElo(IReadOnlyDictionary<string, string> headers, string key, int minElo)
     {
-        if (headers.TryGetHeaderValue(key, out var value) && int.TryParse(value, out var parsed))
-        {
-            elo = parsed;
-            return true;
-        }
-
-        elo = 0;
-        return false;
+        return headers.TryGetHeaderValue(key, out var value) &&
+               int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var elo) &&
+               elo >= minElo;
     }
 
     private static string GetKey(PgnGame game, out string eventName, out string siteName, out string year)
@@ -343,7 +550,8 @@ public sealed class TourBreakerService : ITourBreakerService
         eventName = NormalizeKeyPart(game.Headers.GetHeaderValueOrDefault("Event", "?"));
         siteName = NormalizeKeyPart(game.Headers.GetHeaderValueOrDefault("Site", "?"));
         year = ExtractYear(game.Headers.GetHeaderValueOrDefault("Date", "????.??.??"));
-        return BuildKey(eventName, siteName, year);
+        var dateKey = ExtractDateKey(game.Headers, year);
+        return BuildKey(eventName, siteName, dateKey);
     }
 
     private static string GetKey(PgnGame game)
@@ -351,12 +559,24 @@ public sealed class TourBreakerService : ITourBreakerService
         var eventName = NormalizeKeyPart(game.Headers.GetHeaderValueOrDefault("Event", "?"));
         var siteName = NormalizeKeyPart(game.Headers.GetHeaderValueOrDefault("Site", "?"));
         var year = ExtractYear(game.Headers.GetHeaderValueOrDefault("Date", "????.??.??"));
-        return BuildKey(eventName, siteName, year);
+        var dateKey = ExtractDateKey(game.Headers, year);
+        return BuildKey(eventName, siteName, dateKey);
     }
 
-    private static string BuildKey(string eventName, string siteName, string year)
+    private static string ExtractDateKey(IReadOnlyDictionary<string, string> headers, string fallbackYear)
     {
-        return $"{eventName}|{siteName}|{year}";
+        var eventDate = headers.GetHeaderValueOrDefault("EventDate", string.Empty);
+        if (!string.IsNullOrWhiteSpace(eventDate) && !eventDate.Contains('?', StringComparison.Ordinal))
+        {
+            return NormalizeKeyPart(eventDate);
+        }
+
+        return fallbackYear;
+    }
+
+    private static string BuildKey(string eventName, string siteName, string dateKey)
+    {
+        return string.Join(KeySeparator, eventName, siteName, dateKey);
     }
 
     private static string GenerateFilename(TourMeta meta, string key)
@@ -385,13 +605,17 @@ public sealed class TourBreakerService : ITourBreakerService
             return false;
         }
 
-        return DateOnly.TryParseExact(raw, "yyyy.MM.dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
-            || DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
-            || DateOnly.TryParseExact(raw, "yyyy/MM/dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+        return DateOnly.TryParseExact(
+            raw.Trim(),
+            FullDateFormats,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out date);
     }
 
     private static string ExtractYear(string raw)
     {
+        raw = raw.Trim();
         if (raw.Length >= 4 && int.TryParse(raw.AsSpan(0, 4), NumberStyles.None, CultureInfo.InvariantCulture, out var year))
         {
             return year.ToString("D4", CultureInfo.InvariantCulture);
@@ -407,7 +631,7 @@ public sealed class TourBreakerService : ITourBreakerService
             return "?";
         }
 
-        var trimmed = value.Trim();
+        var trimmed = value.Trim().Replace('|', ' ').Replace(KeySeparator, ' ');
         return WhitespaceRegex.Replace(trimmed, " ");
     }
 
@@ -427,6 +651,10 @@ public sealed class TourBreakerService : ITourBreakerService
         if (slug.Length > maxLength)
         {
             slug = slug[..maxLength].Trim('-');
+            if (string.IsNullOrWhiteSpace(slug))
+            {
+                return fallback;
+            }
         }
 
         return slug;
@@ -435,25 +663,25 @@ public sealed class TourBreakerService : ITourBreakerService
     private static string GetKeyHash(string key)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(key));
-        return Convert.ToHexString(bytes.AsSpan(0, 4)).ToLowerInvariant();
+        return Convert.ToHexString(bytes.AsSpan(0, 12)).ToLowerInvariant();
     }
 
-    private static bool ShouldReportProgress(long games, ref DateTime lastReportUtc)
+    private static bool ShouldReportProgress(long games, ref long lastReportTick)
     {
         if (games <= 0)
         {
             return false;
         }
 
-        var now = DateTime.UtcNow;
+        var currentTick = Environment.TickCount64;
         var gameIntervalMet = games == 1 || games % ProgressGameInterval == 0;
-        var timeIntervalMet = now - lastReportUtc >= ProgressTimeInterval;
+        var timeIntervalMet = currentTick - lastReportTick >= ProgressTimeIntervalMs;
         if (!gameIntervalMet && !timeIntervalMet)
         {
             return false;
         }
 
-        lastReportUtc = now;
+        lastReportTick = currentTick;
         return true;
     }
 }

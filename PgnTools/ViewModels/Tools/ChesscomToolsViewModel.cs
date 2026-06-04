@@ -5,12 +5,14 @@ namespace PgnTools.ViewModels.Tools;
 /// </summary>
 public sealed partial class ChesscomToolsViewModel(
     ChesscomDownloaderViewModel userDownloader,
-    ChesscomMonthlyDownloaderViewModel monthlyDownloader) : BaseViewModel, IInitializable, IDisposable
+    ChesscomMonthlyDownloaderViewModel monthlyDownloader,
+    ChesscomEventsDownloaderViewModel eventsDownloader) : BaseViewModel, IInitializable, IDisposable
 {
     private bool _disposed;
 
     public ChesscomDownloaderViewModel UserDownloader { get; } = userDownloader;
     public ChesscomMonthlyDownloaderViewModel MonthlyDownloader { get; } = monthlyDownloader;
+    public ChesscomEventsDownloaderViewModel EventsDownloader { get; } = eventsDownloader;
 
     public void Initialize()
     {
@@ -18,6 +20,7 @@ public sealed partial class ChesscomToolsViewModel(
         StatusSeverity = InfoBarSeverity.Informational;
         UserDownloader.Initialize();
         MonthlyDownloader.Initialize();
+        EventsDownloader.Initialize();
     }
 
     public void Dispose()
@@ -30,5 +33,6 @@ public sealed partial class ChesscomToolsViewModel(
         _disposed = true;
         UserDownloader.Dispose();
         MonthlyDownloader.Dispose();
+        EventsDownloader.Dispose();
     }
 }

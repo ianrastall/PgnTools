@@ -17,7 +17,7 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
             <TextBlock Text="Chess.com" Style="{StaticResource TitleTextBlockStyle}"/>
-            <TextBlock Text="Download Chess.com games by user or crawl a specific month using a seed list."
+            <TextBlock Text="Download Chess.com games by user, crawl a month from seed players, or fetch event PGNs by numeric ID."
                        Style="{StaticResource BodyTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        TextWrapping="Wrap"/>
@@ -30,6 +30,10 @@
 
             <PivotItem Header="Monthly Crawl">
                 <views:ChesscomMonthlyDownloaderView ViewModel="{x:Bind ViewModel.MonthlyDownloader}"/>
+            </PivotItem>
+
+            <PivotItem Header="Events Downloader">
+                <views:ChesscomEventsDownloaderView ViewModel="{x:Bind ViewModel.EventsDownloader}"/>
             </PivotItem>
         </Pivot>
     </Grid>
