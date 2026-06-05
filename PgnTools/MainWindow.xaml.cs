@@ -14,7 +14,10 @@ public sealed partial class MainWindow : Window
 
         var appWindow = this.AppWindow;
         var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
-        appWindow.SetIcon(iconPath);
+        if (System.IO.File.Exists(iconPath))
+        {
+            appWindow.SetIcon(iconPath);
+        }
 
         if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter)
         {

@@ -18,6 +18,12 @@ public interface IChesscomDownloaderService
 {
     Task<List<string>> GetArchivesAsync(string username, CancellationToken ct = default);
     Task<string> DownloadPlayerGamesPgnAsync(string username, int year, int month, CancellationToken ct = default);
+    Task<string> DownloadPlayerGamesPgnAsync(
+        string username,
+        int year,
+        int month,
+        ChesscomUserGameFilters filters,
+        CancellationToken ct = default);
 }
 ```
 
@@ -27,8 +33,13 @@ public interface IChesscomDownloaderService
 2. **Iterate archives** in returned order.
 3. **Download PGN** for each `year/month` from:
    - `https://api.chess.com/pub/player/{username}/games/{year}/{month}/pgn`
-4. **Append** each monthly PGN to a temp output file with a single blank‑line separator.
-5. **Replace output** via `FileReplacementHelper.ReplaceFileAsync`.
+4. When any user filter is active, download the monthly JSON archive instead and keep games using its authoritative per-game metadata:
+   - Only games won by the requested user
+   - Only checkmates
+   - Exclude bullet games
+   - Exclude non-standard variants
+5. **Append** each monthly PGN to a temp output file with a single blank‑line separator.
+6. **Replace output** via `FileReplacementHelper.ReplaceFileAsync`.
 
 ## 4. Rate Limiting
 
@@ -38,6 +49,7 @@ Each request is delayed by **800–1400 ms** to be polite to the API (jitter use
 
 The ViewModel:
 - Parses archive URLs into `(year, month)`.
+- Persists the selected user-game filters.
 - Writes to a unique temp file and replaces on success.
 - Reports progress by archive count.
 

@@ -23,6 +23,7 @@
         <UseRidGraph>true</UseRidGraph>
         <Platforms>x64</Platforms>
         <PlatformTarget>x64</PlatformTarget>
+        <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
         <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>

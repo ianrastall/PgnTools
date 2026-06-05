@@ -20,6 +20,17 @@
             <TextBox PlaceholderText="e.g. Hikaru"
                      Text="{x:Bind ViewModel.Username, Mode=TwoWay}"/>
 
+            <TextBlock Text="Filters"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <CheckBox Content="Only games won by user"
+                      IsChecked="{x:Bind ViewModel.OnlyUserWins, Mode=TwoWay}"/>
+            <CheckBox Content="Only checkmates"
+                      IsChecked="{x:Bind ViewModel.OnlyCheckmates, Mode=TwoWay}"/>
+            <CheckBox Content="Exclude bullet games"
+                      IsChecked="{x:Bind ViewModel.ExcludeBullet, Mode=TwoWay}"/>
+            <CheckBox Content="Exclude non-standard variants"
+                      IsChecked="{x:Bind ViewModel.ExcludeNonStandard, Mode=TwoWay}"/>
+
             <TextBlock Text="Output File"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <Grid>
