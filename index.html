@@ -51,6 +51,8 @@
     .count { font-size: 12px; opacity: .8; }
     .modelHdr { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
     .modelHdrLeft { display: flex; align-items: baseline; gap: 10px; }
+    .modelLink { color: inherit; font-weight: 800; text-decoration: none; border-bottom: 1px dotted rgba(127,127,127,.65); }
+    .modelLink:hover { border-bottom-style: solid; }
     .miniBtn {
       padding: 6px 10px;
       border-radius: 999px;
@@ -168,7 +170,7 @@
       </section>
 
       <section class="small muted" style="margin-top: 12px;">
-        Tip: Click a box and use <code class="kbd">Ctrl</code>+<code class="kbd">V</code> or right-click and Paste.
+        Tip: Click a model's name to open its site in a new tab. The <strong>Paste</strong> button reads your clipboard directly (Chrome/Edge ask once, then it's one-click; Firefox shows a small Paste bubble each time by design). Clicking a box and using <code class="kbd">Ctrl</code>+<code class="kbd">V</code> always works without prompts.
       </section>
     </section>
 
@@ -259,15 +261,15 @@
 (() => {
   // ===== Models (fixed labels) =====
   const MODELS = [
-    { id: "chatgpt",  label: "ChatGPT"  },
-    { id: "claude",   label: "Claude"   },
-    { id: "deepseek", label: "DeepSeek" },
-    { id: "gemini",   label: "Gemini"   },
-    { id: "kimi",     label: "Kimi"     },
-    { id: "minimax",  label: "MiniMax"  },
-    { id: "mistral",  label: "Mistral"  },
-    { id: "qwen",     label: "Qwen"     },
-    { id: "zai",      label: "Z.ai"     },
+    { id: "chatgpt",  label: "ChatGPT",  url: "https://chatgpt.com"        },
+    { id: "claude",   label: "Claude",   url: "https://claude.ai"          },
+    { id: "deepseek", label: "DeepSeek", url: "https://chat.deepseek.com"  },
+    { id: "gemini",   label: "Gemini",   url: "https://gemini.google.com"  },
+    { id: "kimi",     label: "Kimi",     url: "https://www.kimi.com"       },
+    { id: "minimax",  label: "MiniMax",  url: "https://agent.minimax.io"   },
+    { id: "mistral",  label: "Mistral",  url: "https://chat.mistral.ai"    },
+    { id: "qwen",     label: "Qwen",     url: "https://chat.qwen.ai"       },
+    { id: "zai",      label: "Z.ai",     url: "https://chat.z.ai"          },
   ];
 
   const el = (id) => document.getElementById(id);
@@ -366,6 +368,13 @@
     const ok = document.execCommand("copy");
     ta.remove();
     if (!ok) throw new Error("Legacy copy failed.");
+  }
+
+  async function clipboardReadText() {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      throw new Error("unsupported");
+    }
+    return navigator.clipboard.readText();
   }
 
   function wireFileOpen(buttonId, inputId, targetId, nameId, label) {
@@ -570,9 +579,29 @@
 
       const lab = document.createElement("label");
       lab.setAttribute("for", `box_${m.id}`);
-      lab.textContent = m.label;
+
+      if (m.url) {
+        const a = document.createElement("a");
+        a.className = "modelLink";
+        a.href = m.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.title = `Open ${m.label} in a new tab`;
+        a.textContent = m.label;
+        lab.appendChild(a);
+      } else {
+        lab.textContent = m.label;
+      }
+
+      const pasteBtn = document.createElement("button");
+      pasteBtn.type = "button";
+      pasteBtn.className = "miniBtn";
+      pasteBtn.textContent = "Paste";
+      pasteBtn.title = `Paste clipboard into the ${m.label} box`;
+      pasteBtn.addEventListener("click", () => pasteInto(m));
 
       left.appendChild(lab);
+      left.appendChild(pasteBtn);
 
       const cnt = document.createElement("div");
       cnt.className = "count";
@@ -596,6 +625,28 @@
       card.appendChild(ta);
       card.appendChild(meta);
       boxes.appendChild(card);
+    }
+  }
+
+  async function pasteInto(m) {
+    const ta = el(`box_${m.id}`);
+    if (!ta) return;
+    try {
+      const text = await clipboardReadText();
+      if (!text) {
+        toast("Clipboard empty", "Nothing to paste.", "error");
+        ta.focus();
+        return;
+      }
+      ta.value = text;
+      updateCount(m.id);
+      setStatus("Pasted");
+      toast("Pasted", `Clipboard inserted into ${m.label}.`);
+    } catch (e) {
+      // Permission denied (or dismissed), or browser doesn't expose clipboard read.
+      ta.focus();
+      setStatus("Paste blocked");
+      toast("Paste blocked", "Box focused — press Ctrl+V instead.", "error");
     }
   }
 
