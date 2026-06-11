@@ -7,7 +7,7 @@
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
-    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); position: sticky; top: 0; backdrop-filter: blur(10px); }
+    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); position: sticky; top: 0; z-index: 100; background: rgba(127,127,127,.10); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
     main { padding: 18px; max-width: 1200px; margin: 0 auto; }
     .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
     @media (min-width: 980px) { .row.cols2 { grid-template-columns: 1fr 1fr; } }
@@ -108,8 +108,8 @@
       </div>
 
       <div class="tabs" role="tablist" aria-label="Views">
-        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="true" type="button">Prompt Builder</button>
-        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="false" type="button">Combiner</button>
+        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="true" aria-controls="viewBuilder" type="button">Prompt Builder</button>
+        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="false" aria-controls="viewCombiner" type="button">Combiner</button>
       </div>
 
       <span class="pill" id="status">Ready</span>
@@ -120,7 +120,7 @@
     <!-- ===================== -->
     <!-- VIEW: COMBINER         -->
     <!-- ===================== -->
-    <section id="viewCombiner" class="view" aria-labelledby="tabCombiner">
+    <section id="viewCombiner" class="view" role="tabpanel" aria-labelledby="tabCombiner">
       <section class="card">
         <div class="inline">
           <div>
@@ -156,8 +156,8 @@
       <section class="card out" style="margin-top: 12px;">
         <div class="toolbar" style="margin-bottom: 10px;">
           <div style="flex:1;">
-            <label for="output" style="margin:0 0 4px;">Combined output</label>
-            <div class="small muted">Ctrl+Enter runs Combine. Copy/Download uses this exact text.</div>
+            <label for="output" style="margin:0 0 4px;">Combined output <span class="count" id="outputCount"></span></label>
+            <div class="small muted">Ctrl+Enter (Cmd+Enter on Mac) runs Combine. Copy/Download uses this exact text.</div>
           </div>
           <button id="combineBtn" type="button">Combine</button>
           <button id="copyBtn" type="button">Copy</button>
@@ -175,7 +175,7 @@
     <!-- ===================== -->
     <!-- VIEW: PROMPT BUILDER   -->
     <!-- ===================== -->
-    <section id="viewBuilder" class="view active" aria-labelledby="tabBuilder">
+    <section id="viewBuilder" class="view active" role="tabpanel" aria-labelledby="tabBuilder">
       <section class="card">
         <div style="display:flex; align-items: baseline; justify-content: space-between; gap: 10px;">
           <div>
@@ -236,8 +236,8 @@
       <section class="card out" style="margin-top: 12px;">
         <div class="toolbar" style="margin-bottom: 10px;">
           <div style="flex:1;">
-            <label for="pb_output" style="margin:0 0 4px;">Built prompt</label>
-            <div class="small muted">Click Build, then Copy, then paste into each LLM.</div>
+            <label for="pb_output" style="margin:0 0 4px;">Built prompt <span class="count" id="pb_outputCount"></span></label>
+            <div class="small muted">Click Build, then Copy, then paste into each LLM. Ctrl+Enter (Cmd+Enter on Mac) runs Build.</div>
           </div>
           <button id="pb_buildBtn" type="button">Build</button>
           <button id="pb_copyBtn" type="button">Copy</button>
@@ -259,17 +259,15 @@
 (() => {
   // ===== Models (fixed labels) =====
   const MODELS = [
-    { id: "chatgpt",	label: "ChatGPT"    },
-    { id: "claude",		label: "Claude"     },
-    { id: "deepseek",	label: "DeepSeek"   },
-	{ id: "gemini",		label: "Gemini"     },
-	{ id: "grok",		label: "Grok"		},
-    { id: "kimi",		label: "Kimi"       },
-	{ id: "meta",		label: "Meta"		},
-	{ id: "mistral",	label: "Mistral"    },
-	{ id: "perplexity",	label: "Perplexity" }, 
-    { id: "qwen",    	label: "Qwen"       },
-    { id: "zai",    	label: "Z.ai"       },
+    { id: "chatgpt",  label: "ChatGPT"  },
+    { id: "claude",   label: "Claude"   },
+    { id: "deepseek", label: "DeepSeek" },
+    { id: "gemini",   label: "Gemini"   },
+    { id: "kimi",     label: "Kimi"     },
+    { id: "minimax",  label: "MiniMax"  },
+    { id: "mistral",  label: "Mistral"  },
+    { id: "qwen",     label: "Qwen"     },
+    { id: "zai",      label: "Z.ai"     },
   ];
 
   const el = (id) => document.getElementById(id);
@@ -423,12 +421,14 @@
       const val = (ta?.value || "").trim();
       if (!val) continue;
 
+      if (count > 0) {
+        parts.push("---");
+        parts.push("");
+      }
       count++;
       parts.push(`### ${m.label}`);
       parts.push("");
       parts.push(normalizeNewlines(val));
-      parts.push("");
-      parts.push("---");
       parts.push("");
     }
 
@@ -479,8 +479,14 @@
     const fmt = el("format").value;
     const text = (fmt === "md") ? buildMarkdown() : buildPlainText();
     el("output").value = text;
+    updateOutputCount("outputCount", text);
     setStatus("Combined");
     toast("Combined", "Output updated.");
+  }
+
+  function updateOutputCount(id, text) {
+    const c = el(id);
+    if (c) c.textContent = text ? `(${countWords(text)} words • ${countChars(text)} chars)` : "";
   }
 
   async function copyOutput() {
@@ -506,8 +512,8 @@
     let name = el("filename").value.trim();
     if (!name) {
       const t = el("title").value.trim();
-      const base = t ? t.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") : "llm_roundup";
-      name = `${base}_${safeFileStamp()}.${ext}`;
+      const base = t ? t.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") : "";
+      name = `${base || "llm_roundup"}_${safeFileStamp()}.${ext}`;
     } else {
       if (!name.toLowerCase().endsWith("." + ext)) name += "." + ext;
     }
@@ -536,6 +542,7 @@
     el("title").value = "";
     el("filename").value = "";
     el("output").value = "";
+    updateOutputCount("outputCount", "");
     setStatus("Cleared");
     toast("Cleared", "All model boxes cleared.");
   }
@@ -598,10 +605,12 @@
   el("downloadBtn").addEventListener("click", downloadOutput);
   el("clearBtn").addEventListener("click", clearAll);
 
-  // Convenience: combine on Ctrl+Enter anywhere in combiner view
+  // Convenience: Ctrl+Enter (Cmd+Enter on Mac) runs the active view's main action
   document.addEventListener("keydown", (e) => {
-    const combinerActive = el("viewCombiner").classList.contains("active");
-    if (combinerActive && e.ctrlKey && e.key === "Enter") combine();
+    if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    if (el("viewCombiner").classList.contains("active")) combine();
+    else if (el("viewBuilder").classList.contains("active")) pbBuild();
   });
 
   // ===== Prompt Builder =====
@@ -614,6 +623,12 @@
     const hintOn = el("pb_hint").checked;
     const lang = el("pb_lang").value.trim();
 
+    if (!task && !context && !code) {
+      toast("Nothing to build", "All fields are empty.", "error");
+      setStatus("Nothing to build");
+      return;
+    }
+
     const parts = [];
     if (task) parts.push(task);
     if (context) {
@@ -621,24 +636,31 @@
       parts.push("CONTEXT:");
       parts.push(normalizeNewlines(context));
     }
-    parts.push("");
 
-    if (tag) parts.push("CODEBASE:");
-    if (hintOn && lang) parts.push(`LANGUAGE: ${lang}`);
+    if (code) {
+      if (parts.length) parts.push("");
+      if (tag) parts.push("CODEBASE:");
+      if (hintOn && lang) parts.push(`LANGUAGE: ${lang}`);
 
-    if (wrap) {
-      parts.push("```" + (hintOn && lang ? lang : "text"));
-      parts.push(normalizeNewlines(code));
-      parts.push("```");
-    } else {
-      parts.push(normalizeNewlines(code));
+      if (wrap) {
+        parts.push("```" + (hintOn && lang ? lang : "text"));
+        parts.push(normalizeNewlines(code));
+        parts.push("```");
+      } else {
+        parts.push(normalizeNewlines(code));
+      }
     }
 
     const out = parts.join("\n").trim() + "\n";
     el("pb_output").value = out;
+    updateOutputCount("pb_outputCount", out);
 
     setStatus("Built");
-    toast("Built", "Paste-ready prompt generated.");
+    if (!code) {
+      toast("Built (no codebase)", "Prompt generated without a codebase section.");
+    } else {
+      toast("Built", "Paste-ready prompt generated.");
+    }
   }
 
   async function pbCopy() {
@@ -659,6 +681,7 @@
     el("pb_context").value = "";
     el("pb_code").value = "";
     el("pb_output").value = "";
+    updateOutputCount("pb_outputCount", "");
     const cName = el("pb_contextFileName");
     if (cName) cName.textContent = "No file loaded.";
     const codeName = el("pb_codeFileName");
@@ -672,12 +695,6 @@
   el("pb_clearBtn").addEventListener("click", pbClear);
   wireFileOpen("pb_contextOpenBtn", "pb_contextFile", "pb_context", "pb_contextFileName", "Context");
   wireFileOpen("pb_codeOpenBtn", "pb_codeFile", "pb_code", "pb_codeFileName", "Codebase");
-
-  // Build on Ctrl+Enter in builder view
-  document.addEventListener("keydown", (e) => {
-    const builderActive = el("viewBuilder").classList.contains("active");
-    if (builderActive && e.ctrlKey && e.key === "Enter") pbBuild();
-  });
 
   // Init
   initBoxes();
