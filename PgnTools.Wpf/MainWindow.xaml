@@ -16,6 +16,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="10" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock FontSize="18"
@@ -1058,5 +1059,15 @@
                 </Grid>
             </TabItem>
         </TabControl>
+
+        <TextBlock Grid.Row="3"
+                   Margin="0,12,0,0"
+                   HorizontalAlignment="Right"
+                   FontSize="12"
+                   Foreground="{DynamicResource TextSecondaryBrush}">
+            <Run Text="Free tool - if it's useful, you can " /><Hyperlink NavigateUri="https://ko-fi.com/ianrastall"
+                       Foreground="{DynamicResource AccentBrush}"
+                       RequestNavigate="OnSupportLinkNavigate">support it on Ko-fi</Hyperlink><Run Text="." />
+        </TextBlock>
     </Grid>
 </Window>

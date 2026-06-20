@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Navigation;
 
 namespace PgnTools.Wpf;
 
@@ -49,5 +51,19 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _viewModel.Dispose();
+    }
+
+    private void OnSupportLinkNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch
+        {
+            // Ignore failures to launch the browser.
+        }
+
+        e.Handled = true;
     }
 }

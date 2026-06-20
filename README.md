@@ -2,6 +2,8 @@
 
 A fast, dark-mode **Windows desktop app for working with PGN chess files** — download games, clean and organize them, enrich the tags, and run engine analysis. It streams games one at a time, so it handles multi-gigabyte PGN files without choking, all from a single app.
 
+_Built with heavy AI assistance — the owner provided the direction, requirements, and testing._
+
 ![PGN Tools](Docs/screenshot.png)
 
 ## Features
@@ -55,9 +57,11 @@ dotnet run --project PgnTools.Wpf/PgnTools.Wpf.csproj
 - `Docs/` — per-tool notes and design docs
 - `build.cmd` — one-step local build
 
-## How this was made
+## Support
 
-This project was built with heavy AI assistance, with the owner providing the direction, requirements, and testing.
+PGN Tools is free. If it saved you time — or it's the kind of thing you'd have happily paid for — you can drop a few bucks in the tip jar. It's genuinely appreciated and helps keep the project going.
+
+[![Support on Ko-fi](https://img.shields.io/badge/Support-Ko--fi-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/ianrastall)
 
 ## License
 
