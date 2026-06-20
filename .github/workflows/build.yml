@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build Single File Exe
+    name: Build WPF App
     runs-on: windows-latest
 
     steps:
@@ -21,7 +21,13 @@ jobs:
         dotnet-version: '10.0.x'
 
     - name: Restore dependencies
-      run: dotnet restore PgnTools/PgnTools.csproj
+      run: dotnet restore PgnTools.SmokeTests/PgnTools.SmokeTests.csproj
+
+    - name: Build WPF app
+      run: dotnet build PgnTools.Wpf/PgnTools.Wpf.csproj -c Release --no-restore
+
+    - name: Run smoke tests
+      run: dotnet run --project PgnTools.SmokeTests/PgnTools.SmokeTests.csproj -c Release --no-restore
 
     - name: Publish Single File
       # This command publishes a single .exe (Self-Contained).
@@ -29,7 +35,7 @@ jobs:
       # -p:EnableCompressionInSingleFile=true: Reduces file size.
       # -p:IncludeNativeLibrariesForSelfExtract=true: Helps bundle some native dependencies.
       run: >
-        dotnet publish PgnTools/PgnTools.csproj
+        dotnet publish PgnTools.Wpf/PgnTools.Wpf.csproj
         -c Release
         -r win-x64
         --self-contained true

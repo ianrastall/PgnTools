@@ -77,43 +77,45 @@ public class ChessUnannotatorService : IChessUnannotatorService
 
         try
         {
-            await using var inputStream = new FileStream(
+            await using (var inputStream = new FileStream(
                 inputFullPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-            await using var outputStream = new FileStream(
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            await using (var outputStream = new FileStream(
                 tempOutputPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
                 BufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
-            using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true);
-            await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
+                FileOptions.SequentialScan | FileOptions.Asynchronous))
+            using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), BufferSize, leaveOpen: true))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var cleanedMoveText = StripAnnotations(game.MoveText);
-                var cleanedGame = new PgnGame(game.Headers, cleanedMoveText);
-
-                if (games > 0)
+                await foreach (var game in _pgnReader.ReadGamesAsync(inputStream, cancellationToken).ConfigureAwait(false))
                 {
-                    await writer.WriteLineAsync().ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var cleanedMoveText = StripAnnotations(game.MoveText);
+                    var cleanedGame = new PgnGame(game.Headers, cleanedMoveText);
+
+                    if (games > 0)
+                    {
+                        await writer.WriteLineAsync().ConfigureAwait(false);
+                    }
+
+                    await _pgnWriter.WriteGameAsync(writer, cleanedGame, cancellationToken).ConfigureAwait(false);
+                    games++;
+
+                    if (ShouldReportProgress(games, ref lastProgressReportUtc, ref lastReportedGame))
+                    {
+                        progress?.Report((games, $"Processing Game {games:N0}..."));
+                    }
                 }
 
-                await _pgnWriter.WriteGameAsync(writer, cleanedGame, cancellationToken).ConfigureAwait(false);
-                games++;
-
-                if (ShouldReportProgress(games, ref lastProgressReportUtc, ref lastReportedGame))
-                {
-                    progress?.Report((games, $"Processing Game {games:N0}..."));
-                }
+                await writer.FlushAsync().ConfigureAwait(false);
             }
-
-            await writer.FlushAsync().ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
 

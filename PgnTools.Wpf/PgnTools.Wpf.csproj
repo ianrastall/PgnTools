@@ -1,0 +1,109 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Space-free file name (PgnTools.exe); the window title shows "PGN Tools". -->
+    <AssemblyName>PgnTools</AssemblyName>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- ThemeMode (Fluent light/dark) is an experimental WPF API in this SDK. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="Gera.Chess" Version="1.2.0" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.6" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.6" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PgnTools\Models\PgnGame.cs" Link="Shared\Models\PgnGame.cs" />
+    <Compile Include="..\PgnTools\Models\PgnStatistics.cs" Link="Shared\Models\PgnStatistics.cs" />
+    <Compile Include="..\PgnTools\Helpers\FileReplacementHelper.cs" Link="Shared\Helpers\FileReplacementHelper.cs" />
+    <Compile Include="..\PgnTools\Helpers\FileValidationHelper.cs" Link="Shared\Helpers\FileValidationHelper.cs" />
+    <Compile Include="..\PgnTools\Helpers\PgnHeaderExtensions.cs" Link="Shared\Helpers\PgnHeaderExtensions.cs" />
+    <Compile Include="..\PgnTools\Services\AppSettingsKeys.cs" Link="Shared\Services\AppSettingsKeys.cs" />
+    <Compile Include="..\PgnTools\Services\CategoryTaggerService.cs" Link="Shared\Services\CategoryTaggerService.cs" />
+    <Compile Include="..\PgnTools\Services\ChesscomDownloaderService.cs" Link="Shared\Services\ChesscomDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\ChesscomMonthlyDownloaderService.cs" Link="Shared\Services\ChesscomMonthlyDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\ChessAnalyzerService.cs" Link="Shared\Services\ChessAnalyzerService.cs" />
+    <Compile Include="..\PgnTools\Services\ChessUnannotatorService.cs" Link="Shared\Services\ChessUnannotatorService.cs" />
+    <Compile Include="..\PgnTools\Services\CheckmateFilterService.cs" Link="Shared\Services\CheckmateFilterService.cs" />
+    <Compile Include="..\PgnTools\Services\EcoTaggerService.cs" Link="Shared\Services\EcoTaggerService.cs" />
+    <Compile Include="..\PgnTools\Services\EloAdderService.cs" Link="Shared\Services\EloAdderService.cs" />
+    <Compile Include="..\PgnTools\Services\EmbeddedRatingsDatabase.cs" Link="Shared\Services\EmbeddedRatingsDatabase.cs" />
+    <Compile Include="..\PgnTools\Services\EleganceGoldenValidationService.cs" Link="Shared\Services\EleganceGoldenValidationService.cs" />
+    <Compile Include="..\PgnTools\Services\EleganceScoreCalculator.cs" Link="Shared\Services\EleganceScoreCalculator.cs" />
+    <Compile Include="..\PgnTools\Services\EleganceService.cs" Link="Shared\Services\EleganceService.cs" />
+    <Compile Include="..\PgnTools\Services\IPlycountAdderService.cs" Link="Shared\Services\IPlycountAdderService.cs" />
+    <Compile Include="..\PgnTools\Services\Lc0DownloaderService.cs" Link="Shared\Services\Lc0DownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\LichessDbDownloaderService.cs" Link="Shared\Services\LichessDbDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\LichessDownloaderService.cs" Link="Shared\Services\LichessDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\IPgnMentorDownloaderService.cs" Link="Shared\Services\IPgnMentorDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnFilterService.cs" Link="Shared\Services\PgnFilterService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnJoinerService.cs" Link="Shared\Services\PgnJoinerService.cs" />
+    <Compile Include="..\PgnTools\Services\ITwicDownloaderService.cs" Link="Shared\Services\ITwicDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnMentorDownloaderService.cs" Link="Shared\Services\PgnMentorDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnInfoService.cs" Link="Shared\Services\PgnInfoService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnReader.cs" Link="Shared\Services\PgnReader.cs" />
+    <Compile Include="..\PgnTools\Services\PgnSorterService.cs" Link="Shared\Services\PgnSorterService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnSplitterService.cs" Link="Shared\Services\PgnSplitterService.cs" />
+    <Compile Include="..\PgnTools\Services\PgnWriter.cs" Link="Shared\Services\PgnWriter.cs" />
+    <Compile Include="..\PgnTools\Services\PlycountAdderService.cs" Link="Shared\Services\PlycountAdderService.cs" />
+    <Compile Include="..\PgnTools\Services\RemoveDoublesService.cs" Link="Shared\Services\RemoveDoublesService.cs" />
+    <Compile Include="..\PgnTools\Services\StockfishNormalizerService.cs" Link="Shared\Services\StockfishNormalizerService.cs" />
+    <Compile Include="..\PgnTools\Services\StockfishDownloaderService.cs" Link="Shared\Services\StockfishDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\TourBreakerService.cs" Link="Shared\Services\TourBreakerService.cs" />
+    <Compile Include="..\PgnTools\Services\TwicDownloaderService.cs" Link="Shared\Services\TwicDownloaderService.cs" />
+    <Compile Include="..\PgnTools\ViewModels\BaseViewModel.cs" Link="Shared\ViewModels\BaseViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\IInitializable.cs" Link="Shared\ViewModels\IInitializable.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\CategoryTaggerViewModel.cs" Link="Shared\ViewModels\Tools\CategoryTaggerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\CheckmateFilterViewModel.cs" Link="Shared\ViewModels\Tools\CheckmateFilterViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs" Link="Shared\ViewModels\Tools\ChessAnalyzerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\ChesscomDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\ChesscomDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\ChesscomMonthlyDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\ChesscomMonthlyDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\ChessUnannotatorViewModel.cs" Link="Shared\ViewModels\Tools\ChessUnannotatorViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\EcoTaggerViewModel.cs" Link="Shared\ViewModels\Tools\EcoTaggerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\EloAdderViewModel.cs" Link="Shared\ViewModels\Tools\EloAdderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\EleganceViewModel.cs" Link="Shared\ViewModels\Tools\EleganceViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\FilterViewModel.cs" Link="Shared\ViewModels\Tools\FilterViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\Lc0DownloaderViewModel.cs" Link="Shared\ViewModels\Tools\Lc0DownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\LichessDbDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\LichessDbDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\LichessDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\LichessDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\LichessToolsViewModel.cs" Link="Shared\ViewModels\Tools\LichessToolsViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PgnJoinerViewModel.cs" Link="Shared\ViewModels\Tools\PgnJoinerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PgnMentorDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\PgnMentorDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PgnInfoViewModel.cs" Link="Shared\ViewModels\Tools\PgnInfoViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PgnSorterViewModel.cs" Link="Shared\ViewModels\Tools\PgnSorterViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PgnSplitterViewModel.cs" Link="Shared\ViewModels\Tools\PgnSplitterViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\PlycountAdderViewModel.cs" Link="Shared\ViewModels\Tools\PlycountAdderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\RemoveDoublesViewModel.cs" Link="Shared\ViewModels\Tools\RemoveDoublesViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\StockfishNormalizerViewModel.cs" Link="Shared\ViewModels\Tools\StockfishNormalizerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\TourBreakerViewModel.cs" Link="Shared\ViewModels\Tools\TourBreakerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\TwicDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\TwicDownloaderViewModel.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\PgnTools\Assets\eco.pgn" Link="Assets\eco.pgn">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\PgnTools\Assets\elegance-distributions.json" Link="Assets\elegance-distributions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\PgnTools\Assets\elegance-goldens.json" Link="Assets\elegance-goldens.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\PgnTools\Assets\lc0-version-map.json" Link="Assets\lc0-version-map.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\PgnTools\Assets\ratings.bin.zst" Link="Assets\ratings.bin.zst">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

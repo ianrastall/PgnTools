@@ -1,0 +1,43 @@
+<UserControl x:Class="PgnTools.Wpf.Controls.ToolStatusView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root">
+    <Border Padding="14"
+            CornerRadius="12"
+            BorderThickness="1"
+            Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource BorderBrush}">
+        <Border.Style>
+            <Style TargetType="Border">
+                <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusSeverity, ElementName=Root}" Value="Success">
+                        <Setter Property="Background" Value="#15321F" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusSeverity, ElementName=Root}" Value="Warning">
+                        <Setter Property="Background" Value="#3A2E12" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusSeverity, ElementName=Root}" Value="Error">
+                        <Setter Property="Background" Value="#3A1B1D" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Border.Style>
+
+        <StackPanel>
+            <TextBlock Text="{Binding StatusMessage, ElementName=Root}"
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap" />
+            <TextBlock Margin="0,6,0,0"
+                       Opacity="0.78"
+                       Text="{Binding StatusDetail, ElementName=Root}"
+                       TextWrapping="Wrap" />
+            <ProgressBar Margin="0,12,0,0"
+                         Height="8"
+                         Minimum="0"
+                         Maximum="{Binding ProgressMaximum, ElementName=Root}"
+                         Value="{Binding ProgressValue, ElementName=Root}"
+                         IsIndeterminate="{Binding IsIndeterminate, ElementName=Root}" />
+        </StackPanel>
+    </Border>
+</UserControl>

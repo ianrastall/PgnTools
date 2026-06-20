@@ -1,0 +1,99 @@
+<Application x:Class="PgnTools.Wpf.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:PgnTools.Wpf"
+             ThemeMode="Dark">
+    <Application.Resources>
+        <local:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+
+        <!-- Dark surface palette layered on top of the WPF Fluent dark theme. -->
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#1B1B1B" />
+        <SolidColorBrush x:Key="SurfaceBrush" Color="#272727" />
+        <SolidColorBrush x:Key="SurfaceStrongBrush" Color="#2F2F2F" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#3A3A3A" />
+        <!-- Accent brushes are overwritten at runtime from the Windows system accent color. -->
+        <SolidColorBrush x:Key="AccentBrush" Color="#1F6B52" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#243A33" />
+        <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F2F2F2" />
+        <SolidColorBrush x:Key="TextSecondaryBrush" Color="#ADADAD" />
+
+        <Style x:Key="SectionLabelText" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <!--
+            No implicit Button style: an app-level Button style replaces the Fluent dark
+            template with the classic light one. Plain buttons use the Fluent default;
+            primary actions set Background/Foreground directly (see MainWindow.xaml).
+        -->
+
+        <!-- Top-level navigation: filled accent pills (applied via ItemContainerStyle). -->
+        <Style x:Key="PrimaryTabStyle" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Pill"
+                                Background="Transparent"
+                                CornerRadius="9"
+                                Padding="16,9">
+                            <ContentPresenter ContentSource="Header"
+                                              RecognizesAccessKey="True"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Pill" Property="Background" Value="{DynamicResource SurfaceStrongBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Pill" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Nested levels: underlined tabs (implicit default for every other TabItem). -->
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+            <Setter Property="Margin" Value="0,0,4,2" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Tab"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0,0,0,2"
+                                CornerRadius="6,6,0,0"
+                                Padding="12,7">
+                            <ContentPresenter ContentSource="Header"
+                                              RecognizesAccessKey="True"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Tab" Property="Background" Value="{DynamicResource SurfaceBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Tab" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Application.Resources>
+</Application>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.OrganizersPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:views="using:PgnTools.Views.Tools"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
+            <TextBlock Text="Organizers" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Filter, sort, split, merge, deduplicate, and extract tournaments from PGN files."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Pivot Grid.Row="1">
+            <PivotItem Header="Filter">
+                <views:FilterView ViewModel="{x:Bind ViewModel.Filter}"/>
+            </PivotItem>
+            <PivotItem Header="Sorter">
+                <views:PgnSorterView ViewModel="{x:Bind ViewModel.Sorter}"/>
+            </PivotItem>
+            <PivotItem Header="Splitter">
+                <views:PgnSplitterView ViewModel="{x:Bind ViewModel.Splitter}"/>
+            </PivotItem>
+            <PivotItem Header="Merger">
+                <views:PgnJoinerView ViewModel="{x:Bind ViewModel.Joiner}"/>
+            </PivotItem>
+            <PivotItem Header="Deduplicator">
+                <views:RemoveDoublesView ViewModel="{x:Bind ViewModel.Deduplicator}"/>
+            </PivotItem>
+            <PivotItem Header="Tour Breaker">
+                <views:TourBreakerView ViewModel="{x:Bind ViewModel.TourBreaker}"/>
+            </PivotItem>
+        </Pivot>
+    </Grid>
+</Page>

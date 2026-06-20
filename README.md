@@ -1,6 +1,23 @@
 # PgnTools
 
-PgnTools is a high-performance WinUI 3 desktop application for large PGN workflows on Windows. It emphasizes streaming I/O and a tool-based UI for downloading, filtering, tagging, and analyzing chess games.
+`PgnTools.Wpf/` is now the primary local app for this repository. The old WinUI 3 application remains in `PgnTools/` as a frozen reference while the rewrite continues, but the intended future of the repo is one WPF desktop application with grouped tools and shared streaming PGN logic.
+
+**Local Repo Status**
+- Primary local app: `PgnTools.Wpf/`
+- Legacy reference app: `PgnTools/`
+- Primary local solution: `PgnTools.slnx`
+- Legacy WinUI solution: `PgnTools/PgnTools.slnx`
+
+The current WPF shell has four active grouped sections:
+- `Downloaders`
+- `Organizers`
+- `Enrichment`
+- `Analysis`
+
+That gives the rewrite a strong base in the workflows most likely to matter first, while compiler, engine-management, settings, and app polish remain the next migration areas.
+
+**Legacy App**
+The original PgnTools application was built in WinUI 3 for large PGN workflows on Windows. It is still valuable as the feature map, service source, and migration reference.
 
 **Highlights**
 - Streaming PGN reader/writer that processes games without loading entire files into memory.
@@ -27,6 +44,23 @@ Optional:
 - Syzygy tablebases for analysis (choose a folder at runtime).
 
 **Build And Run**
+Primary WPF app:
+```powershell
+dotnet build PgnTools.Wpf/PgnTools.Wpf.csproj
+dotnet run --project PgnTools.Wpf/PgnTools.Wpf.csproj
+```
+
+Smoke tests:
+```powershell
+dotnet run --project PgnTools.SmokeTests/PgnTools.SmokeTests.csproj
+```
+
+Release publish:
+```powershell
+dotnet publish PgnTools.Wpf/PgnTools.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o Build/PgnTools.Wpf.Release
+```
+
+Legacy WinUI app:
 Requirements:
 - Windows 10 1809+ (x64).
 - .NET 10 SDK (preview).
@@ -53,9 +87,10 @@ dotnet publish PgnTools/PgnTools.csproj -c Release -r win-x64 --self-contained t
 - GitHub Actions workflow `Build PgnTools` publishes a self-contained single-file executable as an artifact.
 
 **Repo Layout**
-- `PgnTools/` WinUI 3 app source.
+- `PgnTools.Wpf/` primary WPF app source.
+- `PgnTools/` legacy WinUI 3 app source.
 - `Docs/` tool documentation and design notes.
-- `generate_codebase_dump.ps1` codebase snapshot generator for LLM handoff.
+- `PgnTools.slnx` primary local solution entry point.
 
 **Project Note**
 - This repository was built with significant AI assistance; the owner provided direction and requirements.

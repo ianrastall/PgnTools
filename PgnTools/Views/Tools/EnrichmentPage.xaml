@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="PgnTools.Views.Tools.EnrichmentPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:views="using:PgnTools.Views.Tools"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" NavigationCacheMode="Disabled">
+
+    <Grid Padding="0,0,0,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
+            <TextBlock Text="Enrichment" Style="{StaticResource TitleTextBlockStyle}"/>
+            <TextBlock Text="Tag, annotate, and enhance PGN headers — ECO codes, Elo ratings, tournament categories, ply counts, and more."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Pivot Grid.Row="1">
+            <PivotItem Header="ECO Tagger">
+                <views:EcoTaggerView ViewModel="{x:Bind ViewModel.EcoTagger}"/>
+            </PivotItem>
+
+            <PivotItem Header="Category Tagger">
+                <views:CategoryTaggerView ViewModel="{x:Bind ViewModel.CategoryTagger}"/>
+            </PivotItem>
+
+            <PivotItem Header="Elo Adder">
+                <views:EloAdderView ViewModel="{x:Bind ViewModel.EloAdder}"/>
+            </PivotItem>
+
+            <PivotItem Header="Ply Count">
+                <views:PlycountAdderView ViewModel="{x:Bind ViewModel.PlycountAdder}"/>
+            </PivotItem>
+
+            <PivotItem Header="Stockfish Normalizer">
+                <views:StockfishNormalizerView ViewModel="{x:Bind ViewModel.StockfishNormalizer}"/>
+            </PivotItem>
+
+            <PivotItem Header="Unannotator">
+                <views:ChessUnannotatorView ViewModel="{x:Bind ViewModel.Unannotator}"/>
+            </PivotItem>
+        </Pivot>
+    </Grid>
+</Page>

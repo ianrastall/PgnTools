@@ -1,0 +1,13 @@
+<Solution>
+    <Folder Name="/Solution Items/">
+        <File Path="README.md" />
+    </Folder>
+    <Project Path="PgnTools.Wpf/PgnTools.Wpf.csproj" />
+    <Project Path="PgnTools.SmokeTests/PgnTools.SmokeTests.csproj" />
+    <Project Path="PgnTools/PgnTools.csproj">
+        <Deploy />
+    </Project>
+    <Properties Name="Visual Studio">
+        <Property Name="OpenWith" Value="17" />
+    </Properties>
+</Solution>

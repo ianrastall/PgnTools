@@ -33,6 +33,18 @@ public partial class LichessDownloaderViewModel(
     private string _outputFileName = string.Empty;
 
     [ObservableProperty]
+    private bool _onlyUserWins;
+
+    [ObservableProperty]
+    private bool _onlyCheckmates;
+
+    [ObservableProperty]
+    private bool _excludeBullet;
+
+    [ObservableProperty]
+    private bool _excludeNonStandard;
+
+    [ObservableProperty]
     private bool _isRunning;
 
     [ObservableProperty]
@@ -138,11 +150,18 @@ public partial class LichessDownloaderViewModel(
 
             _cancellationTokenSource = new CancellationTokenSource();
 
+            var filters = new LichessUserGameFilters(
+                OnlyUserWins,
+                OnlyCheckmates,
+                ExcludeBullet,
+                ExcludeNonStandard);
+
             var progress = new Progress<LichessDownloadProgress>(UpdateProgress);
             await _service.DownloadUserGamesAsync(
                 Username,
                 OutputFilePath,
                 max,
+                filters,
                 progress,
                 _cancellationTokenSource.Token);
 
@@ -226,12 +245,20 @@ public partial class LichessDownloaderViewModel(
         }
         OutputFileName = string.IsNullOrWhiteSpace(OutputFilePath) ? string.Empty : Path.GetFileName(OutputFilePath);
         MaxGames = _settings.GetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
+        OnlyUserWins = _settings.GetValue($"{SettingsPrefix}.{nameof(OnlyUserWins)}", OnlyUserWins);
+        OnlyCheckmates = _settings.GetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        ExcludeBullet = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        ExcludeNonStandard = _settings.GetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
     }
     private void SaveState()
     {
         _settings.SetValue($"{SettingsPrefix}.{nameof(Username)}", Username);
         _settings.SetValue($"{SettingsPrefix}.{nameof(OutputFilePath)}", OutputFilePath);
         _settings.SetValue($"{SettingsPrefix}.{nameof(MaxGames)}", MaxGames);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OnlyUserWins)}", OnlyUserWins);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(OnlyCheckmates)}", OnlyCheckmates);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeBullet)}", ExcludeBullet);
+        _settings.SetValue($"{SettingsPrefix}.{nameof(ExcludeNonStandard)}", ExcludeNonStandard);
     }
 
     private void UpdateProgress(LichessDownloadProgress progress)
