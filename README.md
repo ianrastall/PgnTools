@@ -1,99 +1,76 @@
-# PgnTools
+# PGN Tools
 
-`PgnTools.Wpf/` is now the primary local app for this repository. The old WinUI 3 application remains in `PgnTools/` as a frozen reference while the rewrite continues, but the intended future of the repo is one WPF desktop application with grouped tools and shared streaming PGN logic.
+A fast, dark-mode **Windows desktop app for working with PGN chess files** — download games, clean and organize them, enrich the tags, and run engine analysis. It streams games one at a time, so it handles multi-gigabyte PGN files without choking, all from a single app.
 
-**Local Repo Status**
-- Primary local app: `PgnTools.Wpf/`
-- Legacy reference app: `PgnTools/`
-- Primary local solution: `PgnTools.slnx`
-- Legacy WinUI solution: `PgnTools/PgnTools.slnx`
+![PGN Tools](Docs/screenshot.png)
 
-The current WPF shell has four active grouped sections:
-- `Downloaders`
-- `Organizers`
-- `Enrichment`
-- `Analysis`
+## Features
 
-That gives the rewrite a strong base in the workflows most likely to matter first, while compiler, engine-management, settings, and app polish remain the next migration areas.
+**Download** games from where you actually get them:
+- **Chess.com** — a player's full archive, or a monthly crawl by rating band
+- **Lichess** — a player's games, or a filtered monthly database export
+- **Lc0** training games, **PGN Mentor**, and **TWIC**
 
-**Legacy App**
-The original PgnTools application was built in WinUI 3 for large PGN workflows on Windows. It is still valuable as the feature map, service source, and migration reference.
+The Chess.com and Lichess player downloads share the same filters: only games you won, only checkmates, exclude bullet, exclude non-standard variants.
 
-**Highlights**
-- Streaming PGN reader/writer that processes games without loading entire files into memory.
-- Tool-based UI with dedicated pages for each workflow.
-- Self-contained Windows x64 builds via GitHub Actions.
-- Modern stack: .NET 10, C# 14, WinUI 3, CommunityToolkit.Mvvm, Microsoft.Extensions.DependencyInjection.
+**Organize** large collections:
+- **Filter** (Elo, ply count, checkmates, annotation cleanup), **Sort**, **Split**, **Merge**, **Deduplicate**, and **Tour Breaker** (pull real tournaments out of a giant dump).
 
-**Tool Suite**
-- Downloaders: Chess.com, Lichess (user + monthly DB), Lc0 matches, PGN Mentor, TWIC, Tablebases.
-- Processing: Filter (Elo/ply/checkmate/annotations), Deduplicator, Splitter, Merger, Sorter, Tour Breaker.
-- Tagging: Category Tagger, ECO Tagger, Elo Adder, Ply Count Adder.
-- Analysis: Chess Analyzer (UCI/Stockfish), PGN Info, Stockfish Normalizer.
-- Experimental/Hidden: Chess Unannotator, Checkmate Filter, Elegance scoring.
+**Enrich** the headers:
+- **ECO** opening tags, missing **Elo** fill-in, **event category**, **ply counts**, **Stockfish** version normalization, and annotation **stripping**.
 
-**Assets**
-The app expects the following files under `PgnTools/Assets` (they are copied on publish). These enable specific tools:
-- `Assets/eco.pgn` for ECO tagging.
-- `Assets/ratings.bin.zst` for Elo Adder.
-- `Assets/elegance-distributions.json` and `Assets/elegance-goldens.json` for Elegance scoring/validation.
-- `Assets/Tablebases/download.txt` for tablebase URL lists.
+**Analyze**:
+- **PGN statistics** overview, **UCI/Stockfish** engine analysis, **Elegance** scoring, and a **checkmate-only** filter.
 
-Optional:
-- Any UCI engine (Stockfish recommended). The app can download the latest Stockfish build.
-- Syzygy tablebases for analysis (choose a folder at runtime).
+## Install
 
-**Build And Run**
-Primary WPF app:
+1. Open the [**Releases**](../../releases) page.
+2. Download the latest `PgnTools-…-win-x64.exe`.
+3. Double-click it.
+
+It's a single self-contained file — no installer, and no .NET runtime to install separately.
+
+## Build from source
+
+Requires the **.NET 10 SDK** on Windows. To build the single-file executable:
+
 ```powershell
-dotnet build PgnTools.Wpf/PgnTools.Wpf.csproj
+.\build.cmd
+```
+
+That produces `Build\PgnTools.Wpf.Release\PgnTools.exe`. Or, while developing, just run it:
+
+```powershell
 dotnet run --project PgnTools.Wpf/PgnTools.Wpf.csproj
 ```
 
-Smoke tests:
-```powershell
-dotnet run --project PgnTools.SmokeTests/PgnTools.SmokeTests.csproj
-```
+## Tech
 
-Release publish:
-```powershell
-dotnet publish PgnTools.Wpf/PgnTools.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o Build/PgnTools.Wpf.Release
-```
+.NET 10 · WPF (Fluent dark theme) · CommunityToolkit.Mvvm · Microsoft.Extensions.DependencyInjection. The heart of the app is a streaming, low-allocation PGN reader/writer shared across every tool.
 
-Legacy WinUI app:
-Requirements:
-- Windows 10 1809+ (x64).
-- .NET 10 SDK (preview).
-- Windows App SDK 1.8 (restored via NuGet).
-- Visual Studio 2022 17.10+ recommended for WinUI development.
+## Project layout
 
-Build and run:
-```powershell
-dotnet restore PgnTools/PgnTools.csproj
-dotnet build PgnTools/PgnTools.csproj -c Release
-dotnet run --project PgnTools/PgnTools.csproj
-```
+- `PgnTools.Wpf/` — the app
+- `PgnTools/` — the shared PGN engine, services, and view-models the app is built on
+- `Docs/` — per-tool notes and design docs
+- `build.cmd` — one-step local build
 
-Publish (matches CI):
-```powershell
-dotnet publish PgnTools/PgnTools.csproj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:EnableCompressionInSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true `
-  -o .\publish_output
-```
+## How this was made
 
-**Prebuilt Builds**
-- GitHub Actions workflow `Build PgnTools` publishes a self-contained single-file executable as an artifact.
+This project was built with heavy AI assistance, with the owner providing the direction, requirements, and testing.
 
-**Repo Layout**
-- `PgnTools.Wpf/` primary WPF app source.
-- `PgnTools/` legacy WinUI 3 app source.
-- `Docs/` tool documentation and design notes.
-- `PgnTools.slnx` primary local solution entry point.
+## License
 
-**Project Note**
-- This repository was built with significant AI assistance; the owner provided direction and requirements.
+See [LICENSE](LICENSE).
 
-**License**
-See `LICENSE`.
+---
+
+### Releasing (for maintainers)
+
+Releases are made with a button — nothing to remember:
+
+1. Go to the repo's **Actions** tab → the **Release** workflow → **Run workflow**.
+2. Type a version (e.g. `v1.0.0`) and click the green **Run workflow** button.
+3. It builds the single-file exe and publishes a GitHub Release with it attached.
+
+Regular commits and pushes never create a release — only that button does, so commit as often as you like.
