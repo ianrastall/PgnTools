@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PGN Tools — Audit Prompt Builder</title>
+  <style>
+    :root {
+      --bg:#161616; --surface:#1f1f1f; --surface2:#262626; --border:#333;
+      --text:#f1f1f1; --dim:#a8a8a8; --accent:#2f9e74;
+      color-scheme: dark;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text);
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; line-height:1.5; }
+    a { color:var(--accent); }
+    header { padding:16px 18px; border-bottom:1px solid var(--border);
+      display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+    header h1 { font-size:18px; margin:0; }
+    header .sub { font-size:12px; color:var(--dim); }
+    .pill { margin-left:auto; font-size:12px; color:var(--dim); border:1px solid var(--border);
+      border-radius:999px; padding:5px 11px; }
+    main { max-width:1000px; margin:0 auto; padding:18px; }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+      padding:14px 16px; margin-bottom:14px; }
+    label { display:block; font-weight:800; margin:0 0 6px; }
+    textarea, select {
+      width:100%; box-sizing:border-box; background:var(--surface2); color:var(--text);
+      border:1px solid var(--border); border-radius:9px; padding:10px;
+      font-family:ui-monospace,Consolas,monospace; font-size:13px; line-height:1.4;
+    }
+    textarea { min-height:120px; resize:vertical; }
+    select { font-family:inherit; font-weight:700; }
+    .row { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
+    .row > .grow { flex:1; min-width:240px; }
+    button { background:var(--accent); color:#fff; border:1px solid var(--accent);
+      border-radius:9px; padding:10px 16px; font-weight:800; cursor:pointer; }
+    button.ghost { background:var(--surface2); color:var(--text); border-color:var(--border); }
+    button:hover { filter:brightness(1.08); }
+    .muted { color:var(--dim); font-size:12px; }
+    .count { color:var(--dim); font-size:12px; font-weight:700; }
+    .out textarea { min-height:260px; }
+    .note { color:var(--dim); font-size:12px; margin-top:8px; }
+    code { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:1px 5px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>PGN Tools — Audit Prompt Builder</h1>
+      <div class="sub">Builds a review-ready prompt straight from the live repo. <a href="index.html">Home</a> · <a href="roundup.html">Generic round-up tool</a></div>
+    </div>
+    <span class="pill" id="status">Loading…</span>
+  </header>
+
+  <main>
+    <div class="card">
+      <label for="task">Task / Prompt</label>
+      <textarea id="task"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <label for="context">Context — ARCHITECTURE.md <span class="count" id="ctxCount"></span></label>
+        </div>
+        <button class="ghost" id="reloadCtx" type="button">Reload</button>
+      </div>
+      <textarea id="context" placeholder="ARCHITECTURE.md loads here automatically…"></textarea>
+      <div class="note" id="ctxNote">Loading ARCHITECTURE.md…</div>
+    </div>
+
+    <div class="card">
+      <label for="sel">Codebase — pick what to review</label>
+      <div class="row">
+        <div class="grow">
+          <select id="sel"></select>
+        </div>
+        <button id="fetchBtn" type="button">Fetch &amp; build codebase</button>
+      </div>
+      <div class="note" id="codeNote">Choose “Whole codebase” for big models, or a single tool for smaller ones.</div>
+      <label style="margin-top:12px;">Collected codebase <span class="count" id="codeCount"></span></label>
+      <textarea id="code" placeholder="Click “Fetch & build codebase”…"></textarea>
+    </div>
+
+    <div class="card out">
+      <div class="row">
+        <div class="grow"><label style="margin:0;">Paste-ready prompt <span class="count" id="outCount"></span></label></div>
+        <button id="buildBtn" type="button">Build prompt</button>
+        <button class="ghost" id="copyBtn" type="button">Copy</button>
+      </div>
+      <textarea id="out" readonly placeholder="Click “Build prompt”, then Copy, then paste into each LLM…" style="margin-top:10px;"></textarea>
+      <div class="note">Pairs the whole-picture map (ARCHITECTURE.md) with the code, so even a single-tool review has no blind spot.</div>
+    </div>
+  </main>
+
+<script>
+(() => {
+  const REPO = "ianrastall/PgnTools";
+  const BRANCH = "main";
+  const el = (id) => document.getElementById(id);
+
+  const DEFAULT_TASK =
+`You are doing an independent code review of an open-source project, PGN Tools.
+The CONTEXT section below is its architecture overview — read it first; it explains the
+layout, the unusual file-linking between the two projects, the conventions, and a list of
+things NOT to flag. Then review the CODEBASE as a fresh outside auditor.
+
+Prioritize, in order: correctness bugs, security (process/engine handling, downloads, file IO),
+concurrency/cancellation/resource leaks, and memory blowups on large files. Lower priority:
+style and simplification.
+
+For each finding give: severity (critical/high/medium/low), the file and approximate location,
+a one-line description, why it's a real problem (with a concrete failing scenario if you can),
+and a suggested fix. If you're unsure, say so instead of asserting. Don't flag the deferred
+features or the WinUI-style shims the architecture overview calls out as intentional. Be
+concrete and skeptical: I'd rather have five real issues than fifty speculative ones.`;
+
+  // Files always included for context (kills the "seam" on single-tool reviews).
+  const CORE = [
+    "ARCHITECTURE.md",
+    "PgnTools/Services/PgnReader.cs",
+    "PgnTools/Services/PgnWriter.cs",
+    "PgnTools/Models/PgnGame.cs",
+    "PgnTools/Models/PgnStatistics.cs",
+    "PgnTools/Helpers/FileReplacementHelper.cs",
+    "PgnTools/Helpers/FileValidationHelper.cs",
+    "PgnTools/Helpers/PgnHeaderExtensions.cs",
+    "PgnTools/ViewModels/BaseViewModel.cs"
+  ];
+
+  // Single-tool selections: matched by keyword against file names in the live repo tree.
+  const TOOLS = [
+    { id:"chesscom",     label:"Chess.com downloader",     kw:["Chesscom"] },
+    { id:"lichess",      label:"Lichess downloader",       kw:["Lichess"] },
+    { id:"lc0",          label:"Lc0 downloader",           kw:["Lc0"] },
+    { id:"pgnmentor",    label:"PGN Mentor downloader",    kw:["PgnMentor","Mentor"] },
+    { id:"twic",         label:"TWIC downloader",          kw:["Twic"] },
+    { id:"filter",       label:"Filter",                   kw:["PgnFilter","FilterViewModel"] },
+    { id:"sorter",       label:"Sorter",                   kw:["PgnSorter"] },
+    { id:"splitter",     label:"Splitter",                 kw:["PgnSplitter"] },
+    { id:"merger",       label:"Merger",                   kw:["PgnJoiner"] },
+    { id:"dedup",        label:"Deduplicator",             kw:["RemoveDoubles"] },
+    { id:"tourbreaker",  label:"Tour Breaker",             kw:["TourBreaker"] },
+    { id:"eco",          label:"ECO Tagger",               kw:["EcoTagger"] },
+    { id:"category",     label:"Category Tagger",          kw:["CategoryTagger"] },
+    { id:"elo",          label:"Elo Adder",                kw:["EloAdder"] },
+    { id:"plycount",     label:"Ply Count",                kw:["Plycount","PlyCount"] },
+    { id:"sfnorm",       label:"Stockfish Normalizer",     kw:["StockfishNormalizer"] },
+    { id:"unannotator",  label:"Unannotator",              kw:["Unannotator"] },
+    { id:"pgninfo",      label:"PGN Info",                 kw:["PgnInfo"] },
+    { id:"analyzer",     label:"Chess Analyzer",           kw:["ChessAnalyzer"] },
+    { id:"elegance",     label:"Elegance",                 kw:["Elegance"] },
+    { id:"checkmate",    label:"Checkmate Filter",         kw:["Checkmate"] }
+  ];
+
+  function setStatus(t) { el("status").textContent = t; }
+  function counts(s) { const t=(s||""); const w=t.trim()?t.trim().split(/\s+/).length:0; return `(${w.toLocaleString()} words • ${t.length.toLocaleString()} chars)`; }
+
+  // Populate the dropdown
+  const sel = el("sel");
+  sel.appendChild(new Option("Whole codebase (big models only)", "all"));
+  for (const t of TOOLS) sel.appendChild(new Option(t.label, t.id));
+
+  el("task").value = DEFAULT_TASK;
+
+  function rawUrl(path) { return `https://raw.githubusercontent.com/${REPO}/${BRANCH}/${path}`; }
+
+  async function loadContext() {
+    el("ctxNote").textContent = "Loading ARCHITECTURE.md…";
+    let text = null;
+    try {
+      let r = await fetch("./ARCHITECTURE.md", { cache:"no-store" });
+      if (r.ok) text = await r.text();
+    } catch {}
+    if (text === null) {
+      try { const r = await fetch(rawUrl("ARCHITECTURE.md"), { cache:"no-store" }); if (r.ok) text = await r.text(); } catch {}
+    }
+    if (text === null) {
+      el("ctxNote").textContent = "Could not load ARCHITECTURE.md (offline?). Paste it here manually.";
+      setStatus("Ready");
+      return;
+    }
+    el("context").value = text;
+    el("ctxCount").textContent = counts(text);
+    el("ctxNote").textContent = "Loaded ARCHITECTURE.md.";
+    setStatus("Ready");
+  }
+
+  let treeCache = null;
+  async function getTree() {
+    if (treeCache) return treeCache;
+    const r = await fetch(`https://api.github.com/repos/${REPO}/git/trees/${BRANCH}?recursive=1`, { cache:"no-store" });
+    if (!r.ok) throw new Error(`GitHub tree request failed (${r.status})`);
+    const data = await r.json();
+    treeCache = (data.tree || []).filter(n => n.type === "blob").map(n => n.path);
+    return treeCache;
+  }
+
+  function isExcluded(p) { return /\/(bin|obj|Build)\//.test(p); }
+
+  function filesForAll(tree) {
+    const manual = ["README.md", "build.cmd", ".github/workflows/build.yml", ".github/workflows/release.yml"];
+    const roots = ["PgnTools.Wpf/", "PgnTools/Services/", "PgnTools/ViewModels/", "PgnTools/Models/", "PgnTools/Helpers/", "PgnTools.SmokeTests/"];
+    const auto = tree.filter(p =>
+      !isExcluded(p) &&
+      /\.(cs|xaml|csproj)$/i.test(p) &&
+      roots.some(r => p.startsWith(r)));
+    return Array.from(new Set([...CORE, ...manual, ...auto]));
+  }
+
+  function filesForTool(tree, tool) {
+    const base = (p) => p.split("/").pop();
+    const auto = tree.filter(p =>
+      !isExcluded(p) &&
+      !p.startsWith("PgnTools.SmokeTests/") &&
+      /\.(cs|xaml|md)$/i.test(p) &&
+      (p.startsWith("PgnTools/") || p.startsWith("PgnTools.Wpf/") || p.startsWith("Docs/")) &&
+      tool.kw.some(k => base(p).toLowerCase().includes(k.toLowerCase())));
+    return Array.from(new Set([...CORE, ...auto]));
+  }
+
+  async function fetchWithLimit(paths, limit, onProgress) {
+    const results = new Array(paths.length);
+    let i = 0, done = 0;
+    async function worker() {
+      while (i < paths.length) {
+        const idx = i++;
+        const path = paths[idx];
+        try {
+          const r = await fetch(rawUrl(path), { cache:"no-store" });
+          results[idx] = r.ok ? { path, body: await r.text() } : { path, body: `!!!!! FETCH FAILED (${r.status}) !!!!!\n` };
+        } catch (e) {
+          results[idx] = { path, body: `!!!!! FETCH ERROR: ${e.message} !!!!!\n` };
+        }
+        onProgress(++done, paths.length);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, paths.length) }, worker));
+    return results;
+  }
+
+  async function buildCodebase() {
+    el("fetchBtn").disabled = true;
+    try {
+      setStatus("Reading repo tree…");
+      const tree = await getTree();
+      const choice = sel.value;
+      const tool = TOOLS.find(t => t.id === choice);
+      const paths = (choice === "all" ? filesForAll(tree) : filesForTool(tree, tool)).sort();
+
+      if (paths.length === 0) { setStatus("No files matched"); el("code").value = ""; return; }
+
+      el("codeNote").textContent = `Fetching ${paths.length} files…`;
+      const parts = await fetchWithLimit(paths, 8, (d, total) => {
+        setStatus(`Fetching ${d}/${total}…`);
+      });
+
+      const out = [];
+      out.push(`# Codebase: ${choice === "all" ? "PGN Tools (full)" : tool.label}`);
+      out.push(`# Files: ${paths.length}  •  Pulled live from ${REPO}@${BRANCH}`);
+      out.push("");
+      for (const part of parts) {
+        out.push(`===== BEGIN: ${part.path} =====`);
+        out.push(part.body.replace(/\s+$/, ""));
+        out.push(`===== END: ${part.path} =====`);
+        out.push("");
+      }
+      const text = out.join("\n");
+      el("code").value = text;
+      el("codeCount").textContent = counts(text);
+      el("codeNote").textContent = `Built ${paths.length} files (${(text.length/1024).toFixed(0)} KB).`;
+      setStatus("Codebase ready");
+    } catch (e) {
+      setStatus("Failed");
+      el("codeNote").textContent = "Error: " + e.message;
+    } finally {
+      el("fetchBtn").disabled = false;
+    }
+  }
+
+  function buildPrompt() {
+    const task = el("task").value.trim();
+    const context = el("context").value.trim();
+    const code = el("code").value.trim();
+    const parts = [];
+    if (task) parts.push(task);
+    if (context) { parts.push("", "CONTEXT (architecture overview):", context); }
+    if (code) { parts.push("", "CODEBASE:", "```text", code, "```"); }
+    const text = parts.join("\n").trim() + "\n";
+    el("out").value = text;
+    el("outCount").textContent = counts(text);
+    setStatus(code ? "Prompt built" : "Built (no codebase yet)");
+  }
+
+  async function copyOut() {
+    const text = el("out").value;
+    if (!text) { setStatus("Nothing to copy"); return; }
+    try { await navigator.clipboard.writeText(text); setStatus("Copied"); }
+    catch { setStatus("Copy failed — select the box and Ctrl+C"); }
+  }
+
+  el("fetchBtn").addEventListener("click", buildCodebase);
+  el("buildBtn").addEventListener("click", buildPrompt);
+  el("copyBtn").addEventListener("click", copyOut);
+  el("reloadCtx").addEventListener("click", loadContext);
+
+  loadContext();
+})();
+</script>
+</body>
+</html>

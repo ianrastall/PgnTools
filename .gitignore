@@ -18,6 +18,8 @@ mono_crash.*
 
 # Build results
 Build/
+# Generated LLM context dumps (Scripts/code-dump-*.ps1)
+/Context/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/

@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LLM Round-up Tools</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    header { padding: 16px 18px; border-bottom: 1px solid rgba(127,127,127,.35); position: sticky; top: 0; z-index: 100; background: rgba(127,127,127,.10); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+    main { padding: 18px; max-width: 1200px; margin: 0 auto; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 980px) { .row.cols2 { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 12px; background: rgba(127,127,127,.06); }
+    label { display: block; font-weight: 800; margin: 0 0 6px; }
+    textarea, input[type="text"] {
+      width: 100%; box-sizing: border-box;
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 10px; padding: 10px;
+      background: transparent;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px; line-height: 1.35;
+    }
+    textarea { min-height: 170px; resize: vertical; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select {
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(127,127,127,.12);
+      cursor: pointer;
+      font-weight: 800;
+    }
+    button:hover { background: rgba(127,127,127,.18); }
+    select { font-weight: 700; }
+    .small { font-size: 12px; opacity: .85; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border: 1px solid rgba(127,127,127,.45);
+      border-radius: 999px;
+      background: rgba(127,127,127,.08);
+      font-size: 12px;
+    }
+    .inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+    .inline > * { flex: 1; min-width: 240px; }
+    .out textarea { min-height: 280px; }
+    .muted { opacity: .8; }
+
+    /* model card header */
+    .twoLine { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+    .count { font-size: 12px; opacity: .8; }
+    .modelHdr { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .modelHdrLeft { display: flex; align-items: baseline; gap: 10px; }
+    .modelLink { color: inherit; font-weight: 800; text-decoration: none; border-bottom: 1px dotted rgba(127,127,127,.65); }
+    .modelLink:hover { border-bottom-style: solid; }
+    .miniBtn {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    /* tabs */
+    .tabs { display: inline-flex; gap: 8px; }
+    .tabBtn[aria-selected="true"] { background: rgba(127,127,127,.22); }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* toast */
+    .toastWrap {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      display: grid;
+      gap: 10px;
+      z-index: 9999;
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: none;
+      max-width: min(520px, calc(100vw - 28px));
+      border: 1px solid rgba(127,127,127,.45);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(30,30,30,.88);
+      color: rgba(255,255,255,.96);
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: rgba(80,200,120,.65); }
+    .toast.error { border-color: rgba(220,80,80,.65); }
+    .toast .tTitle { font-weight: 900; margin-bottom: 2px; }
+    .toast .tBody { font-size: 12px; opacity: .95; }
+
+    /* helper note */
+    .note { font-size: 12px; opacity: .8; margin-top: 8px; }
+    code.kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 1px 6px; border: 1px solid rgba(127,127,127,.45); border-radius: 8px; background: rgba(127,127,127,.10); }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="toolbar">
+      <div style="flex: 1;">
+        <div style="font-size: 18px; font-weight: 950;">LLM Round-up Tools</div>
+        <div class="small muted">Combiner + Prompt Builder (local only; no network calls).</div>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Views">
+        <button class="tabBtn" id="tabBuilder" role="tab" aria-selected="true" aria-controls="viewBuilder" type="button">Prompt Builder</button>
+        <button class="tabBtn" id="tabCombiner" role="tab" aria-selected="false" aria-controls="viewCombiner" type="button">Combiner</button>
+      </div>
+
+      <span class="pill" id="status">Ready</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===================== -->
+    <!-- VIEW: COMBINER         -->
+    <!-- ===================== -->
+    <section id="viewCombiner" class="view" role="tabpanel" aria-labelledby="tabCombiner">
+      <section class="card">
+        <div class="inline">
+          <div>
+            <label for="title">Session title (optional)</label>
+            <input id="title" type="text" placeholder="e.g., PgnTools: Memory-mapped virtualized list review" />
+          </div>
+          <div>
+            <label for="format">Output format</label>
+            <select id="format" style="width:100%;">
+              <option value="md" selected>Markdown (.md)</option>
+              <option value="txt">Plain text (.txt)</option>
+            </select>
+          </div>
+          <div>
+            <label for="filename">Filename (optional)</label>
+            <input id="filename" type="text" placeholder="auto-generated if empty" />
+            <div class="small muted">Leave blank to auto-stamp with date/time.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="row" style="margin-top: 12px;">
+        <div class="card">
+          <label for="task">Task / Prompt</label>
+          <textarea id="task">Please examine this collected codebase and fix the listed problems.</textarea>
+          <div class="note">You can edit this per session if needed.</div>
+        </div>
+      </section>
+
+      <h2 style="margin: 16px 2px 8px;">Model outputs</h2>
+      <section class="row cols2" id="boxes"></section>
+
+      <section class="card out" style="margin-top: 12px;">
+        <div class="toolbar" style="margin-bottom: 10px;">
+          <div style="flex:1;">
+            <label for="output" style="margin:0 0 4px;">Combined output <span class="count" id="outputCount"></span></label>
+            <div class="small muted">Ctrl+Enter (Cmd+Enter on Mac) runs Combine. Copy/Download uses this exact text.</div>
+          </div>
+          <button id="combineBtn" type="button">Combine</button>
+          <button id="copyBtn" type="button">Copy</button>
+          <button id="downloadBtn" type="button">Download</button>
+          <button id="clearBtn" type="button" title="Clears all inputs">Clear all</button>
+        </div>
+        <textarea id="output" readonly placeholder="Click Combine to generate output..."></textarea>
+      </section>
+
+      <section class="small muted" style="margin-top: 12px;">
+        Tip: Click a model's name to open its site in a new tab. The <strong>Paste</strong> button reads your clipboard directly (Chrome/Edge ask once, then it's one-click; Firefox shows a small Paste bubble each time by design). Clicking a box and using <code class="kbd">Ctrl</code>+<code class="kbd">V</code> always works without prompts.
+      </section>
+    </section>
+
+    <!-- ===================== -->
+    <!-- VIEW: PROMPT BUILDER   -->
+    <!-- ===================== -->
+    <section id="viewBuilder" class="view active" role="tabpanel" aria-labelledby="tabBuilder">
+      <section class="card">
+        <div style="display:flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <div>
+            <div style="font-size:16px; font-weight:950;">Prompt Builder</div>
+            <div class="small muted">Creates the “full prompt” you paste into each LLM (task + codebase content).</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="row cols2" style="margin-top: 12px;">
+        <div class="card">
+          <label for="pb_task">Task / Prompt</label>
+          <textarea id="pb_task">Please examine this section of my codebase and list all the problems you find in order of severity, along with their fixes.</textarea>
+          <div class="note">This becomes the top of your single paste-ready prompt.</div>
+        </div>
+        <div class="card">
+          <div class="twoLine">
+            <label for="pb_context" style="margin:0;">Context / Reference (optional)</label>
+            <button id="pb_contextOpenBtn" type="button" class="miniBtn">Open</button>
+          </div>
+          <textarea id="pb_context" style="min-height:170px" placeholder="Open or paste your MD instructions here..."></textarea>
+          <div class="small muted" id="pb_contextFileName">No file loaded.</div>
+          <input id="pb_contextFile" type="file" accept=".md,.txt" style="display:none" />
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 12px;">
+        <label for="pb_options">Options</label>
+        <div class="small muted" style="margin-bottom:8px;">How the codebase text is embedded in the prompt.</div>
+        <div style="display:grid; gap:10px;">
+          <label style="font-weight:800;">
+            <input id="pb_wrap" type="checkbox" checked />
+            Wrap codebase in triple backticks
+          </label>
+          <label style="font-weight:800;">
+            <input id="pb_tag" type="checkbox" checked />
+            Include a "CODEBASE" header line
+          </label>
+          <label style="font-weight:800;">
+            <input id="pb_hint" type="checkbox" />
+            Include "LANGUAGE: " hint line (optional)
+          </label>
+          <input id="pb_lang" type="text" placeholder="Language hint (e.g., csharp, python, js) — used only if enabled above" />
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 12px;">
+        <div class="twoLine">
+          <label for="pb_code" style="margin:0;">Collected codebase text</label>
+          <button id="pb_codeOpenBtn" type="button" class="miniBtn">Open</button>
+        </div>
+        <textarea id="pb_code" style="min-height:240px" placeholder="Open or paste the contents of your collected codebase text file here..."></textarea>
+        <div class="small muted" id="pb_codeFileName">No file loaded.</div>
+        <input id="pb_codeFile" type="file" accept=".txt,.md" style="display:none" />
+        <div class="note">Open loads the file directly and avoids clipboard permission prompts.</div>
+      </section>
+
+      <section class="card out" style="margin-top: 12px;">
+        <div class="toolbar" style="margin-bottom: 10px;">
+          <div style="flex:1;">
+            <label for="pb_output" style="margin:0 0 4px;">Built prompt <span class="count" id="pb_outputCount"></span></label>
+            <div class="small muted">Click Build, then Copy, then paste into each LLM. Ctrl+Enter (Cmd+Enter on Mac) runs Build.</div>
+          </div>
+          <button id="pb_buildBtn" type="button">Build</button>
+          <button id="pb_copyBtn" type="button">Copy</button>
+          <button id="pb_clearBtn" type="button">Clear</button>
+        </div>
+        <textarea id="pb_output" readonly placeholder="Click Build to generate the paste-ready prompt..."></textarea>
+      </section>
+
+      <section class="small muted" style="margin-top: 12px;">
+        Tip: After copying, jump back to the Combiner tab to paste each LLM’s output into its labeled box.
+      </section>
+    </section>
+  </main>
+
+  <!-- Toast container -->
+  <div class="toastWrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
+
+<script>
+(() => {
+  // ===== Models (fixed labels) =====
+  const MODELS = [
+    { id: "chatgpt",  label: "ChatGPT",  url: "https://chatgpt.com"        },
+    { id: "claude",   label: "Claude",   url: "https://claude.ai"          },
+    { id: "deepseek", label: "DeepSeek", url: "https://chat.deepseek.com"  },
+    { id: "gemini",   label: "Gemini",   url: "https://gemini.google.com"  },
+    { id: "kimi",     label: "Kimi",     url: "https://www.kimi.com"       },
+    { id: "minimax",  label: "MiniMax",  url: "https://agent.minimax.io"   },
+    { id: "mistral",  label: "Mistral",  url: "https://chat.mistral.ai"    },
+    { id: "qwen",     label: "Qwen",     url: "https://chat.qwen.ai"       },
+    { id: "zai",      label: "Z.ai",     url: "https://chat.z.ai"          },
+  ];
+
+  const el = (id) => document.getElementById(id);
+  const status = el("status");
+  const boxes = el("boxes");
+  const toastWrap = el("toastWrap");
+
+  // ===== Toast =====
+  function toast(title, body = "", type = "success") {
+    const t = document.createElement("div");
+    t.className = `toast ${type}`;
+    t.innerHTML = `
+      <div class="tTitle">${escapeHtml(title)}</div>
+      ${body ? `<div class="tBody">${escapeHtml(body)}</div>` : ""}
+    `;
+    toastWrap.appendChild(t);
+    requestAnimationFrame(() => t.classList.add("show"));
+
+    setTimeout(() => {
+      t.classList.remove("show");
+      setTimeout(() => t.remove(), 220);
+    }, 2400);
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function setStatus(text) {
+    status.textContent = text;
+    clearTimeout(setStatus._t);
+    setStatus._t = setTimeout(() => status.textContent = "Ready", 2500);
+  }
+
+  // ===== Tabs =====
+  function setTab(which) {
+    const comb = (which === "combiner");
+    el("viewCombiner").classList.toggle("active", comb);
+    el("viewBuilder").classList.toggle("active", !comb);
+    el("tabCombiner").setAttribute("aria-selected", comb ? "true" : "false");
+    el("tabBuilder").setAttribute("aria-selected", comb ? "false" : "true");
+  }
+
+  el("tabCombiner").addEventListener("click", () => setTab("combiner"));
+  el("tabBuilder").addEventListener("click", () => setTab("builder"));
+
+  // ===== Time helpers =====
+  function pad2(n) { return String(n).padStart(2, "0"); }
+  function nowStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+  function safeFileStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  }
+  function normalizeNewlines(s) {
+    return String(s || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+  function countChars(s) { return (s || "").length; }
+  function countWords(s) {
+    const t = (s || "").trim();
+    return t ? t.split(/\s+/).length : 0;
+  }
+  function formatBytes(bytes) {
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    const kb = b / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(1)} MB`;
+  }
+
+  // ===== Clipboard helpers =====
+  async function clipboardWriteText(text) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      // fallback
+      return legacyCopy(text);
+    }
+    await navigator.clipboard.writeText(text);
+  }
+
+  function legacyCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (!ok) throw new Error("Legacy copy failed.");
+  }
+
+  async function clipboardReadText() {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      throw new Error("unsupported");
+    }
+    return navigator.clipboard.readText();
+  }
+
+  function wireFileOpen(buttonId, inputId, targetId, nameId, label) {
+    const btn = el(buttonId);
+    const input = el(inputId);
+    if (!btn || !input) return;
+
+    btn.addEventListener("click", () => input.click());
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const ta = el(targetId);
+        if (ta) ta.value = text;
+        const nameEl = nameId ? el(nameId) : null;
+        if (nameEl) nameEl.textContent = `Loaded: ${file.name} (${formatBytes(file.size)})`;
+        setStatus("Loaded");
+        toast("Loaded", `${file.name} inserted into ${label}.`);
+      } catch (e) {
+        setStatus("Load failed");
+        toast("Load failed", String(e?.message || e), "error");
+      } finally {
+        input.value = "";
+      }
+    });
+  }
+
+  // ===== Combiner output builders =====
+  function buildMarkdown() {
+    const title = el("title").value.trim();
+    const task = el("task").value.trim();
+
+    const parts = [];
+    parts.push(`# LLM Round-up${title ? ` — ${title}` : ""}`);
+    parts.push("");
+    parts.push(`- Generated: ${nowStamp()}`);
+    parts.push("");
+
+    if (task) {
+      parts.push("## Task / Prompt");
+      parts.push("");
+      parts.push(task);
+      parts.push("");
+    }
+
+    parts.push("## Responses");
+    parts.push("");
+
+    let count = 0;
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      const val = (ta?.value || "").trim();
+      if (!val) continue;
+
+      if (count > 0) {
+        parts.push("---");
+        parts.push("");
+      }
+      count++;
+      parts.push(`### ${m.label}`);
+      parts.push("");
+      parts.push(normalizeNewlines(val));
+      parts.push("");
+    }
+
+    if (count === 0) {
+      parts.push("_No model outputs were provided._");
+      parts.push("");
+    }
+
+    return parts.join("\n");
+  }
+
+  function buildPlainText() {
+    const title = el("title").value.trim();
+    const task = el("task").value.trim();
+
+    const parts = [];
+    parts.push(`LLM ROUND-UP${title ? ` — ${title}` : ""}`);
+    parts.push(`Generated: ${nowStamp()}`);
+    parts.push("");
+
+    if (task) {
+      parts.push("=== TASK / PROMPT ===");
+      parts.push(normalizeNewlines(task));
+      parts.push("");
+    }
+
+    let count = 0;
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      const val = (ta?.value || "").trim();
+      if (!val) continue;
+
+      count++;
+      parts.push(`=== ${m.label} ===`);
+      parts.push(normalizeNewlines(val));
+      parts.push("");
+    }
+
+    if (count === 0) {
+      parts.push("No model outputs were provided.");
+      parts.push("");
+    }
+
+    return parts.join("\n");
+  }
+
+  function combine() {
+    const fmt = el("format").value;
+    const text = (fmt === "md") ? buildMarkdown() : buildPlainText();
+    el("output").value = text;
+    updateOutputCount("outputCount", text);
+    setStatus("Combined");
+    toast("Combined", "Output updated.");
+  }
+
+  function updateOutputCount(id, text) {
+    const c = el(id);
+    if (c) c.textContent = text ? `(${countWords(text)} words • ${countChars(text)} chars)` : "";
+  }
+
+  async function copyOutput() {
+    const text = el("output").value;
+    if (!text) { setStatus("Nothing to copy"); toast("Nothing to copy", "Click Combine first.", "error"); return; }
+    try {
+      await clipboardWriteText(text);
+      setStatus("Copied");
+      toast("Copied", "Combined output copied to clipboard.");
+    } catch (e) {
+      setStatus("Copy failed");
+      toast("Copy failed", String(e?.message || e), "error");
+    }
+  }
+
+  function downloadOutput() {
+    const text = el("output").value;
+    if (!text) { setStatus("Nothing to download"); toast("Nothing to download", "Click Combine first.", "error"); return; }
+
+    const fmt = el("format").value;
+    const ext = (fmt === "md") ? "md" : "txt";
+
+    let name = el("filename").value.trim();
+    if (!name) {
+      const t = el("title").value.trim();
+      const base = t ? t.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") : "";
+      name = `${base || "llm_roundup"}_${safeFileStamp()}.${ext}`;
+    } else {
+      if (!name.toLowerCase().endsWith("." + ext)) name += "." + ext;
+    }
+
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus("Downloaded");
+    toast("Downloaded", name);
+  }
+
+  function clearAll() {
+    for (const m of MODELS) {
+      const ta = el(`box_${m.id}`);
+      if (ta) ta.value = "";
+      const c = el(`count_${m.id}`);
+      if (c) c.textContent = "0 words • 0 chars";
+    }
+    // Keep task default; user asked for pre-entered text.
+    el("title").value = "";
+    el("filename").value = "";
+    el("output").value = "";
+    updateOutputCount("outputCount", "");
+    setStatus("Cleared");
+    toast("Cleared", "All model boxes cleared.");
+  }
+
+  function updateCount(id) {
+    const ta = el(`box_${id}`);
+    const c = el(`count_${id}`);
+    if (!ta || !c) return;
+    const v = ta.value || "";
+    c.textContent = `${countWords(v)} words • ${countChars(v)} chars`;
+  }
+
+  // Build model boxes UI
+  function initBoxes() {
+    boxes.innerHTML = "";
+    for (const m of MODELS) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "twoLine";
+
+      const left = document.createElement("div");
+      left.className = "modelHdrLeft";
+
+      const lab = document.createElement("label");
+      lab.setAttribute("for", `box_${m.id}`);
+
+      if (m.url) {
+        const a = document.createElement("a");
+        a.className = "modelLink";
+        a.href = m.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.title = `Open ${m.label} in a new tab`;
+        a.textContent = m.label;
+        lab.appendChild(a);
+      } else {
+        lab.textContent = m.label;
+      }
+
+      const pasteBtn = document.createElement("button");
+      pasteBtn.type = "button";
+      pasteBtn.className = "miniBtn";
+      pasteBtn.textContent = "Paste";
+      pasteBtn.title = `Paste clipboard into the ${m.label} box`;
+      pasteBtn.addEventListener("click", () => pasteInto(m));
+
+      left.appendChild(lab);
+      left.appendChild(pasteBtn);
+
+      const cnt = document.createElement("div");
+      cnt.className = "count";
+      cnt.id = `count_${m.id}`;
+      cnt.textContent = "0 words • 0 chars";
+
+      top.appendChild(left);
+      top.appendChild(cnt);
+
+      const ta = document.createElement("textarea");
+      ta.id = `box_${m.id}`;
+      ta.placeholder = `Paste ${m.label} output here...`;
+      ta.addEventListener("input", () => updateCount(m.id));
+
+      const meta = document.createElement("div");
+      meta.className = "small muted";
+      meta.style.marginTop = "6px";
+      meta.textContent = "Included if non-empty.";
+
+      card.appendChild(top);
+      card.appendChild(ta);
+      card.appendChild(meta);
+      boxes.appendChild(card);
+    }
+  }
+
+  async function pasteInto(m) {
+    const ta = el(`box_${m.id}`);
+    if (!ta) return;
+    try {
+      const text = await clipboardReadText();
+      if (!text) {
+        toast("Clipboard empty", "Nothing to paste.", "error");
+        ta.focus();
+        return;
+      }
+      ta.value = text;
+      updateCount(m.id);
+      setStatus("Pasted");
+      toast("Pasted", `Clipboard inserted into ${m.label}.`);
+    } catch (e) {
+      // Permission denied (or dismissed), or browser doesn't expose clipboard read.
+      ta.focus();
+      setStatus("Paste blocked");
+      toast("Paste blocked", "Box focused — press Ctrl+V instead.", "error");
+    }
+  }
+
+  // Wire combiner buttons
+  el("combineBtn").addEventListener("click", combine);
+  el("copyBtn").addEventListener("click", copyOutput);
+  el("downloadBtn").addEventListener("click", downloadOutput);
+  el("clearBtn").addEventListener("click", clearAll);
+
+  // Convenience: Ctrl+Enter (Cmd+Enter on Mac) runs the active view's main action
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return;
+    e.preventDefault();
+    if (el("viewCombiner").classList.contains("active")) combine();
+    else if (el("viewBuilder").classList.contains("active")) pbBuild();
+  });
+
+  // ===== Prompt Builder =====
+  function pbBuild() {
+    const task = el("pb_task").value.trim();
+    const context = el("pb_context").value.trim();
+    const code = el("pb_code").value.trim();
+    const wrap = el("pb_wrap").checked;
+    const tag = el("pb_tag").checked;
+    const hintOn = el("pb_hint").checked;
+    const lang = el("pb_lang").value.trim();
+
+    if (!task && !context && !code) {
+      toast("Nothing to build", "All fields are empty.", "error");
+      setStatus("Nothing to build");
+      return;
+    }
+
+    const parts = [];
+    if (task) parts.push(task);
+    if (context) {
+      if (parts.length) parts.push("");
+      parts.push("CONTEXT:");
+      parts.push(normalizeNewlines(context));
+    }
+
+    if (code) {
+      if (parts.length) parts.push("");
+      if (tag) parts.push("CODEBASE:");
+      if (hintOn && lang) parts.push(`LANGUAGE: ${lang}`);
+
+      if (wrap) {
+        parts.push("```" + (hintOn && lang ? lang : "text"));
+        parts.push(normalizeNewlines(code));
+        parts.push("```");
+      } else {
+        parts.push(normalizeNewlines(code));
+      }
+    }
+
+    const out = parts.join("\n").trim() + "\n";
+    el("pb_output").value = out;
+    updateOutputCount("pb_outputCount", out);
+
+    setStatus("Built");
+    if (!code) {
+      toast("Built (no codebase)", "Prompt generated without a codebase section.");
+    } else {
+      toast("Built", "Paste-ready prompt generated.");
+    }
+  }
+
+  async function pbCopy() {
+    const text = el("pb_output").value;
+    if (!text) { toast("Nothing to copy", "Click Build first.", "error"); return; }
+    try {
+      await clipboardWriteText(text);
+      setStatus("Copied");
+      toast("Copied", "Built prompt copied to clipboard.");
+    } catch (e) {
+      setStatus("Copy failed");
+      toast("Copy failed", String(e?.message || e), "error");
+    }
+  }
+
+  function pbClear() {
+    // Keep default task; clear rest.
+    el("pb_context").value = "";
+    el("pb_code").value = "";
+    el("pb_output").value = "";
+    updateOutputCount("pb_outputCount", "");
+    const cName = el("pb_contextFileName");
+    if (cName) cName.textContent = "No file loaded.";
+    const codeName = el("pb_codeFileName");
+    if (codeName) codeName.textContent = "No file loaded.";
+    setStatus("Cleared");
+    toast("Cleared", "Prompt Builder cleared.");
+  }
+
+  el("pb_buildBtn").addEventListener("click", pbBuild);
+  el("pb_copyBtn").addEventListener("click", pbCopy);
+  el("pb_clearBtn").addEventListener("click", pbClear);
+  wireFileOpen("pb_contextOpenBtn", "pb_contextFile", "pb_context", "pb_contextFileName", "Context");
+  wireFileOpen("pb_codeOpenBtn", "pb_codeFile", "pb_code", "pb_codeFileName", "Codebase");
+
+  // Init
+  initBoxes();
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Context Dump: Checkmate Filter
-# Date: 2026-06-02 09:44:46
-# File Count: 9
+# Date: 2026-06-20 18:14:29
+# File Count: 11
 
 ===== BEGIN: Docs\CheckmateFilterService.md =====
 # CheckmateFilterService.md
@@ -340,19 +340,21 @@ public static class FileReplacementHelper
                 }
                 catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    File.Move(tempFilePath, destinationPath, overwrite: false);
                     return;
                 }
             }
-            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 lastError = ex;
-                Thread.Sleep(attempt * 100);
-            }
-            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
-            {
-                lastError = ex;
-                Thread.Sleep(attempt * 100);
+
+                if (attempt < MaxReplaceAttempts)
+                {
+                    Thread.Sleep(attempt * 100);
+                    continue;
+                }
+
+                break;
             }
         }
 
@@ -398,19 +400,21 @@ public static class FileReplacementHelper
                 }
                 catch (FileNotFoundException)
                 {
-                    File.Move(tempFilePath, destinationPath, overwrite: true);
+                    File.Move(tempFilePath, destinationPath, overwrite: false);
                     return;
                 }
             }
-            catch (IOException ex) when (attempt < MaxReplaceAttempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 lastError = ex;
-                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
-            }
-            catch (UnauthorizedAccessException ex) when (attempt < MaxReplaceAttempts)
-            {
-                lastError = ex;
-                await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+
+                if (attempt < MaxReplaceAttempts)
+                {
+                    await Task.Delay(attempt * 100, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                break;
             }
         }
 
@@ -1265,4 +1269,63 @@ public sealed partial class CheckmateFilterPage : Page
 }
 
 ===== END: PgnTools\Views\Tools\CheckmateFilterPage.xaml.cs =====
+
+===== BEGIN: PgnTools\Views\Tools\CheckmateFilterView.xaml =====
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="PgnTools.Views.Tools.CheckmateFilterView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:controls="using:PgnTools.Views.Controls"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="12" Padding="0,8,0,0">
+            <TextBlock Text="Keep only games where the mainline move text ends in checkmate (#)."
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+
+            <TextBlock Text="Input File" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox Grid.Column="0" PlaceholderText="Select input PGN..." Text="{x:Bind ViewModel.InputFilePath, Mode=OneWay}" IsReadOnly="True" Margin="0,0,12,0"/>
+                <Button Grid.Column="1" Content="Browse..." Command="{x:Bind ViewModel.SelectInputFileCommand}" Style="{StaticResource Action}"/>
+            </Grid>
+
+            <TextBlock Text="Output File" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox Grid.Column="0" PlaceholderText="Select output PGN..." Text="{x:Bind ViewModel.OutputFilePath, Mode=OneWay}" IsReadOnly="True" Margin="0,0,12,0"/>
+                <Button Grid.Column="1" Content="Browse..." Command="{x:Bind ViewModel.SelectOutputFileCommand}" Style="{StaticResource Action}"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button Content="Run" Command="{x:Bind ViewModel.RunCommand}" Style="{StaticResource PrimaryAction}"/>
+                <Button Content="Cancel" Command="{x:Bind ViewModel.CancelCommand}" Style="{StaticResource Action}" IsEnabled="{x:Bind ViewModel.IsRunning, Mode=OneWay}"/>
+            </StackPanel>
+
+            <controls:ToolStatusBar StatusMessage="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                    StatusSeverity="{x:Bind ViewModel.StatusSeverity, Mode=OneWay}"
+                                    StatusDetail="{x:Bind ViewModel.StatusDetail, Mode=OneWay}"
+                                    IsRunning="{x:Bind ViewModel.IsRunning, Mode=OneWay}"
+                                    IsIndeterminate="False"
+                                    ProgressValue="{x:Bind ViewModel.ProgressValue, Mode=OneWay}"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
+===== END: PgnTools\Views\Tools\CheckmateFilterView.xaml =====
+
+===== BEGIN: PgnTools\Views\Tools\CheckmateFilterView.xaml.cs =====
+namespace PgnTools.Views.Tools;
+
+public sealed partial class CheckmateFilterView : UserControl
+{
+    public static readonly DependencyProperty ViewModelProperty =
+        DependencyProperty.Register(nameof(ViewModel), typeof(CheckmateFilterViewModel), typeof(CheckmateFilterView), new PropertyMetadata(null));
+    public CheckmateFilterViewModel ViewModel { get => (CheckmateFilterViewModel)GetValue(ViewModelProperty); set => SetValue(ViewModelProperty, value); }
+    public CheckmateFilterView() { InitializeComponent(); }
+}
+===== END: PgnTools\Views\Tools\CheckmateFilterView.xaml.cs =====
 
