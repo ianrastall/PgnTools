@@ -258,8 +258,9 @@ public partial class PgnReader
             return false;
         }
 
-        // Only treat as tag line when we're not inside the move section.
-        var isTagLine = trimmedSpan[0] == '[' && !inMoveSection;
+        // Treat as tag line if we're not in the move section, OR if we're in the move section 
+        // but not inside a brace comment or variation (which means it's the next game's header).
+        var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
         if (isTagLine)
         {
             if (TryParseHeaderLine(trimmedSpan, allowUnquotedValue: !inMoveSection, out var tagKey, out var rawValue))
