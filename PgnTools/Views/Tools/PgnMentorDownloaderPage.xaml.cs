@@ -18,21 +18,4 @@ public sealed partial class PgnMentorDownloaderPage : Page
         _ownsViewModel = ownsViewModel;
         this.InitializeComponent();
     }
-
-    protected override void OnNavigatedFrom(NavigationEventArgs e)
-    {
-        base.OnNavigatedFrom(e);
-        if (_ownsViewModel)
-        {
-            if (ViewModel.IsRunning)
-            {
-                ViewModel.RequestDispose();
-            }
-            else
-            {
-                ViewModel.Dispose();
-            }
-        }
-    }
 }
-

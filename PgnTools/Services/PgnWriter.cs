@@ -121,80 +121,78 @@ public class PgnWriter
     {
         if (string.IsNullOrEmpty(text))
         {
-            return Array.Empty<string>();
+            yield break;
         }
 
-        var results = new List<string>();
-        var span = text.AsSpan();
         var lineStart = 0;
+        bool inBraceComment = false;
 
-        for (var i = 0; i <= span.Length; i++)
+        for (var i = 0; i <= text.Length; i++)
         {
-            if (i < span.Length && span[i] != '\n')
+            if (i < text.Length && text[i] != '\n')
             {
                 continue;
             }
 
-            var line = span.Slice(lineStart, i - lineStart);
-            line = TrimEndSpan(line);
+            var line = text.Substring(lineStart, i - lineStart);
+            line = line.TrimEnd();
 
             if (line.Length == 0)
             {
-                results.Add(string.Empty);
-            }
-            else if (line.IndexOf(';') >= 0)
-            {
-                results.Add(line.ToString());
+                yield return string.Empty;
             }
             else
             {
-                var remaining = line;
-                while (remaining.Length > maxLineLength)
+                bool hasRealLineComment = false;
+                bool tempBrace = inBraceComment;
+                for (int k = 0; k < line.Length; k++)
                 {
-                    var window = remaining[..maxLineLength];
-                    var breakIndex = window.LastIndexOf(' ');
-                    if (breakIndex <= 0)
+                    if (line[k] == '{') tempBrace = true;
+                    else if (line[k] == '}') tempBrace = false;
+                    else if (line[k] == ';' && !tempBrace)
                     {
-                        results.Add(window.ToString());
-                        remaining = TrimStartSpan(remaining[maxLineLength..]);
-                        continue;
+                        hasRealLineComment = true;
+                        break;
                     }
-
-                    results.Add(remaining[..breakIndex].ToString());
-                    remaining = TrimStartSpan(remaining[(breakIndex + 1)..]);
                 }
 
-                if (remaining.Length > 0)
+                if (hasRealLineComment)
                 {
-                    results.Add(remaining.ToString());
+                    yield return line;
+                }
+                else
+                {
+                    var remaining = line;
+                    while (remaining.Length > maxLineLength)
+                    {
+                        var window = remaining.Substring(0, maxLineLength);
+                        var breakIndex = window.LastIndexOf(' ');
+                        if (breakIndex <= 0)
+                        {
+                            yield return window;
+                            remaining = remaining.Substring(maxLineLength).TrimStart();
+                            continue;
+                        }
+
+                        yield return remaining.Substring(0, breakIndex);
+                        remaining = remaining.Substring(breakIndex + 1).TrimStart();
+                    }
+
+                    if (remaining.Length > 0)
+                    {
+                        yield return remaining;
+                    }
+                }
+
+                for (int k = 0; k < line.Length; k++)
+                {
+                    if (line[k] == '{') inBraceComment = true;
+                    else if (line[k] == '}') inBraceComment = false;
+                    else if (line[k] == ';' && !inBraceComment) break;
                 }
             }
 
             lineStart = i + 1;
         }
-
-        return results;
-    }
-
-    private static ReadOnlySpan<char> TrimStartSpan(ReadOnlySpan<char> span)
-    {
-        var start = 0;
-        while (start < span.Length && char.IsWhiteSpace(span[start]))
-        {
-            start++;
-        }
-
-        return start == 0 ? span : span[start..];
-    }
-
-    private static ReadOnlySpan<char> TrimEndSpan(ReadOnlySpan<char> span)
-    {
-        var end = span.Length - 1;
-        while (end >= 0 && char.IsWhiteSpace(span[end]))
-        {
-            end--;
-        }
-
-        return end < 0 ? ReadOnlySpan<char>.Empty : span[..(end + 1)];
     }
 }

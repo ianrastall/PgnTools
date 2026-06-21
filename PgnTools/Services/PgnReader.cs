@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 
 namespace PgnTools.Services;
 
@@ -12,6 +13,7 @@ public partial class PgnReader
 {
     private const int BufferSize = 262144;
     private const int MaxLineLength = 262144;
+    private const int MaxMoveTextLength = 10 * 1024 * 1024;
 
     public PgnReader()
     {
@@ -79,7 +81,7 @@ public partial class PgnReader
         var lineBuffer = ArrayPool<char>.Shared.Rent(256);
         var lineLength = 0;
         var pendingCarriageReturn = false;
-        var buffer = new char[BufferSize];
+        var buffer = ArrayPool<char>.Shared.Rent(BufferSize);
 
         try
         {
@@ -205,6 +207,7 @@ public partial class PgnReader
         finally
         {
             ArrayPool<char>.Shared.Return(lineBuffer);
+            ArrayPool<char>.Shared.Return(buffer);
         }
     }
 
@@ -248,18 +251,15 @@ public partial class PgnReader
             return false;
         }
 
-        if (trimmedSpan[0] == '%')
+        if (trimmedSpan[0] == '%' && (!inMoveSection || (!inBraceComment && !inLineComment && variationDepth == 0)))
         {
-            if (inMoveSection && readMoveText && moveText != null)
-            {
-                moveText.AppendLine();
-            }
-
+            // PGN spec says lines starting with % are escape lines. 
+            // We ignore them, but we shouldn't add empty lines to the moveText.
             return false;
         }
 
-        // Only treat as tag line when we're not deep in comments/variations.
-        var isTagLine = trimmedSpan[0] == '[' && (!inMoveSection || (!inBraceComment && variationDepth == 0));
+        // Only treat as tag line when we're not inside the move section.
+        var isTagLine = trimmedSpan[0] == '[' && !inMoveSection;
         if (isTagLine)
         {
             if (TryParseHeaderLine(trimmedSpan, allowUnquotedValue: !inMoveSection, out var tagKey, out var rawValue))
@@ -306,6 +306,10 @@ public partial class PgnReader
         if (readMoveText && moveText != null)
         {
             moveText.Append(TrimEndSpan(lineSpan));
+            if (moveText.Length > MaxMoveTextLength)
+            {
+                throw new InvalidDataException("Game size exceeds maximum allowed length.");
+            }
         }
         UpdateMoveState(lineSpan, ref inBraceComment, ref inLineComment, ref variationDepth);
         UpdateMoveState(LineBreak, ref inBraceComment, ref inLineComment, ref variationDepth);
@@ -489,107 +493,88 @@ public partial class PgnReader
         rawValue = string.Empty;
 
         var span = line.Trim();
-        if (span.Length < 2 || span[0] != '[')
-        {
-            return false;
-        }
+        if (span.Length < 2 || span[0] != '[') return false;
 
         span = span[1..].TrimStart();
-        if (span.Length == 0)
-        {
-            return false;
-        }
+        if (span.Length == 0) return false;
 
         var nameLength = 0;
         while (nameLength < span.Length && !char.IsWhiteSpace(span[nameLength]) && span[nameLength] != ']')
         {
             nameLength++;
         }
-
-        if (nameLength == 0)
-        {
-            return false;
-        }
+        if (nameLength == 0) return false;
 
         var nameSpan = span[..nameLength];
         span = span[nameLength..].TrimStart();
-        if (span.Length == 0)
-        {
-            key = nameSpan.ToString();
-            rawValue = string.Empty;
-            return true;
-        }
 
         if (!allowUnquotedValue)
         {
             var first = nameSpan[0];
-            if (!char.IsLetter(first))
-            {
-                return false;
-            }
-
+            if (!char.IsLetter(first)) return false;
             for (var i = 1; i < nameSpan.Length; i++)
             {
                 var c = nameSpan[i];
-                if (!char.IsLetterOrDigit(c) && c != '_')
-                {
-                    return false;
-                }
+                if (!char.IsLetterOrDigit(c) && c != '_') return false;
             }
         }
+
+        if (span.Length == 0) return false;
 
         if (span[0] == '"' || span[0] == '\'')
         {
             var quote = span[0];
             var builder = new StringBuilder();
             var escaping = false;
+            var quoteEndedAt = -1;
 
             for (var i = 1; i < span.Length; i++)
             {
                 var c = span[i];
-
                 if (escaping)
                 {
                     builder.Append(c);
                     escaping = false;
                     continue;
                 }
-
                 if (c == '\\')
                 {
                     builder.Append(c);
                     escaping = true;
                     continue;
                 }
-
                 if (c == quote)
                 {
-                    key = nameSpan.ToString();
-                    rawValue = builder.ToString();
-                    return true;
+                    quoteEndedAt = i;
+                    break;
                 }
-
                 builder.Append(c);
             }
 
+            if (quoteEndedAt < 0) return false;
+
             key = nameSpan.ToString();
             rawValue = builder.ToString();
+
+            var closingIdx = span.IndexOf(']');
+            if (closingIdx <= quoteEndedAt) return false;
+            var remaining = span[(closingIdx + 1)..].Trim();
+            if (remaining.Length > 0) return false;
+
             return true;
         }
 
-        if (!allowUnquotedValue)
-        {
-            return false;
-        }
+        if (!allowUnquotedValue) return false;
 
         var closingIndex = span.IndexOf(']');
-        if (closingIndex < 0)
-        {
-            closingIndex = span.Length;
-        }
+        if (closingIndex < 0) return false;
 
         key = nameSpan.ToString();
         rawValue = span[..closingIndex].ToString().TrimEnd();
+
+        var trailing = span[(closingIndex + 1)..].Trim();
+        if (trailing.Length > 0) return false;
+
         return true;
     }
 

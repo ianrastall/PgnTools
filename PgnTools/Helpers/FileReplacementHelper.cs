@@ -14,6 +14,7 @@ public static class FileReplacementHelper
             throw new ArgumentException("Destination file path is required.", nameof(destinationPath));
         }
 
+        destinationPath = Path.GetFullPath(destinationPath);
         var directory = Path.GetDirectoryName(destinationPath);
         if (string.IsNullOrWhiteSpace(directory))
         {
@@ -178,6 +179,22 @@ public static class FileReplacementHelper
         }
         catch
         {
+        }
+    }
+
+    public static bool IsDirectoryWritable(string directoryPath)
+    {
+        try
+        {
+            var testFilePath = Path.Combine(directoryPath, $".test_{Guid.NewGuid():N}");
+            using (File.Create(testFilePath, 1, FileOptions.DeleteOnClose))
+            {
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 }
