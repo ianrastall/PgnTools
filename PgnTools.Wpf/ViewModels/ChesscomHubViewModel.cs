@@ -2,7 +2,8 @@ namespace PgnTools.Wpf;
 
 public sealed class ChesscomHubViewModel(
     ChesscomDownloaderViewModel userDownloader,
-    ChesscomMonthlyDownloaderViewModel monthlyDownloader) : IInitializable, IDisposable
+    ChesscomMonthlyDownloaderViewModel monthlyDownloader,
+    ChesscomEventsDownloaderViewModel eventsDownloader) : IInitializable, IDisposable
 {
     private bool _disposed;
 
@@ -10,10 +11,13 @@ public sealed class ChesscomHubViewModel(
 
     public ChesscomMonthlyDownloaderViewModel MonthlyDownloader { get; } = monthlyDownloader;
 
+    public ChesscomEventsDownloaderViewModel EventsDownloader { get; } = eventsDownloader;
+
     public void Initialize()
     {
         UserDownloader.Initialize();
         MonthlyDownloader.Initialize();
+        EventsDownloader.Initialize();
     }
 
     public void Dispose()
@@ -26,5 +30,6 @@ public sealed class ChesscomHubViewModel(
         _disposed = true;
         UserDownloader.Dispose();
         MonthlyDownloader.Dispose();
+        EventsDownloader.Dispose();
     }
 }

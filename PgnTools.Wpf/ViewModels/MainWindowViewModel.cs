@@ -9,6 +9,8 @@ public sealed class MainWindowViewModel(
     Lc0DownloaderViewModel lc0,
     PgnMentorDownloaderViewModel pgnMentor,
     TwicDownloaderViewModel twic,
+    TablebaseDownloaderViewModel tablebase,
+    CompilerViewModel compiler,
     SettingsViewModel settings) : IInitializable, IDisposable
 {
     private bool _disposed;
@@ -31,6 +33,10 @@ public sealed class MainWindowViewModel(
 
     public TwicDownloaderViewModel Twic { get; } = twic;
 
+    public TablebaseDownloaderViewModel Tablebase { get; } = tablebase;
+
+    public CompilerViewModel Compiler { get; } = compiler;
+
     public SettingsViewModel Settings { get; } = settings;
 
     public void Initialize()
@@ -43,6 +49,8 @@ public sealed class MainWindowViewModel(
         Lc0.Initialize();
         PgnMentor.Initialize();
         Twic.Initialize();
+        Tablebase.Initialize();
+        Compiler.Initialize();
         Settings.Initialize();
     }
 
@@ -62,6 +70,8 @@ public sealed class MainWindowViewModel(
         Lc0.Dispose();
         PgnMentor.Dispose();
         Twic.Dispose();
+        Tablebase.Dispose();
+        Compiler.Dispose();
         Settings.Dispose();
     }
 }

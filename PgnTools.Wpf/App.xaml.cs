@@ -35,11 +35,15 @@ public partial class App : System.Windows.Application
         services.AddSingleton<PgnReader>();
         services.AddSingleton<PgnWriter>();
 
+        // Dedicated HttpClient for the tablebase downloader (no timeout — files are huge).
+        services.AddSingleton(CreateTablebaseHttpClient());
+
         services.AddSingleton<ICategoryTaggerService, CategoryTaggerService>();
         services.AddSingleton<ICheckmateFilterService, CheckmateFilterService>();
         services.AddSingleton<IChessAnalyzerService, ChessAnalyzerService>();
         services.AddSingleton<IChesscomDownloaderService, ChesscomDownloaderService>();
         services.AddSingleton<IChesscomMonthlyDownloaderService, ChesscomMonthlyDownloaderService>();
+        services.AddSingleton<IChesscomEventsDownloaderService, ChesscomEventsDownloaderService>();
         services.AddSingleton<IChessUnannotatorService, ChessUnannotatorService>();
         services.AddSingleton<IEcoTaggerService, EcoTaggerService>();
         services.AddSingleton<IEloAdderService, EloAdderService>();
@@ -59,6 +63,9 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IRemoveDoublesService, RemoveDoublesService>();
         services.AddSingleton<IStockfishDownloaderService, StockfishDownloaderService>();
         services.AddSingleton<IStockfishNormalizerService, StockfishNormalizerService>();
+        services.AddSingleton<IStockfishCompilerService, StockfishCompilerService>();
+        services.AddSingleton<IBerserkCompilerService, BerserkCompilerService>();
+        services.AddSingleton<ITablebaseDownloaderService, TablebaseDownloaderService>();
         services.AddSingleton<ITourBreakerService, TourBreakerService>();
         services.AddSingleton<ITwicDownloaderService, TwicDownloaderService>();
 
@@ -67,6 +74,9 @@ public partial class App : System.Windows.Application
         services.AddSingleton<ChessAnalyzerViewModel>();
         services.AddSingleton<ChesscomDownloaderViewModel>();
         services.AddSingleton<ChesscomMonthlyDownloaderViewModel>();
+        services.AddSingleton<ChesscomEventsDownloaderViewModel>();
+        services.AddSingleton<CompilerViewModel>();
+        services.AddSingleton<TablebaseDownloaderViewModel>();
         services.AddSingleton<ChessUnannotatorViewModel>();
         services.AddSingleton<EcoTaggerViewModel>();
         services.AddSingleton<EloAdderViewModel>();
@@ -96,5 +106,15 @@ public partial class App : System.Windows.Application
         services.AddSingleton<MainWindow>();
 
         return services.BuildServiceProvider();
+    }
+
+    private static HttpClient CreateTablebaseHttpClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PgnTools/1.0 (GitHub; PgnTools)");
+        return client;
     }
 }

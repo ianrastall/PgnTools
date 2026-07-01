@@ -57,7 +57,16 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
     private const int BufferSize = 65536;
     private const int MaxRedirects = 5;
     private const int MaxConsecutiveFailures = 5;
-    private static readonly TimeSpan RateLimitBackoff = TimeSpan.FromSeconds(65);
+
+    // Adaptive serial pacing. Chess.com throttles aggressive callers, so instead of
+    // bursting and eating multi-minute stalls, we nudge a per-request delay upward the
+    // moment a throttle appears and let it decay back toward the user floor on a clean run.
+    private const int AdaptiveCeilingMs = 5000;
+    private const int AdaptiveThrottleFloorMs = 250;
+    private const int AdaptiveDecayMs = 100;
+
+    // Cap for both Retry-After waits and the exponential fallback backoff.
+    private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(65);
     private static readonly Uri EventsBaseUri = new("https://www.chess.com/events/pgn/");
     private static readonly HashSet<string> AllowedRedirectHosts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -111,6 +120,12 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
         var consecutiveFailures = 0;
         long bytesWritten = 0;
         long titledTuesdayBytesWritten = 0;
+
+        // Pacing state: starts at the user-configured floor and adapts to throttling.
+        var floorDelayMs = Math.Max(0, options.MinDelayMs);
+        var adaptiveDelayMs = floorDelayMs;
+        var requestsSent = 0;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         progress?.Report(new ChesscomEventsDownloadProgress(
             resumeStatus
@@ -219,7 +234,7 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
             }
 
             progress?.Report(BuildProgress(
-                $"Downloading event {eventId:N0} ({processed + 1:N0}/{total:N0})...",
+                $"Downloading event {eventId:N0} ({processed + 1:N0}/{total:N0}){DescribeThroughput(requestsSent, stopwatch.Elapsed, options.EndEventId - eventId, adaptiveDelayMs)}...",
                 eventId,
                 processed,
                 total,
@@ -232,9 +247,15 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
                 titledTuesdaySaved,
                 titledTuesdayBytesWritten));
 
-            await ApplyRateLimitAsync(options.MinDelayMs, options.MaxDelayMs, ct).ConfigureAwait(false);
+            await DelayAsync(adaptiveDelayMs, ct).ConfigureAwait(false);
             var url = BuildEventUrl(eventId);
+            requestsSent++;
             var fetch = await FetchEventPgnWithRetryAsync(eventId, url, options, ct).ConfigureAwait(false);
+
+            // React to throttling: back off the pace on any throttle hit, relax it on a clean request.
+            adaptiveDelayMs = fetch.ThrottleHits > 0
+                ? Math.Min(AdaptiveCeilingMs, Math.Max(adaptiveDelayMs, AdaptiveThrottleFloorMs) * 2)
+                : Math.Max(floorDelayMs, adaptiveDelayMs - AdaptiveDecayMs);
 
             if (fetch.Status == EventFetchStatus.AuthRequired)
             {
@@ -394,20 +415,27 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
         ChesscomEventsDownloadOptions options,
         CancellationToken ct)
     {
+        var throttleHits = 0;
+
         for (var attempt = 1; attempt <= options.MaxRetries; attempt++)
         {
             try
             {
-                return await FetchEventPgnAsync(eventId, url, options.CookieHeader, options.MaxEventBytes, ct)
+                var result = await FetchEventPgnAsync(eventId, url, options.CookieHeader, options.MaxEventBytes, ct)
                     .ConfigureAwait(false);
+                return throttleHits > 0 ? result with { ThrottleHits = throttleHits } : result;
             }
-            catch (RateLimitException) when (attempt < options.MaxRetries)
+            catch (RateLimitException ex) when (attempt < options.MaxRetries)
             {
-                await Task.Delay(RateLimitBackoff, ct).ConfigureAwait(false);
+                throttleHits++;
+                var wait = ex.RetryAfter is { } retryAfter && retryAfter > TimeSpan.Zero
+                    ? (retryAfter < MaxBackoff ? retryAfter : MaxBackoff)
+                    : FallbackBackoff(attempt);
+                await Task.Delay(wait, ct).ConfigureAwait(false);
             }
             catch (RateLimitException ex)
             {
-                return new EventFetchResult(EventFetchStatus.RateLimited, HttpStatusCode.TooManyRequests, string.Empty, 0, 0, ex.Message);
+                return new EventFetchResult(EventFetchStatus.RateLimited, HttpStatusCode.TooManyRequests, string.Empty, 0, 0, ex.Message, ThrottleHits: throttleHits + 1);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -458,7 +486,7 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
 
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
-            throw new RateLimitException($"Rate limited while requesting event {eventId:N0}.");
+            throw new RateLimitException($"Rate limited while requesting event {eventId:N0}.", GetRetryAfter(response));
         }
 
         if ((int)response.StatusCode >= 500)
@@ -682,15 +710,77 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
 
     private static Uri BuildEventUrl(int eventId) => new(EventsBaseUri, $"{eventId.ToString(CultureInfo.InvariantCulture)}/0");
 
-    private static async Task ApplyRateLimitAsync(int minDelayMs, int maxDelayMs, CancellationToken ct)
+    private static async Task DelayAsync(int delayMs, CancellationToken ct)
     {
-        if (maxDelayMs <= 0)
+        if (delayMs <= 0)
         {
             return;
         }
 
-        var delay = Random.Shared.Next(minDelayMs, maxDelayMs + 1);
-        await Task.Delay(delay, ct).ConfigureAwait(false);
+        await Task.Delay(delayMs, ct).ConfigureAwait(false);
+    }
+
+    private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter == null)
+        {
+            return null;
+        }
+
+        if (retryAfter.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return delta;
+        }
+
+        if (retryAfter.Date is { } date)
+        {
+            var wait = date - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                return wait;
+            }
+        }
+
+        return null;
+    }
+
+    // Exponential fallback used only when the 429 response carries no Retry-After header: 3s, 6s, 12s, ... capped.
+    private static TimeSpan FallbackBackoff(int attempt)
+    {
+        var seconds = 3d * Math.Pow(2, attempt - 1);
+        return seconds >= MaxBackoff.TotalSeconds ? MaxBackoff : TimeSpan.FromSeconds(seconds);
+    }
+
+    private static string DescribeThroughput(int requestsSent, TimeSpan elapsed, int remaining, int adaptiveDelayMs)
+    {
+        if (requestsSent < 5 || elapsed.TotalSeconds < 1)
+        {
+            return string.Empty;
+        }
+
+        var rate = requestsSent / elapsed.TotalSeconds;
+        if (rate <= 0)
+        {
+            return string.Empty;
+        }
+
+        var suffix = $" • {rate:0.0} req/s";
+
+        if (remaining > 0)
+        {
+            var eta = TimeSpan.FromSeconds(remaining / rate);
+            suffix += eta.TotalHours >= 1
+                ? $" • ETA {(int)eta.TotalHours}h{eta.Minutes:00}m"
+                : $" • ETA {eta.Minutes}m{eta.Seconds:00}s";
+        }
+
+        if (adaptiveDelayMs > 0)
+        {
+            suffix += $" • pacing {adaptiveDelayMs:N0}ms";
+        }
+
+        return suffix;
     }
 
     private static ChesscomEventsDownloadProgress BuildProgress(
@@ -1080,7 +1170,8 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
         int Games,
         long Bytes,
         string Message,
-        EventOutputKind OutputKind = EventOutputKind.Unknown);
+        EventOutputKind OutputKind = EventOutputKind.Unknown,
+        int ThrottleHits = 0);
 
     private sealed record ResumeState(
         HashSet<int> SuccessIds,
@@ -1128,5 +1219,8 @@ public sealed class ChesscomEventsDownloaderService : IChesscomEventsDownloaderS
         SkippedByPattern
     }
 
-    private sealed class RateLimitException(string message) : Exception(message);
+    private sealed class RateLimitException(string message, TimeSpan? retryAfter = null) : Exception(message)
+    {
+        public TimeSpan? RetryAfter { get; } = retryAfter;
+    }
 }

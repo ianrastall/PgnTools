@@ -128,6 +128,10 @@
                                         </StackPanel>
                                     </ScrollViewer>
                                 </TabItem>
+
+                                <TabItem Header="Events">
+                                    <controls:ChesscomEventsView Margin="0,10,0,0" ViewModel="{Binding Chesscom.EventsDownloader}" />
+                                </TabItem>
                             </TabControl>
                         </TabItem>
 
@@ -285,6 +289,37 @@
                                     </StackPanel>
 
                                     <controls:ToolStatusView Margin="0,18,0,0" StatusMessage="{Binding StatusMessage}" StatusDetail="{Binding StatusDetail}" StatusSeverity="{Binding StatusSeverity}" IsIndeterminate="{Binding IsRunning}" ProgressValue="{Binding ProgressValue}" ProgressMaximum="100" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <TabItem Header="Tablebases">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="8" DataContext="{Binding Tablebase}">
+                                    <TextBlock Foreground="{DynamicResource TextSecondaryBrush}"
+                                               TextWrapping="Wrap"
+                                               Text="Download standard Syzygy tablebases for engine use." />
+
+                                    <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Destination Folder" />
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Command="{Binding SelectTargetFolderCommand}" Content="Browse" />
+                                        <TextBox Margin="0,0,12,0" IsReadOnly="True" Text="{Binding TargetFolder}" />
+                                    </DockPanel>
+
+                                    <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Select Tablebases" />
+                                    <CheckBox Content="3-4-5 Pieces (Syzygy 3-4-5)" IsChecked="{Binding Download345}" />
+                                    <TextBlock Margin="26,2,0,0" Foreground="{DynamicResource TextSecondaryBrush}" Text="~1.5 GB. Essential for basic endgame analysis." />
+                                    <CheckBox Margin="0,12,0,0" Content="6 Pieces (Syzygy 6)" IsChecked="{Binding Download6}" />
+                                    <TextBlock Margin="26,2,0,0" Foreground="{DynamicResource TextSecondaryBrush}" Text="~160 GB. Recommended for serious engine performance." />
+                                    <CheckBox Margin="0,12,0,0" Content="7 Pieces (Syzygy 7)" IsChecked="{Binding Download7}" />
+                                    <TextBlock Margin="26,2,0,0" Foreground="{DynamicResource TextSecondaryBrush}" Text="Warning: ~18 TB. Requires massive storage." />
+
+                                    <StackPanel Margin="0,18,0,0" Orientation="Horizontal">
+                                        <Button Background="{DynamicResource AccentBrush}" Foreground="White" Command="{Binding StartCommand}" Content="Download" />
+                                        <Button Command="{Binding CancelCommand}" Content="Cancel" IsEnabled="{Binding IsRunning}" />
+                                    </StackPanel>
+
+                                    <controls:ToolStatusView Margin="0,18,0,0" StatusMessage="{Binding StatusMessage}" StatusDetail="{Binding StatusDetail}" StatusSeverity="{Binding StatusSeverity}" IsIndeterminate="{Binding IsIndeterminate}" ProgressValue="{Binding ProgressValue}" ProgressMaximum="{Binding ProgressMaximum}" />
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
@@ -1000,6 +1035,116 @@
                                     </StackPanel>
 
                                     <controls:ToolStatusView Margin="0,18,0,0" StatusMessage="{Binding StatusMessage}" StatusDetail="{Binding StatusDetail}" StatusSeverity="{Binding StatusSeverity}" IsIndeterminate="{Binding IsRunning}" ProgressValue="{Binding ProgressValue}" ProgressMaximum="100" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Engines">
+                <Grid Margin="0,16,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TabControl Grid.Row="1">
+                        <TabItem Header="Compiler">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="8" DataContext="{Binding Compiler}">
+                                    <TextBlock Foreground="{DynamicResource TextSecondaryBrush}"
+                                               TextWrapping="Wrap"
+                                               Text="Clone and compile a chess engine (Stockfish or Berserk) from source." />
+
+                                    <UniformGrid Margin="0,16,0,0" Columns="2">
+                                        <StackPanel Margin="0,0,12,0">
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Engine" />
+                                            <ComboBox ItemsSource="{Binding Engines}" SelectedItem="{Binding SelectedEngine}" />
+                                        </StackPanel>
+                                        <StackPanel Margin="12,0,0,0">
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Source Version" />
+                                            <DockPanel>
+                                                <Button DockPanel.Dock="Right" Command="{Binding RefreshSourceRefsCommand}" Content="Refresh" />
+                                                <ComboBox Margin="0,0,12,0"
+                                                          ItemsSource="{Binding AvailableSourceRefs}"
+                                                          DisplayMemberPath="DisplayName"
+                                                          SelectedValuePath="Ref"
+                                                          SelectedValue="{Binding SelectedSourceRef}" />
+                                            </DockPanel>
+                                        </StackPanel>
+                                    </UniformGrid>
+
+                                    <UniformGrid Margin="0,12,0,0" Columns="3">
+                                        <StackPanel Margin="0,0,10,0">
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Build Target" />
+                                            <ComboBox ItemsSource="{Binding AvailableBuildTargets}" SelectedItem="{Binding SelectedBuildTarget}" />
+                                        </StackPanel>
+                                        <StackPanel Margin="10,0,10,0">
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Compiler" />
+                                            <ComboBox ItemsSource="{Binding AvailableCompilers}" SelectedItem="{Binding SelectedCompiler}" />
+                                        </StackPanel>
+                                        <StackPanel Margin="10,0,0,0">
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Parallel Jobs" />
+                                            <TextBox Text="{Binding ParallelJobs, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                    </UniformGrid>
+
+                                    <TextBlock Margin="0,12,0,6" Style="{StaticResource SectionLabelText}" Text="Architecture" />
+                                    <ComboBox Width="320" HorizontalAlignment="Left" ItemsSource="{Binding AvailableArchitectures}" SelectedItem="{Binding SelectedArchitecture}" />
+
+                                    <StackPanel Margin="0,14,0,0">
+                                        <CheckBox Content="Auto-install/repair toolchain (MSYS2)" IsChecked="{Binding AutoInstallToolchain}" />
+                                        <CheckBox Content="Download NNUE network" IsChecked="{Binding DownloadNetwork}" />
+                                        <CheckBox Content="Strip executable" IsChecked="{Binding StripExecutable}" />
+                                    </StackPanel>
+
+                                    <Border Margin="0,16,0,0"
+                                            Padding="12"
+                                            Background="{DynamicResource SurfaceBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="10">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource SectionLabelText}" Text="Toolchain" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" Text="{Binding ToolchainSummary}" />
+                                            <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                                                <Button Command="{Binding DetectToolchainCommand}" Content="Detect" />
+                                                <Button Command="{Binding InstallOrRepairToolchainCommand}" Content="Install / Repair" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Workspace Folder" />
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Command="{Binding BrowseWorkspaceCommand}" Content="Browse" />
+                                        <TextBox Margin="0,0,12,0" IsReadOnly="True" Text="{Binding WorkspaceFolder}" />
+                                    </DockPanel>
+
+                                    <TextBlock Margin="0,12,0,6" Style="{StaticResource SectionLabelText}" Text="GitHub Token (optional, for API rate limits)" />
+                                    <TextBox Text="{Binding GitHubPat, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <StackPanel Margin="0,18,0,0" Orientation="Horizontal">
+                                        <Button Background="{DynamicResource AccentBrush}" Foreground="White" Command="{Binding StartCompileCommand}" Content="Compile" />
+                                        <Button Command="{Binding CancelCommand}" Content="Cancel" IsEnabled="{Binding IsRunning}" />
+                                    </StackPanel>
+
+                                    <DockPanel Margin="0,18,0,6">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                            <Button Command="{Binding CopyOutputCommand}" Content="Copy" />
+                                            <Button Command="{Binding ClearOutputCommand}" Content="Clear" />
+                                        </StackPanel>
+                                        <TextBlock VerticalAlignment="Center" Style="{StaticResource SectionLabelText}" Text="Build Output" />
+                                    </DockPanel>
+                                    <TextBox Height="200"
+                                             FontFamily="Consolas"
+                                             IsReadOnly="True"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap"
+                                             Text="{Binding BuildOutput, Mode=OneWay}" />
+
+                                    <controls:ToolStatusView Margin="0,18,0,0" StatusMessage="{Binding StatusMessage}" StatusDetail="{Binding StatusDetail}" StatusSeverity="{Binding StatusSeverity}" IsIndeterminate="{Binding IsIndeterminate}" ProgressValue="{Binding ProgressValue}" ProgressMaximum="100" />
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>

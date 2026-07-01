@@ -1,0 +1,83 @@
+<UserControl x:Class="PgnTools.Wpf.Controls.ChesscomEventsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:PgnTools.Wpf.Controls"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel x:Name="Root" Margin="8">
+            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}"
+                       TextWrapping="Wrap"
+                       Text="Download Chess.com event PGNs by numeric event ID range. Sign in to Chess.com below so the downloader can access event data." />
+
+            <UniformGrid Margin="0,16,0,0" Columns="2">
+                <StackPanel Margin="0,0,12,0">
+                    <TextBlock Style="{StaticResource SectionLabelText}" Text="Start Event ID" />
+                    <TextBox Text="{Binding StartEventId, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+                <StackPanel Margin="12,0,0,0">
+                    <TextBlock Style="{StaticResource SectionLabelText}" Text="End Event ID" />
+                    <TextBox Text="{Binding EndEventId, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+            </UniformGrid>
+
+            <CheckBox Margin="0,14,0,0" Content="Resume from status CSV" IsChecked="{Binding ResumeFromStatus}" />
+            <CheckBox Content="Infer every-fifth dead IDs from status CSV" IsChecked="{Binding InferEveryFifthDeadIds}" />
+
+            <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Request Delay (ms)" />
+            <TextBox Width="220" HorizontalAlignment="Left" Text="{Binding RequestDelayMs, UpdateSourceTrigger=PropertyChanged}" />
+
+            <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Chess.com Session" />
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Open Sign In"
+                        Click="OpenSignInButton_Click"
+                        IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBooleanConverter}}" />
+                <Button Content="Capture Session"
+                        Click="CaptureSessionButton_Click"
+                        IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBooleanConverter}}" />
+            </StackPanel>
+            <TextBlock Margin="0,8,0,0"
+                       Foreground="{DynamicResource TextSecondaryBrush}"
+                       TextWrapping="Wrap"
+                       Text="{Binding SessionStatusMessage}" />
+            <wv2:WebView2 x:Name="SessionWebView" Height="360" Margin="0,8,0,0" Visibility="Collapsed" />
+
+            <TextBlock Margin="0,16,0,6" Style="{StaticResource SectionLabelText}" Text="Output PGN" />
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Command="{Binding SelectOutputFileCommand}" Content="Browse" />
+                <TextBox Margin="0,0,12,0" IsReadOnly="True" Text="{Binding OutputFilePath}" />
+            </DockPanel>
+
+            <TextBlock Margin="0,12,0,6" Style="{StaticResource SectionLabelText}" Text="Titled Tuesday Output PGN" />
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Command="{Binding SelectTitledTuesdayOutputFileCommand}" Content="Browse" />
+                <TextBox Margin="0,0,12,0" IsReadOnly="True" Text="{Binding TitledTuesdayOutputFilePath}" />
+            </DockPanel>
+
+            <TextBlock Margin="0,12,0,6" Style="{StaticResource SectionLabelText}" Text="Status CSV" />
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Command="{Binding SelectStatusFileCommand}" Content="Browse" />
+                <TextBox Margin="0,0,12,0" IsReadOnly="True" Text="{Binding StatusFilePath}" />
+            </DockPanel>
+
+            <StackPanel Margin="0,18,0,0" Orientation="Horizontal">
+                <Button Background="{DynamicResource AccentBrush}"
+                        Foreground="White"
+                        Click="StartDownloadButton_Click"
+                        Content="Start Download"
+                        IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBooleanConverter}}" />
+                <Button Command="{Binding CancelCommand}" Content="Cancel" IsEnabled="{Binding IsRunning}" />
+            </StackPanel>
+
+            <controls:ToolStatusView Margin="0,18,0,0"
+                                     StatusMessage="{Binding StatusMessage}"
+                                     StatusDetail="{Binding StatusDetail}"
+                                     StatusSeverity="{Binding StatusSeverity}"
+                                     IsIndeterminate="{Binding IsRunning}"
+                                     ProgressValue="{Binding ProgressValue}"
+                                     ProgressMaximum="100" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

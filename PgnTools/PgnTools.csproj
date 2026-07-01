@@ -31,7 +31,16 @@
         
         <!-- Allow unsafe code for WinRT interop -->
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-        
+
+        <!--
+            Legacy WinUI 3 app. The migration to WPF (PgnTools.Wpf) is complete; this project is
+            retained only as the source of truth for the shared services/view-models that the WPF
+            app links in. It still builds its own PgnTools.exe, which would collide with the WPF
+            app's PgnTools.exe in a solution-level `dotnet publish -o`. IsPublishable=false keeps it
+            out of publish so only the WPF app ships.
+        -->
+        <IsPublishable>false</IsPublishable>
+
     </PropertyGroup>
 
     <ItemGroup>

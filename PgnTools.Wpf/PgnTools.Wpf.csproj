@@ -13,12 +13,23 @@
     <NoWarn>$(NoWarn);WPF0001</NoWarn>
   </PropertyGroup>
 
+  <!--
+    UseWindowsForms adds an implicit `global using System.Windows.Forms`, whose Clipboard
+    type collides with the Windows.ApplicationModel.DataTransfer.Clipboard shim inside the
+    shared CompilerViewModel. FilePickerHelper references WinForms via fully-qualified names,
+    so the global using can be dropped without affecting anything.
+  -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Gera.Chess" Version="1.2.0" />
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.6" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.6" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3595.46" />
     <PackageReference Include="ZstdSharp.Port" Version="0.8.7" />
   </ItemGroup>
 
@@ -35,6 +46,12 @@
     <Compile Include="..\PgnTools\Services\ChessAnalyzerService.cs" Link="Shared\Services\ChessAnalyzerService.cs" />
     <Compile Include="..\PgnTools\Services\ChessUnannotatorService.cs" Link="Shared\Services\ChessUnannotatorService.cs" />
     <Compile Include="..\PgnTools\Services\CheckmateFilterService.cs" Link="Shared\Services\CheckmateFilterService.cs" />
+    <Compile Include="..\PgnTools\Services\ChesscomEventsDownloaderService.cs" Link="Shared\Services\ChesscomEventsDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\StockfishCompilerService.cs" Link="Shared\Services\StockfishCompilerService.cs" />
+    <Compile Include="..\PgnTools\Services\BerserkCompilerService.cs" Link="Shared\Services\BerserkCompilerService.cs" />
+    <Compile Include="..\PgnTools\Services\EnginePackageLayout.cs" Link="Shared\Services\EnginePackageLayout.cs" />
+    <Compile Include="..\PgnTools\Services\TablebaseDownloaderService.cs" Link="Shared\Services\TablebaseDownloaderService.cs" />
+    <Compile Include="..\PgnTools\Services\TablebaseConstants.cs" Link="Shared\Services\TablebaseConstants.cs" />
     <Compile Include="..\PgnTools\Services\EcoTaggerService.cs" Link="Shared\Services\EcoTaggerService.cs" />
     <Compile Include="..\PgnTools\Services\EloAdderService.cs" Link="Shared\Services\EloAdderService.cs" />
     <Compile Include="..\PgnTools\Services\EmbeddedRatingsDatabase.cs" Link="Shared\Services\EmbeddedRatingsDatabase.cs" />
@@ -68,6 +85,9 @@
     <Compile Include="..\PgnTools\ViewModels\Tools\ChessAnalyzerViewModel.cs" Link="Shared\ViewModels\Tools\ChessAnalyzerViewModel.cs" />
     <Compile Include="..\PgnTools\ViewModels\Tools\ChesscomDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\ChesscomDownloaderViewModel.cs" />
     <Compile Include="..\PgnTools\ViewModels\Tools\ChesscomMonthlyDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\ChesscomMonthlyDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\ChesscomEventsDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\ChesscomEventsDownloaderViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\CompilerViewModel.cs" Link="Shared\ViewModels\Tools\CompilerViewModel.cs" />
+    <Compile Include="..\PgnTools\ViewModels\Tools\TablebaseDownloaderViewModel.cs" Link="Shared\ViewModels\Tools\TablebaseDownloaderViewModel.cs" />
     <Compile Include="..\PgnTools\ViewModels\Tools\ChessUnannotatorViewModel.cs" Link="Shared\ViewModels\Tools\ChessUnannotatorViewModel.cs" />
     <Compile Include="..\PgnTools\ViewModels\Tools\EcoTaggerViewModel.cs" Link="Shared\ViewModels\Tools\EcoTaggerViewModel.cs" />
     <Compile Include="..\PgnTools\ViewModels\Tools\EloAdderViewModel.cs" Link="Shared\ViewModels\Tools\EloAdderViewModel.cs" />
@@ -103,6 +123,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\PgnTools\Assets\ratings.bin.zst" Link="Assets\ratings.bin.zst">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\PgnTools\Assets\Tablebases\download.txt" Link="Assets\Tablebases\download.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

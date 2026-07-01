@@ -51,12 +51,13 @@ WPF-only code (shell, infrastructure shims, theming, hub VMs) lives under `PgnTo
 
 ## 4. The tools (the bands wired into the WPF app)
 
-- **Downloaders** — Chess.com (user archives, monthly crawl), Lichess (user games, monthly DB
-  filter), Lc0, PGN Mentor, TWIC.
+- **Downloaders** — Chess.com (user archives, monthly crawl, events), Lichess (user games, monthly
+  DB filter), Lc0, PGN Mentor, TWIC, Syzygy tablebases.
 - **Organizers** — Filter, Sorter, Splitter, Merger, Deduplicator, Tour Breaker.
 - **Enrichment** — ECO Tagger, Category Tagger, Elo Adder, Ply Count, Stockfish Normalizer,
   Unannotator.
 - **Analysis** — PGN Info, Chess Analyzer (UCI/Stockfish), Elegance scoring, Checkmate Filter.
+- **Engines** — Stockfish/Berserk source compiler (clone + build a UCI engine locally).
 - **Settings** — accent color (follows the Windows system accent) and default folders.
 
 Each tool has a deeper design doc under `Docs/` (e.g. `Docs/PgnFilterService.md`,
@@ -88,10 +89,20 @@ The legacy view-models were written against WinUI types. To run them unchanged u
 - `InfoBarSeverity.cs` re-declares the `Microsoft.UI.Xaml.Controls.InfoBarSeverity` enum.
 - `StorageShims.cs` re-declares `Windows.Storage.StorageFile` / `StorageFolder` (thin `Path`
   wrappers).
+- `DataTransferShims.cs` re-declares `Windows.ApplicationModel.DataTransfer.DataPackage` /
+  `Clipboard` (the compiler tool copies its build log) and routes them to the WPF clipboard.
+- `ApplicationModelShims.cs` re-declares `Windows.ApplicationModel.Package`; `Package.Current`
+  throws so the tablebase download-list probe falls back to `AppContext.BaseDirectory` (the WPF
+  build is always unpackaged).
 - `FilePickerHelper.cs` (WinForms/Win32 file dialogs), `WindowService.cs`, `AppSettingsService.cs`.
 
 So a `using Microsoft.UI.Xaml.Controls;` inside a "WPF" file is expected and correct — it resolves
-to the shim, not to WinUI.
+to the shim, not to WinUI. (`UseWindowsForms` is on for the file dialogs, but its implicit
+`System.Windows.Forms` global using is removed in the csproj so `Clipboard` stays unambiguous.)
+
+The one WinUI view that is genuinely re-implemented for WPF is the Chess.com **events** downloader:
+`Controls/ChesscomEventsView.xaml(.cs)` hosts a WebView2 so the user can sign in to Chess.com, and
+scrapes the auth cookie for the shared view-model (`Microsoft.Web.WebView2` is a WPF dependency).
 
 ## 7. Theming
 
@@ -113,26 +124,27 @@ to the shim, not to WinUI.
   `dotnet publish PgnTools.Wpf/PgnTools.Wpf.csproj -c Release -r win-x64 --self-contained true
   -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
   -p:IncludeNativeLibrariesForSelfExtract=true -o Build/PgnTools.Wpf.Release`. Output is a single
-  self-contained `PgnTools.exe`.
+  self-contained `PgnTools.exe`. **Publish the WPF *project*, never the solution:** the legacy
+  `PgnTools` WinUI project also emits `PgnTools.exe`, so a solution-level `publish -o <dir>` dumps
+  both into one folder and they clobber each other nondeterministically. Both non-shipping projects
+  (`PgnTools`, `PgnTools.SmokeTests`) set `IsPublishable=false` to guard against this, so an
+  accidental solution publish still yields only the WPF app.
 - **CI:** `.github/workflows/build.yml` builds + runs smoke tests + uploads an artifact on every
   push to `main`.
 - **Release:** `.github/workflows/release.yml` is a manual (`workflow_dispatch`) button that builds
   and publishes a GitHub Release with the exe attached.
 - **Target / deps:** `net10.0-windows`, nullable + implicit usings enabled. Key packages:
   CommunityToolkit.Mvvm, Gera.Chess, HtmlAgilityPack, Microsoft.Extensions.DependencyInjection /
-  Hosting, ZstdSharp.Port (zstd for the bundled ratings DB and Lichess archives).
+  Hosting, Microsoft.Web.WebView2 (Chess.com events sign-in), ZstdSharp.Port (zstd for the bundled
+  ratings DB and Lichess archives).
 
-## 9. Not yet ported to WPF (legacy-only — do not flag as bugs)
+## 9. WinUI → WPF port status
 
-Some legacy VMs/services exist in `PgnTools/` but are **intentionally not wired into the WPF app**,
-so their service interfaces are **not registered in DI**:
-
-- the Stockfish/Berserk **compiler** and engine-management surfaces,
-- the **Chess.com Events** downloader,
-- the **Tablebase** downloader.
-
-A reviewer scanning DI will see these interfaces unregistered — that is deferred work, not a
-missing-registration bug.
+The migration is **complete**: every tool from the legacy WinUI app is now wired into the WPF
+shell and registered in DI. The most recently ported tools (Chess.com Events, Syzygy Tablebases,
+and the Stockfish/Berserk Compiler) reuse their legacy view-models and services via linked
+compiles like everything else; only the Chess.com events *view* was re-implemented for WPF (see
+§6). The `PgnTools/` WinUI project is retained solely as the source of truth for that shared code.
 
 ## 10. Where an outside review is most valuable
 
